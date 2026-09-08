@@ -17,8 +17,6 @@ const reMiss =
 const reCfg =
   /unknown flag|no context|context .* not found|context .* doesn'?t exist|invalid configuration|no server found|specifying a namespace|required flag/i;
 
-// classify maps kubectl stderr to a failure group so output can point at
-// the next step without printing credentials.
 export const classify = (stderr: string, timedOut: boolean): Category => {
   if (timedOut) {
     if (reConn.test(stderr)) return "connectivity";
@@ -35,8 +33,6 @@ export const classify = (stderr: string, timedOut: boolean): Category => {
   return "unknown";
 };
 
-// remediation returns the next step for a group. It never includes tokens,
-// codes, or login URLs.
 export const remediation = (cat: Category): string => {
   switch (cat) {
     case "missing-infrastructure":

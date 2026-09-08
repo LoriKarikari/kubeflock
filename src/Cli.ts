@@ -102,10 +102,6 @@ interface GlobalOpts {
   readonly kubectlPath: string;
 }
 
-// main returns the process exit code instead of throwing: 0 pass, 1 failed
-// prerequisites, 2 usage or config error. NodeRuntime.runMain preserves
-// process.exitCode on success, and SIGINT/SIGTERM interrupt the Effect so
-// scope finalizers kill leftover kubectl groups before exit.
 const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
     if (argv[0] === "show") {
@@ -172,7 +168,6 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
     } else {
       printTextReport(rep);
     }
-    // Nonzero exit when prerequisites fail.
     return rep.ok ? 0 : 1;
   });
 

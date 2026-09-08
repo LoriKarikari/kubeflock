@@ -5,9 +5,6 @@ import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCheck } from "./Check.js";
 
-// fakeKubectl emulates read-only kubectl responses. It logs every argv line
-// and rejects calls missing --context EXPECTED_CONTEXT. DENY_ALL makes every
-// `auth can-i` probe answer "no".
 const fakeKubectl = (dir: string, logPath: string): string => {
   const script = `#!/bin/sh
 LOG="${logPath}"

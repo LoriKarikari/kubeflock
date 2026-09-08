@@ -79,7 +79,6 @@ describe("runner", () => {
       expect(err).not.toBeNull();
       expect(err?._tag).toBe("KubectlTimeoutError");
       expect(Date.now() - start).toBeLessThan(10000);
-      // The helper must be gone: nothing may keep the OIDC lock.
       const pid = Number(readFileSync(childFile, "utf8").trim());
       const deadline = Date.now() + 3000;
       for (;;) {

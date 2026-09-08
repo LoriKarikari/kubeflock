@@ -25,8 +25,6 @@ export type ConfigError = ConfigIOError | ConfigParseError | ConfigInvalidError;
 
 const namespaceRe = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
-// defaultPath is the shared config file for CLI and Herdr actions.
-// Precedence: KUBEFLOCK_CONFIG, then XDG_CONFIG_HOME, then ~/.config.
 export const defaultPath = (): string => {
   const override = process.env["KUBEFLOCK_CONFIG"];
   if (override) return override;

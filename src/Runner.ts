@@ -36,17 +36,12 @@ const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
   try {
     process.kill(-pid, signal);
   } catch {
-    // ESRCH means nobody is left in the group. Anything else is not
-    // actionable here; the timeout error already records the outcome.
+    // Cleanup can race process exit.
   }
 };
 
-// runKubectl executes kubectl in its own process group so credential-helper
-// descendants share the group and die with it. kubectl's --request-timeout
-// alone does not bound helpers holding the OIDC cache lock, so the Effect
-// timeout terms the group and the scope release kills whatever remains.
-// A helper that ignores SIGTERM still dies in the release, which means no
-// descendant can outlive the call holding the lock.
+// kubectl's request timeout does not bound credential helpers holding OIDC locks.
+// Scope cleanup kills the group, including helpers that ignore SIGTERM.
 export const runKubectl = (
   args: ReadonlyArray<string>,
   opts: RunOptions,
@@ -93,9 +88,6 @@ export const runKubectl = (
       Effect.timeoutFail({
         duration: opts.timeoutMs,
         onTimeout: () => {
-          // Courtesy TERM so well-behaved helpers exit cleanly. The scope
-          // release follows with SIGKILL, so a helper that ignores TERM
-          // cannot survive either way.
           killGroup(pid, "SIGTERM");
           return new KubectlTimeoutError({ stderr, stdout });
         },

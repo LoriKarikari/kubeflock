@@ -1,9 +1,3 @@
-// The read-only cluster prerequisite check. Every Kubernetes interaction
-// goes through kubectl with an explicit --context and --request-timeout and
-// uses only read verbs (api-versions, api-resources, get, auth can-i). The
-// check never creates, patches, or deletes cluster state; permission probing
-// uses the ephemeral SelfSubjectAccessReview behind `kubectl auth can-i`.
-
 import { Effect, Either } from "effect";
 import type { KubeTarget } from "./Config.js";
 import { classify, remediation, type Category } from "./Classify.js";
@@ -135,8 +129,7 @@ const permArgs = (cfg: KubeTarget, req: string, p: Perm): Array<string> => {
   const base = p.namespaced
     ? namespacedArgs(cfg, req, ["auth", "can-i", p.verb, p.resource])
     : baseArgs(cfg, req, ["auth", "can-i", p.verb, p.resource]);
-  // Subresources ride on --subresource. A TYPE/NAME argument like pods/exec
-  // would ask about a pod literally named exec instead.
+  // TYPE/NAME selects an object, not a subresource.
   return p.subresource ? [...base, `--subresource=${p.subresource}`] : base;
 };
 
@@ -167,9 +160,6 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
       timeoutMs: perCallMs,
     });
 
-  // Each probe catches its own failure into a CheckResult, so the whole
-  // check never fails as an Effect. Layered timeouts still apply: a stuck
-  // probe reports itself instead of hanging the run.
   const attempt = (
     name: string,
     action: string,
@@ -184,8 +174,6 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     const checks: Array<CheckResult> = [];
 
     const connectivity = yield* attempt("api-connectivity", "reach the Kubernetes API with the saved context", baseArgs(cfg, req, ["api-versions"]));
-    // Served versions come from the same discovery output. A cluster serving
-    // only alpha versions must not report v1beta1 as served.
     const served: Set<string> | null = connectivity.err
       ? null
       : new Set(connectivity.out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0));
@@ -328,9 +316,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
         const name = `perm-${p.verb}-${shortResource(shown)}`;
         const probed = yield* Effect.either(run(permArgs(cfg, req, p)));
         const out = Either.isLeft(probed) ? kubectlStdout(probed.left) : probed.right;
-        // Read the answer before the exit code. kubectl prints no and
-        // exits 1 on denial, so a failure carrying no means denied access,
-        // not an unknown error.
+        // kubectl prints "no" and exits 1 for denied access.
         const answer = out.trim().toLowerCase();
         if (answer === "yes") return ok(name, `can ${p.verb} ${shown}`);
         if (answer === "no" || answer.startsWith("no ")) {

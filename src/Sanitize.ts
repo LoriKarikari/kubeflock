@@ -1,7 +1,3 @@
-// sanitize redacts credential-like values before output reaches users or
-// Herdr logs. It errs toward redacting too much rather than leaking a token
-// or authorization code.
-
 const reBearer = /bearer\s+[A-Za-z0-9\-._~+/=]+/gi;
 const reTokenAssign =
   /((?:id[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization[_-]?code|auth[_-]?code)\s*[:=]\s*"?)[^"\s;,}]+/gi;
