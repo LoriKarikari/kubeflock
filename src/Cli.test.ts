@@ -8,7 +8,7 @@ describe("parseDuration", () => {
     ["2m", 120000],
     ["1h", 3600000],
     ["10", 10000],
-  ] as Array<[string, number]>)("parses %s", (raw, ms) => {
+  ] satisfies Array<[string, number]>)("parses %s", (raw, ms) => {
     expect(parseDuration(raw)).toBe(ms);
   });
 

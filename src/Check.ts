@@ -1,4 +1,4 @@
-import { Effect, Either } from "effect";
+import { Effect, Either, Option, Schema } from "effect";
 import type { KubeTarget } from "./Config.js";
 import { classify, remediation, type Category } from "./Classify.js";
 import {
@@ -117,13 +117,8 @@ const classifiedResult = (name: string, action: string, err: KubectlErr): CheckR
   return fail(name, `could not ${action}: ${sanitizeLines(detail).slice(0, 500)}`, cat);
 };
 
-const parseJson = <T>(raw: string): T | null => {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-};
+const parseJson = <A, I>(raw: string, schema: Schema.Schema<A, I>): A | null =>
+  Option.getOrNull(Schema.decodeUnknownOption(Schema.parseJson(schema))(raw));
 
 const permArgs = (cfg: KubeTarget, req: string, p: Perm): Array<string> => {
   const base = p.namespaced
@@ -136,10 +131,23 @@ const permArgs = (cfg: KubeTarget, req: string, p: Perm): Array<string> => {
 const computeQuotaRe = /^(pods|cpu|memory|requests\.cpu|requests\.memory|limits\.cpu|limits\.memory|requests\.ephemeral-storage|limits\.ephemeral-storage)$/;
 const storageQuotaRe = /^(persistentvolumeclaims|requests\.storage)$/;
 
-interface QuotaItem {
-  readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly hard?: Record<string, string> };
-}
+const resourceMetadata = Schema.Struct({
+  name: Schema.optional(Schema.String),
+  annotations: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
+});
+const runtimeClass = Schema.Struct({ handler: Schema.optional(Schema.String) });
+const storageClasses = Schema.Struct({
+  items: Schema.optional(Schema.Array(Schema.Struct({ metadata: Schema.optional(resourceMetadata) }))),
+});
+const resourceQuotas = Schema.Struct({
+  items: Schema.optional(Schema.Array(Schema.Struct({
+    metadata: Schema.optional(resourceMetadata),
+    spec: Schema.optional(Schema.Struct({
+      hard: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
+    })),
+  }))),
+});
+const limitRanges = Schema.Struct({ items: Schema.optional(Schema.Array(Schema.Struct({}))) });
 
 const shortResource = (r: string): string =>
   r
@@ -221,7 +229,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     if (rc.err) {
       checks.push(rc.err);
     } else {
-      const parsed = parseJson<{ handler?: unknown }>(rc.out);
+      const parsed = parseJson(rc.out, runtimeClass);
       if (parsed === null) {
         checks.push(fail("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown"));
       } else if (!String(parsed.handler ?? "").toLowerCase().includes("runsc")) {
@@ -237,9 +245,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     if (sc.err) {
       checks.push(sc.err);
     } else {
-      const parsed = parseJson<{
-        items?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>;
-      }>(sc.out);
+      const parsed = parseJson(sc.out, storageClasses);
       if (parsed === null) {
         checks.push(fail("storage", "StorageClass list returned unreadable JSON", "unknown"));
       } else {
@@ -262,7 +268,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     if (quota.err) {
       checks.push(quota.err);
     } else {
-      const parsed = parseJson<{ items?: Array<QuotaItem> }>(quota.out);
+      const parsed = parseJson(quota.out, resourceQuotas);
       if (parsed === null) {
         checks.push(fail("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown"));
       } else if ((parsed.items ?? []).length === 0) {
@@ -300,7 +306,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     if (limits.err) {
       checks.push({ ...limits.err, advisory: true });
     } else {
-      const parsed = parseJson<{ items?: Array<unknown> }>(limits.out);
+      const parsed = parseJson(limits.out, limitRanges);
       if (parsed === null) {
         checks.push({ ...fail("budgets-limits", "LimitRange list returned unreadable JSON", "unknown"), advisory: true });
       } else if ((parsed.items ?? []).length === 0) {

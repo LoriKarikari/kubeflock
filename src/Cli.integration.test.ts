@@ -56,7 +56,7 @@ describe("built CLI", () => {
   });
 
   it.each([
-    ["empty", "", "config must be a mapping"],
+    ["empty", "", "invalid kubeflock config"],
     ["invalid YAML", "context: [saved", "parse kubeflock config"],
   ])("reports %s config without a runtime crash", (_name, body, message) => {
     writeFileSync(config, body);

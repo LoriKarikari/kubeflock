@@ -1,13 +1,11 @@
-import { Data, Effect } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { FileSystem } from "@effect/platform";
 import * as Os from "node:os";
 import * as Path from "node:path";
 import { parse, stringify } from "yaml";
 
-export interface KubeTarget {
-  readonly context: string;
-  readonly namespace: string;
-}
+const targetSchema = Schema.Struct({ context: Schema.String, namespace: Schema.String });
+export type KubeTarget = Schema.Schema.Type<typeof targetSchema>;
 
 export class ConfigIOError extends Data.TaggedError("ConfigIOError")<{
   readonly cause: string;
@@ -32,15 +30,12 @@ export const defaultPath = (): string => {
   return Path.join(base, "kubeflock", "config.yaml");
 };
 
-export const validate = (cfg: unknown): Effect.Effect<KubeTarget, ConfigInvalidError> => {
-  if (typeof cfg !== "object" || cfg === null || Array.isArray(cfg)) {
-    return Effect.fail(new ConfigInvalidError({ cause: "config must be a mapping with context and namespace" }));
-  }
-  const { context, namespace } = cfg as { readonly context?: unknown; readonly namespace?: unknown };
-  if (typeof context !== "string" || context === "") {
+export const validate = (cfg: KubeTarget): Effect.Effect<KubeTarget, ConfigInvalidError> => {
+  const { context, namespace } = cfg;
+  if (context === "") {
     return Effect.fail(new ConfigInvalidError({ cause: "context must be a non-empty string" }));
   }
-  if (typeof namespace !== "string" || namespace === "") {
+  if (namespace === "") {
     return Effect.fail(new ConfigInvalidError({ cause: "namespace must be a non-empty string" }));
   }
   if (namespace.length > 63 || !namespaceRe.test(namespace)) {
@@ -59,9 +54,14 @@ export const load = (file: string): Effect.Effect<KubeTarget, ConfigError, FileS
     );
     const parsed: unknown = yield* Effect.try({
       try: () => parse(data),
-      catch: (e) => new ConfigParseError({ cause: `parse kubeflock config "${file}": ${(e as Error).message}` }),
+      catch: (e) => new ConfigParseError({ cause: `parse kubeflock config "${file}": ${String(e)}` }),
     });
-    return yield* validate(parsed).pipe(
+    const target = yield* Schema.decodeUnknown(targetSchema)(parsed).pipe(
+      Effect.mapError(() => new ConfigInvalidError({
+        cause: `invalid kubeflock config "${file}": config must be a mapping with string context and namespace`,
+      })),
+    );
+    return yield* validate(target).pipe(
       Effect.mapError((e) => new ConfigInvalidError({ cause: `invalid kubeflock config "${file}": ${e.cause}` })),
     );
   });

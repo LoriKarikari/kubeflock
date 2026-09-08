@@ -10,7 +10,7 @@ describe("classify", () => {
     [`runtimeclasses.node.k8s.io "gvisor" not found`, false, "missing-infrastructure"],
     ["", true, "timeout"],
     ["something strange", false, "unknown"],
-  ] as Array<[string, boolean, string]>)("classify %j", (stderr, timed, want) => {
+  ] satisfies Array<[string, boolean, string]>)("classify %j", (stderr, timed, want) => {
     expect(classify(stderr, timed)).toBe(want);
   });
 });

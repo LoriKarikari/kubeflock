@@ -140,7 +140,7 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
       timeoutMs = parseDuration(flagValue(argv, "--timeout", "60s"));
       requestTimeoutSec = Math.max(parseDuration(flagValue(argv, "--request-timeout", "10s")) / 1000, 1);
     } catch (e) {
-      console.error(`kubeflock: ${(e as Error).message}`);
+      console.error(`kubeflock: ${e instanceof Error ? e.message : String(e)}`);
       return 2;
     }
     if (output !== "text" && output !== "json") {
