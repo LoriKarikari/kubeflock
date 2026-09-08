@@ -111,7 +111,7 @@ const namespacedArgs = (cfg: KubeTarget, req: string, args: ReadonlyArray<string
 const firstUseful = (...parts: Array<string>): string => {
   for (const p of parts) {
     const t = p.trim();
-    if (t) return t.length > 500 ? t.slice(0, 500) : t;
+    if (t) return t;
   }
   return "unknown error";
 };
@@ -120,7 +120,7 @@ const classifiedResult = (name: string, action: string, err: KubectlErr): CheckR
   const stderr = kubectlStderr(err);
   const cat = classify(stderr, err._tag === "KubectlTimeoutError");
   const detail = firstUseful(stderr, kubectlStdout(err), err._tag === "KubectlSpawnError" ? err.cause : "kubectl failed");
-  return fail(name, `could not ${action}: ${sanitizeLines(detail)}`, cat);
+  return fail(name, `could not ${action}: ${sanitizeLines(detail).slice(0, 500)}`, cat);
 };
 
 const parseJson = <T>(raw: string): T | null => {

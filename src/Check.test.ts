@@ -33,6 +33,9 @@ case "$*" in
   *"api-resources"*"agents.x-k8s.io"*)
     echo "sandboxes"; exit 0 ;;
   *"get runtimeclass"*)
+    if [ -n "$LONG_TOKEN_LEAK" ]; then
+      echo 'eyJ${"A".repeat(30)}.REPORT_JWT_PAYLOAD${"A".repeat(600)}.${"A".repeat(40)}' >&2; exit 1
+    fi
     if [ -n "$TOKEN_LEAK" ]; then
       echo 'access_token="REPORT_TOKEN_XYZ"' >&2; exit 1
     fi
@@ -132,6 +135,13 @@ describe("budgets", () => {
 });
 
 describe("credential redaction", () => {
+  it("redacts long JWTs before shortening diagnostics", async () => {
+    const { report } = await runWithFake({ LONG_TOKEN_LEAK: "1" });
+    const output = JSON.stringify(report);
+    expect(output).not.toContain("REPORT_JWT_PAYLOAD");
+    expect(output).toContain("[redacted-jwt]");
+  });
+
   it("keeps quoted tokens out of the report", async () => {
     const { report } = await runWithFake({ TOKEN_LEAK: "1" });
     for (const c of report.checks) {
