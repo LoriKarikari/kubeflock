@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "pretest": "npm run build",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "check": "node dist/Cli.js cluster check"
