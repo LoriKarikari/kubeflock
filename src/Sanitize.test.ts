@@ -10,6 +10,7 @@ describe("sanitize", () => {
       "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature-part-here",
     ].join("\n");
     const out = sanitizeLines(input);
+    expect(out).not.toContain("abc.def.ghi");
     expect(out).not.toContain("supersecret");
     expect(out).not.toContain("secret123");
     expect(out).not.toContain("eyJhbGci");

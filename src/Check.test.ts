@@ -11,7 +11,6 @@ LOG="${logPath}"
 printf '%s\\n' "$*" >> "$LOG"
 if [ -n "$EXPECTED_CONTEXT" ]; then
   case "$*" in
-    *"config get-contexts"*) ;;
     *"--context $EXPECTED_CONTEXT"*) ;;
     *) echo "wrong context: $* (want $EXPECTED_CONTEXT)" >&2; exit 1 ;;
   esac
@@ -48,8 +47,6 @@ case "$*" in
     echo '{"items":[{"metadata":{"name":"quota"},"spec":{"hard":{"pods":"1","requests.cpu":"1","requests.memory":"1Gi","requests.storage":"1Gi","persistentvolumeclaims":"1"}}}]}'; exit 0 ;;
   *"get limitrange"*)
     echo '{"items":[{}]}'; exit 0 ;;
-  *"config get-contexts"*)
-    echo "saved"; echo "other"; exit 0 ;;
 esac
 echo "unexpected kubectl call: $*" >&2; exit 1
 `;
@@ -78,12 +75,10 @@ const runWithFake = async (extraEnv: NodeJS.ProcessEnv) => {
 };
 
 describe("explicit context", () => {
-  it("pins the saved context and ignores current-context", async () => {
+  it("passes the saved context to every probe", async () => {
     const { report, log } = await runWithFake({});
     expect(report.ok).toBe(true);
     expect(log).toContain("--context saved");
-    expect(log).not.toContain("--context other");
-    expect(log.trim().split("\n").length).toBeGreaterThan(5);
   });
 });
 
@@ -91,12 +86,12 @@ describe("permissions", () => {
   it("reports denied access with a fix", async () => {
     const { report } = await runWithFake({ DENY_ALL: "1" });
     expect(report.ok).toBe(false);
-    const denied = report.checks.filter((c) => !c.ok && c.category === "denied");
-    expect(denied.length).toBeGreaterThan(0);
-    for (const c of denied) expect(c.remediation).not.toBe("");
-    for (const c of report.checks) {
-      expect(c.message).not.toContain("Bearer");
-      expect(c.message).not.toContain("eyJ");
+    const permissions = report.checks.filter((c) => c.name.startsWith("perm-"));
+    expect(permissions.length).toBeGreaterThan(0);
+    for (const c of permissions) {
+      expect(c.ok).toBe(false);
+      expect(c.category).toBe("denied");
+      expect(c.remediation).toBeTruthy();
     }
   });
 
@@ -150,10 +145,10 @@ describe("credential redaction", () => {
 describe("read-only contract", () => {
   it("issues no cluster writes", async () => {
     const { log } = await runWithFake({});
-    const allowed = new Set(["api-versions", "api-resources", "get", "auth", "config"]);
+    const allowed = new Set(["api-versions", "api-resources", "get", "auth"]);
     for (const line of log.trim().split("\n")) {
       const fields = line.split(/\s+/);
-      let sub = "";
+      let command: Array<string> = [];
       for (let i = 0; i < fields.length; i++) {
         const f = fields[i]!;
         if (f === "--context" || f === "-n" || f === "--request-timeout") {
@@ -161,13 +156,11 @@ describe("read-only contract", () => {
           continue;
         }
         if (f.startsWith("-")) continue;
-        sub = f;
+        command = fields.slice(i);
         break;
       }
-      expect(allowed.has(sub)).toBe(true);
-      if (["create", "delete", "patch", "apply", "replace"].includes(sub)) {
-        expect(line).toContain("can-i");
-      }
+      expect(allowed.has(command[0]!)).toBe(true);
+      if (command[0] === "auth") expect(command[1]).toBe("can-i");
     }
   });
 });

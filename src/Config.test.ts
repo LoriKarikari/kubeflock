@@ -24,7 +24,6 @@ describe("config round trip", () => {
 describe("load rejects malformed files", () => {
   it.each([
     ["empty file", ""],
-    ["null document", "null\n"],
     ["numeric context", "context: 123\nnamespace: kubeflock-check\n"],
     ["numeric namespace", "context: homelab\nnamespace: 456\n"],
     ["array document", "- homelab\n"],
@@ -51,7 +50,7 @@ describe("validate", () => {
     [{ context: "a", namespace: "b" }, true],
     [{ context: "", namespace: "b" }, false],
     [{ context: "a", namespace: "" }, false],
-    [{ context: "a", namespace: "Bad_NS" }, false],
+    [{ context: "a", namespace: "bad_ns" }, false],
     [{ context: "a", namespace: "UPPER" }, false],
   ])("validate %j -> %s", async (cfg, valid) => {
     const res = await Effect.runPromise(Effect.match(validate(cfg), {

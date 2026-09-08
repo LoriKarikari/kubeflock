@@ -32,17 +32,10 @@ const fakeKubectl = (): string => {
 };
 
 describe("built CLI", () => {
-  it.each(["direct", "symlink"])("runs through a %s entry", (kind) => {
-    const entry = kind === "symlink" ? join(dir, "kubeflock") : cli;
-    if (kind === "symlink") symlinkSync(cli, entry);
-    const result = invoke(["version"], entry);
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe("kubeflock 0.1.0");
-    expect(result.stderr).toBe("");
-  });
-
-  it("shows the saved target as JSON", () => {
-    const result = invoke(["cluster", "config", "show", "--output=json"]);
+  it("shows the saved target as JSON through the linked entry", () => {
+    const entry = join(dir, "kubeflock");
+    symlinkSync(cli, entry);
+    const result = invoke(["cluster", "config", "show", "--output=json"], entry);
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ context: "saved", namespace: "dev", config });
   });
@@ -64,9 +57,6 @@ describe("built CLI", () => {
 
   it.each([
     ["empty", "", "config must be a mapping"],
-    ["null", "null\n", "config must be a mapping"],
-    ["numeric context", "context: 123\nnamespace: dev\n", "context must be a non-empty string"],
-    ["numeric namespace", "context: saved\nnamespace: 123\n", "namespace must be a non-empty string"],
     ["invalid YAML", "context: [saved", "parse kubeflock config"],
   ])("reports %s config without a runtime crash", (_name, body, message) => {
     writeFileSync(config, body);

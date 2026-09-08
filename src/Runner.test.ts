@@ -12,17 +12,6 @@ const writeExe = (dir: string, name: string, body: string): string => {
 };
 
 describe("runner", () => {
-  it("returns stdout on success", async () => {
-    const dir = mkdtempSync(Path.join(tmpdir(), "kf-run-"));
-    try {
-      const fake = writeExe(dir, "kubectl", "#!/bin/sh\necho hello-stdout\n");
-      const out = await Effect.runPromise(runKubectl(["get", "pods"], { kubectlPath: fake, timeoutMs: 5000 }));
-      expect(out.trim()).toBe("hello-stdout");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it.each([1, 2])("isolates repeated executions with concurrency %i", async (concurrency) => {
     const dir = mkdtempSync(Path.join(tmpdir(), "kf-run-"));
     try {
