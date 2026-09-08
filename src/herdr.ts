@@ -12,7 +12,7 @@ const machineSchema = Schema.Array(Schema.Struct({
 }));
 export type HerdrMachine = Schema.Schema.Type<typeof machineSchema>[number];
 
-const binary = (): string => process.env["KUBEFLOCK_HERDR"] ?? "herdr";
+const binary = (): string => process.env["KUBEFLOCK_HERDR"] ?? process.env["HERDR_BIN_PATH"] ?? "herdr";
 
 const run = (args: ReadonlyArray<string>, inherit = false): Effect.Effect<string, Error> =>
   Effect.async((resume) => {
@@ -35,6 +35,18 @@ const run = (args: ReadonlyArray<string>, inherit = false): Effect.Effect<string
       : Effect.fail(new Error(stderr.trim() || `herdr exited with status ${code ?? "unknown"}`))));
     return Effect.sync(() => child.kill());
   });
+
+export const openCreatePane = (): Effect.Effect<void, Error> => {
+  const args = [
+    "plugin", "pane", "open",
+    "--plugin", process.env["HERDR_PLUGIN_ID"] ?? "kubeflock",
+    "--entrypoint", "create",
+    "--focus",
+  ];
+  const workspace = process.env["HERDR_WORKSPACE_ID"];
+  if (workspace) args.push("--workspace", workspace);
+  return run(args).pipe(Effect.asVoid);
+};
 
 export const listMachines = (): Effect.Effect<ReadonlyArray<HerdrMachine>, Error> =>
   Effect.gen(function*() {
