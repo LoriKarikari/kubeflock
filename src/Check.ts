@@ -4,12 +4,10 @@
 // check never creates, patches, or deletes cluster state; permission probing
 // uses the ephemeral SelfSubjectAccessReview behind `kubectl auth can-i`.
 
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 import type { KubeTarget } from "./Config.js";
 import { classify, remediation, type Category } from "./Classify.js";
 import {
-  isKubectlError,
-  isTimeout,
   kubectlStderr,
   kubectlStdout,
   runKubectl,
@@ -21,7 +19,7 @@ export interface CheckResult {
   readonly name: string;
   readonly ok: boolean;
   readonly advisory?: boolean;
-  readonly category?: string;
+  readonly category?: Category;
   readonly message: string;
   readonly remediation?: string;
 }
@@ -118,13 +116,10 @@ const firstUseful = (...parts: Array<string>): string => {
   return "unknown error";
 };
 
-const classifiedResult = (name: string, action: string, stdout: string, err: unknown): CheckResult => {
-  const timedOut = isTimeout(err);
-  const stderr = isKubectlError(err) ? kubectlStderr(err) : "";
-  const cat = classify(stderr, timedOut);
-  const detail = isKubectlError(err)
-    ? firstUseful(stderr, kubectlStdout(err), err._tag === "KubectlSpawnError" ? err.cause : "kubectl failed")
-    : firstUseful(stdout, (err as Error)?.message ?? String(err));
+const classifiedResult = (name: string, action: string, err: KubectlErr): CheckResult => {
+  const stderr = kubectlStderr(err);
+  const cat = classify(stderr, err._tag === "KubectlTimeoutError");
+  const detail = firstUseful(stderr, kubectlStdout(err), err._tag === "KubectlSpawnError" ? err.cause : "kubectl failed");
   return fail(name, `could not ${action}: ${sanitizeLines(detail)}`, cat);
 };
 
@@ -144,8 +139,6 @@ const permArgs = (cfg: KubeTarget, req: string, p: Perm): Array<string> => {
   // would ask about a pod literally named exec instead.
   return p.subresource ? [...base, `--subresource=${p.subresource}`] : base;
 };
-
-const permShown = (p: Perm): string => (p.subresource ? `${p.resource}/${p.subresource}` : p.resource);
 
 const computeQuotaRe = /^(pods|cpu|memory|requests\.cpu|requests\.memory|limits\.cpu|limits\.memory|requests\.ephemeral-storage|limits\.ephemeral-storage)$/;
 const storageQuotaRe = /^(persistentvolumeclaims|requests\.storage)$/;
@@ -182,13 +175,9 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     action: string,
     args: ReadonlyArray<string>,
   ): Effect.Effect<{ out: string; err: CheckResult | null }> =>
-    Effect.matchEffect(run(args), {
-      onFailure: (err) =>
-        Effect.succeed({
-          out: isKubectlError(err) ? kubectlStdout(err) : "",
-          err: classifiedResult(name, action, isKubectlError(err) ? kubectlStdout(err) : "", err),
-        }),
-      onSuccess: (out) => Effect.succeed({ out, err: null }),
+    Effect.match(run(args), {
+      onFailure: (err) => ({ out: kubectlStdout(err), err: classifiedResult(name, action, err) }),
+      onSuccess: (out) => ({ out, err: null }),
     });
 
   return Effect.gen(function*() {
@@ -299,9 +288,9 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
       } else {
         const items = parsed.items ?? [];
         const names = items.map((i) => i.metadata?.name ?? "?").join(", ");
-        const keys = new Set(items.flatMap((i) => Object.keys(i.spec?.hard ?? {})));
-        const hasCompute = [...keys].some((k) => computeQuotaRe.test(k));
-        const hasStorage = [...keys].some((k) => storageQuotaRe.test(k));
+        const keys = [...new Set(items.flatMap((i) => Object.keys(i.spec?.hard ?? {})))];
+        const hasCompute = keys.some((k) => computeQuotaRe.test(k));
+        const hasStorage = keys.some((k) => storageQuotaRe.test(k));
         if (!hasCompute || !hasStorage) {
           const missing = [!hasCompute ? "compute (pods, cpu, memory)" : null, !hasStorage ? "storage" : null]
             .filter((s) => s !== null)
@@ -309,7 +298,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
           checks.push(
             fail(
               "budgets-quota",
-              `ResourceQuota ${names} sets no ${missing} budget (hard: ${[...keys].join(", ") || "empty"})`,
+              `ResourceQuota ${names} sets no ${missing} budget (hard: ${keys.join(", ") || "empty"})`,
               "missing-infrastructure",
             ),
           );
@@ -335,27 +324,25 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
 
     const permResults = yield* Effect.forEach(requiredPerms, (p) =>
       Effect.gen(function*() {
-        const shown = permShown(p);
+        const shown = p.subresource ? `${p.resource}/${p.subresource}` : p.resource;
         const name = `perm-${p.verb}-${shortResource(shown)}`;
-        const probed = yield* Effect.matchEffect(run(permArgs(cfg, req, p)), {
-          onFailure: (err) => Effect.succeed({ out: kubectlStdout(err), err }),
-          onSuccess: (out) => Effect.succeed({ out, err: null as KubectlErr | null }),
-        });
+        const probed = yield* Effect.either(run(permArgs(cfg, req, p)));
+        const out = Either.isLeft(probed) ? kubectlStdout(probed.left) : probed.right;
         // Read the answer before the exit code. kubectl prints no and
         // exits 1 on denial, so a failure carrying no means denied access,
         // not an unknown error.
-        const answer = probed.out.trim().toLowerCase();
+        const answer = out.trim().toLowerCase();
         if (answer === "yes") return ok(name, `can ${p.verb} ${shown}`);
-        if (answer === "no" || answer.startsWith("no ") || answer.startsWith("no -")) {
+        if (answer === "no" || answer.startsWith("no ")) {
           const scope = p.namespaced ? "namespace" : "cluster scope";
           const denied = fail(name, `cannot ${p.verb} ${shown} in ${scope}`, "denied");
           return p.advisory ? { ...denied, advisory: true } : denied;
         }
-        if (probed.err) {
-          const r = classifiedResult(name, `check permission ${p.verb} ${shown}`, probed.out, probed.err);
+        if (Either.isLeft(probed)) {
+          const r = classifiedResult(name, `check permission ${p.verb} ${shown}`, probed.left);
           return p.advisory ? { ...r, advisory: true } : r;
         }
-        const odd = fail(name, `unexpected permission answer for ${p.verb} ${shown}: "${sanitizeLines(probed.out)}"`, "unknown");
+        const odd = fail(name, `unexpected permission answer for ${p.verb} ${shown}: "${sanitizeLines(out)}"`, "unknown");
         return p.advisory ? { ...odd, advisory: true } : odd;
       }), { concurrency: 6 });
     checks.push(...permResults);

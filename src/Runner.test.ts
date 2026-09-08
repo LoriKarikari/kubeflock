@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
-import { isTimeout, runKubectl } from "./Runner.js";
+import { runKubectl } from "./Runner.js";
 
 const writeExe = (dir: string, name: string, body: string): string => {
   const p = Path.join(dir, name);
@@ -50,7 +50,7 @@ describe("runner", () => {
         }),
       );
       expect(err).not.toBeNull();
-      expect(isTimeout(err)).toBe(true);
+      expect(err?._tag).toBe("KubectlTimeoutError");
       expect(Date.now() - start).toBeLessThan(10000);
       // The helper must be gone: nothing may keep the OIDC lock.
       const pid = Number(readFileSync(childFile, "utf8").trim());

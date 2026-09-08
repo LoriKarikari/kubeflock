@@ -25,14 +25,9 @@ export class KubectlTimeoutError extends Data.TaggedError("KubectlTimeoutError")
 
 export type KubectlError = KubectlSpawnError | KubectlFailedError | KubectlTimeoutError;
 
-export const isKubectlError = (err: unknown): err is KubectlError =>
-  err instanceof KubectlSpawnError || err instanceof KubectlFailedError || err instanceof KubectlTimeoutError;
-
 export const kubectlStderr = (err: KubectlError): string => err._tag === "KubectlSpawnError" ? "" : err.stderr;
 
 export const kubectlStdout = (err: KubectlError): string => err._tag === "KubectlSpawnError" ? "" : err.stdout;
-
-export const isTimeout = (err: unknown): boolean => err instanceof KubectlTimeoutError;
 
 const binPath = (explicit?: string): string => explicit ?? process.env["KUBEFLOCK_KUBECTL"] ?? "kubectl";
 

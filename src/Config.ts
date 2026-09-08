@@ -78,8 +78,7 @@ export const save = (file: string, cfg: KubeTarget): Effect.Effect<void, ConfigE
     yield* fs.writeFileString(file, stringify(cfg)).pipe(
       Effect.mapError((e) => new ConfigIOError({ cause: `write kubeflock config "${file}": ${String(e)}` })),
     );
-    yield* Effect.tryPromise({
-      try: () => import("node:fs/promises").then((m) => m.chmod(file, 0o600)),
-      catch: (e) => new ConfigIOError({ cause: `chmod kubeflock config "${file}": ${(e as Error).message}` }),
-    });
+    yield* fs.chmod(file, 0o600).pipe(
+      Effect.mapError((e) => new ConfigIOError({ cause: `chmod kubeflock config "${file}": ${e.message}` })),
+    );
   });

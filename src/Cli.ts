@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NodeFileSystem, NodeRuntime } from "@effect/platform-node";
 import { runCheck, type CheckReport } from "./Check.js";
-import { defaultPath, load, save, validate } from "./Config.js";
+import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./Config.js";
 import { sanitizeLines } from "./Sanitize.js";
 import { kubectlStderr, kubectlStdout, runKubectl } from "./Runner.js";
 
@@ -79,20 +79,20 @@ const validateContext = (
   kubectlPath: string | undefined,
   kubeconfig: string | undefined,
   want: string,
-): Effect.Effect<void, Error> =>
+): Effect.Effect<void, ConfigInvalidError> =>
   Effect.gen(function*() {
     const out = yield* runKubectl(["config", "get-contexts", "-o", "name"], {
       kubectlPath,
       kubeconfig,
       timeoutMs: 15000,
     }).pipe(
-      Effect.mapError((e): Error => {
+      Effect.mapError((e) => {
         const raw = kubectlStderr(e) || kubectlStdout(e) || (e._tag === "KubectlSpawnError" ? e.cause : "kubectl failed");
-        return new Error(`could not read kubeconfig contexts: ${sanitizeLines(raw).split("\n")[0]?.slice(0, 200)}`);
+        return new ConfigInvalidError({ cause: `could not read kubeconfig contexts: ${sanitizeLines(raw).split("\n")[0]?.slice(0, 200)}` });
       }),
     );
     if (!out.split("\n").map((l) => l.trim()).includes(want)) {
-      return yield* Effect.fail(new Error(`context "${want}" not found in kubeconfig; list with: kubectl config get-contexts`));
+      return yield* Effect.fail(new ConfigInvalidError({ cause: `context "${want}" not found in kubeconfig; list with: kubectl config get-contexts` }));
     }
   });
 
@@ -106,19 +106,12 @@ interface GlobalOpts {
 // prerequisites, 2 usage or config error. NodeRuntime.runMain preserves
 // process.exitCode on success, and SIGINT/SIGTERM interrupt the Effect so
 // scope finalizers kill leftover kubectl groups before exit.
-const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, never, FileSystem.FileSystem> =>
+const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
     if (argv[0] === "show") {
       const rest = argv.slice(1);
       const output = flagValue(rest, "--output", "text");
-      const loaded = yield* load(g.configPath).pipe(
-        Effect.match({ onFailure: (e) => ({ failed: e.cause }) as const, onSuccess: (c) => ({ cfg: c }) as const }),
-      );
-      if ("failed" in loaded) {
-        console.error(`kubeflock: ${loaded.failed}`);
-        return 2;
-      }
-      const c = loaded.cfg;
+      const c = yield* load(g.configPath);
       if (output === "json") {
         console.log(JSON.stringify({ context: c.context, namespace: c.namespace, config: g.configPath }, null, 2));
       } else if (output === "text") {
@@ -135,33 +128,14 @@ const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<nu
       console.error("kubeflock: --context and --namespace are required");
       return 2;
     }
-    const cfg = { context: contextName, namespace };
-    const bad = yield* validate(cfg).pipe(
-      Effect.match({ onFailure: (e) => e.cause, onSuccess: () => null }),
-    );
-    if (bad) {
-      console.error(`kubeflock: ${bad}`);
-      return 2;
-    }
-    const ctxErr = yield* validateContext(g.kubectlPath, g.kubeconfig, contextName).pipe(
-      Effect.match({ onFailure: (e) => e.message, onSuccess: () => null }),
-    );
-    if (ctxErr) {
-      console.error(`kubeflock: ${ctxErr}`);
-      return 2;
-    }
-    const saveErr = yield* save(g.configPath, cfg).pipe(
-      Effect.match({ onFailure: (e) => e.cause, onSuccess: () => null }),
-    );
-    if (saveErr) {
-      console.error(`kubeflock: ${saveErr}`);
-      return 2;
-    }
+    const cfg = yield* validate({ context: contextName, namespace });
+    yield* validateContext(g.kubectlPath, g.kubeconfig, contextName);
+    yield* save(g.configPath, cfg);
     console.log(`saved target context="${cfg.context}" namespace="${cfg.namespace}" to ${g.configPath}`);
     return 0;
   });
 
-const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, never, FileSystem.FileSystem> =>
+const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
     const output = flagValue(argv, "--output", "text")!;
     let timeoutMs: number;
@@ -177,14 +151,8 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
       console.error(`kubeflock: unknown --output "${output}"`);
       return 2;
     }
-    const cfg = yield* load(g.configPath).pipe(
-      Effect.match({ onFailure: (e) => ({ failed: e.cause }) as const, onSuccess: (c) => ({ cfg: c }) as const }),
-    );
-    if ("failed" in cfg) {
-      console.error(`kubeflock: ${cfg.failed}`);
-      return 2;
-    }
-    const rep = yield* runCheck(cfg.cfg, {
+    const cfg = yield* load(g.configPath);
+    const rep = yield* runCheck(cfg, {
       kubectlPath: g.kubectlPath,
       kubeconfig: g.kubeconfig,
       requestTimeoutSec,
@@ -193,7 +161,7 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
         duration: timeoutMs,
         onTimeout: () => "overall-timeout" as const,
       }),
-      Effect.catchAll(() => Effect.succeed("overall-timeout" as const)),
+      Effect.catchAll(Effect.succeed),
     );
     if (rep === "overall-timeout") {
       console.error("kubeflock: check timed out. Clear any stuck login helper, then rerun with a longer --timeout.");
@@ -240,7 +208,12 @@ export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, Fi
     }
     console.error(`kubeflock: unknown cluster subcommand "${sub}"`);
     process.exitCode = 2;
-  });
+  }).pipe(
+    Effect.catchAll((error) => Effect.sync(() => {
+      console.error(`kubeflock: ${error.cause}`);
+      process.exitCode = 2;
+    })),
+  );
 
 const invokedAsMain = (): boolean => {
   if (process.argv[1] === undefined) return false;

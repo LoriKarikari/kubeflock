@@ -1,5 +1,4 @@
 export type Category =
-  | ""
   | "missing-infrastructure"
   | "denied"
   | "expired-authentication"
