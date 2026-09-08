@@ -42,7 +42,8 @@ const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
 
 // kubectl's request timeout does not bound credential helpers holding OIDC locks.
 // Scope cleanup kills the group, including helpers that ignore SIGTERM.
-export const runKubectl = (
+const runProcess = (
+  command: string,
   args: ReadonlyArray<string>,
   opts: RunOptions,
 ): Effect.Effect<string, KubectlError> => Effect.suspend(() => {
@@ -75,7 +76,7 @@ export const runKubectl = (
       Effect.sync(() => {
         const env: NodeJS.ProcessEnv = { ...process.env, ...opts.extraEnv };
         if (opts.kubeconfig) env["KUBECONFIG"] = opts.kubeconfig;
-        const child = spawn(binPath(opts.kubectlPath), [...args], { detached: true, env });
+        const child = spawn(command, [...args], { detached: true, env });
         pid = child.pid;
         return child;
       }),
@@ -95,3 +96,14 @@ export const runKubectl = (
     ),
   );
 });
+
+export const runKubectl = (
+  args: ReadonlyArray<string>,
+  opts: RunOptions,
+): Effect.Effect<string, KubectlError> => runProcess(binPath(opts.kubectlPath), args, opts);
+
+export const runCredentialHelper = (
+  command: string,
+  args: ReadonlyArray<string>,
+  opts: Omit<RunOptions, "kubectlPath" | "kubeconfig">,
+): Effect.Effect<string, KubectlError> => runProcess(command, args, { ...opts });
