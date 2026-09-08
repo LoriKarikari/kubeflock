@@ -23,6 +23,33 @@ describe("runner", () => {
     }
   });
 
+  it.each([1, 2])("isolates repeated executions with concurrency %i", async (concurrency) => {
+    const dir = mkdtempSync(Path.join(tmpdir(), "kf-run-"));
+    try {
+      const fake = writeExe(dir, "kubectl", "#!/bin/sh\necho hello-stdout\n");
+      const command = runKubectl([], { kubectlPath: fake, timeoutMs: 5000 });
+      const outputs = await Effect.runPromise(Effect.all([command, command], { concurrency }));
+      expect(outputs).toEqual(["hello-stdout\n", "hello-stdout\n"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not carry stderr into a later execution", async () => {
+    const dir = mkdtempSync(Path.join(tmpdir(), "kf-run-"));
+    try {
+      const fake = writeExe(dir, "kubectl", "#!/bin/sh\necho hello-stderr >&2\nexit 1\n");
+      const command = Effect.flip(runKubectl([], { kubectlPath: fake, timeoutMs: 5000 }));
+      const errors = await Effect.runPromise(Effect.all([command, command]));
+      expect(errors).toMatchObject([
+        { _tag: "KubectlFailedError", stderr: "hello-stderr\n", stdout: "", exitCode: 1 },
+        { _tag: "KubectlFailedError", stderr: "hello-stderr\n", stdout: "", exitCode: 1 },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports a missing binary as a spawn error", async () => {
     const err = await Effect.runPromise(
       Effect.match(runKubectl(["get", "pods"], { kubectlPath: "/nonexistent/kubectl", timeoutMs: 5000 }), {

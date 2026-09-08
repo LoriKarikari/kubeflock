@@ -50,7 +50,7 @@ const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
 export const runKubectl = (
   args: ReadonlyArray<string>,
   opts: RunOptions,
-): Effect.Effect<string, KubectlError> => {
+): Effect.Effect<string, KubectlError> => Effect.suspend(() => {
   let pid: number | undefined;
   let stderr = "";
   let stdout = "";
@@ -102,4 +102,4 @@ export const runKubectl = (
       }),
     ),
   );
-};
+});
