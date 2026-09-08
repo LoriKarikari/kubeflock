@@ -153,6 +153,7 @@ users:
     exec:
       apiVersion: client.authentication.k8s.io/v1
       command: ${credential}
+      env: null
       interactiveMode: Never
 `);
 });
@@ -190,13 +191,16 @@ it("reconciles connection failures, duplicate requests, Herdr actions, and repla
   expect((await invoke(["sandbox", "reconnect", "--kubeconfig", kubeconfig])).status).toBe(0);
   expect(JSON.parse(readFileSync(herdrState, "utf8")).addCount).toBe(1);
 
+  const manifest = readFileSync(join(root, "herdr-plugin.toml"), "utf8");
+  expect(manifest).toContain('command = ["node", "dist/Cli.js", "sandbox", "disconnect"]');
+  expect(manifest).toContain('command = ["node", "dist/Cli.js", "sandbox", "reconnect"]');
   const sleeper = spawn("sleep", ["30"]);
   writeFileSync(config, "invalid: [");
-  expect((await run("herdr", ["plugin", "action", "invoke", "kubeflock.sandbox-disconnect"], { KUBECONFIG: kubeconfig })).status).toBe(0);
+  expect((await invoke(["sandbox", "disconnect"])).status).toBe(0);
   expect(sleeper.exitCode).toBeNull();
   expect(JSON.parse(readFileSync(herdrState, "utf8")).selected).toBe("local");
   writeFileSync(config, "context: test\nnamespace: dev\n");
-  expect((await run("herdr", ["plugin", "action", "invoke", "kubeflock.sandbox-reconnect"], { KUBECONFIG: kubeconfig })).status).toBe(0);
+  expect((await invoke(["sandbox", "reconnect", "--kubeconfig", kubeconfig])).status).toBe(0);
   expect(sleeper.exitCode).toBeNull();
   sleeper.kill();
 
