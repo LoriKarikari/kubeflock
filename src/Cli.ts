@@ -56,8 +56,6 @@ export const parseDuration = (raw: string): number => {
   }
 };
 
-const defaultKubectl = (): string => process.env["KUBEFLOCK_KUBECTL"] ?? "kubectl";
-
 const printTextReport = (rep: CheckReport): void => {
   console.log(`Kubeflock cluster check: context="${rep.context}" namespace="${rep.namespace}"`);
   let nOk = 0;
@@ -99,7 +97,7 @@ const validateContext = (
 interface GlobalOpts {
   readonly configPath: string;
   readonly kubeconfig: string | undefined;
-  readonly kubectlPath: string;
+  readonly kubectlPath: string | undefined;
 }
 
 const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
@@ -190,7 +188,7 @@ export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, Fi
     const g: GlobalOpts = {
       configPath: flagValue(argv, "--config", defaultPath()),
       kubeconfig: flagValue(argv, "--kubeconfig") ?? process.env["KUBECONFIG"],
-      kubectlPath: flagValue(argv, "--kubectl", defaultKubectl()),
+      kubectlPath: flagValue(argv, "--kubectl"),
     };
     const sub = argv[1];
     if (sub === "config") {
