@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,6 +21,31 @@ describe("config round trip", () => {
   });
 });
 
+describe("load rejects malformed files", () => {
+  it.each([
+    ["empty file", ""],
+    ["null document", "null\n"],
+    ["numeric context", "context: 123\nnamespace: kubeflock-check\n"],
+    ["numeric namespace", "context: homelab\nnamespace: 456\n"],
+    ["array document", "- homelab\n"],
+    ["string document", "just a string\n"],
+  ])("%s", async (_label, body) => {
+    const dir = mkdtempSync(Path.join(tmpdir(), "kf-config-"));
+    try {
+      const file = Path.join(dir, "config.yaml");
+      await writeFile(file, body);
+      const tag = await Effect.runPromise(
+        Effect.match(Effect.provide(load(file), NodeFileSystem.layer), {
+          onFailure: (e) => e._tag,
+          onSuccess: () => "ok",
+        }),
+      );
+      expect(tag).toBe("ConfigInvalidError");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 describe("validate", () => {
   it.each([
     [{ context: "a", namespace: "b" }, true],

@@ -34,15 +34,23 @@ export const defaultPath = (): string => {
   return Path.join(base, "kubeflock", "config.yaml");
 };
 
-export const validate = (cfg: KubeTarget): Effect.Effect<KubeTarget, ConfigInvalidError> => {
-  if (!cfg.context) return Effect.fail(new ConfigInvalidError({ cause: "context is required" }));
-  if (!cfg.namespace) return Effect.fail(new ConfigInvalidError({ cause: "namespace is required" }));
-  if (cfg.namespace.length > 63 || !namespaceRe.test(cfg.namespace)) {
+export const validate = (cfg: unknown): Effect.Effect<KubeTarget, ConfigInvalidError> => {
+  if (typeof cfg !== "object" || cfg === null || Array.isArray(cfg)) {
+    return Effect.fail(new ConfigInvalidError({ cause: "config must be a mapping with context and namespace" }));
+  }
+  const { context, namespace } = cfg as { readonly context?: unknown; readonly namespace?: unknown };
+  if (typeof context !== "string" || context === "") {
+    return Effect.fail(new ConfigInvalidError({ cause: "context must be a non-empty string" }));
+  }
+  if (typeof namespace !== "string" || namespace === "") {
+    return Effect.fail(new ConfigInvalidError({ cause: "namespace must be a non-empty string" }));
+  }
+  if (namespace.length > 63 || !namespaceRe.test(namespace)) {
     return Effect.fail(
-      new ConfigInvalidError({ cause: `namespace "${cfg.namespace}" must be a DNS-1123 label` }),
+      new ConfigInvalidError({ cause: `namespace "${namespace}" must be a DNS-1123 label` }),
     );
   }
-  return Effect.succeed(cfg);
+  return Effect.succeed({ context, namespace });
 };
 
 export const load = (file: string): Effect.Effect<KubeTarget, ConfigError, FileSystem.FileSystem> =>
@@ -51,12 +59,11 @@ export const load = (file: string): Effect.Effect<KubeTarget, ConfigError, FileS
     const data = yield* fs.readFileString(file).pipe(
       Effect.mapError((e) => new ConfigIOError({ cause: `read kubeflock config "${file}": ${String(e)}` })),
     );
-    const parsed = yield* Effect.try({
-      try: () => parse(data) as Partial<KubeTarget>,
+    const parsed: unknown = yield* Effect.try({
+      try: () => parse(data),
       catch: (e) => new ConfigParseError({ cause: `parse kubeflock config "${file}": ${(e as Error).message}` }),
     });
-    const cfg: KubeTarget = { context: parsed.context ?? "", namespace: parsed.namespace ?? "" };
-    return yield* validate(cfg).pipe(
+    return yield* validate(parsed).pipe(
       Effect.mapError((e) => new ConfigInvalidError({ cause: `invalid kubeflock config "${file}": ${e.cause}` })),
     );
   });
