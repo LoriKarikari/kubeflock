@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeLines } from "./Sanitize.js";
+import { sanitizeLines } from "../src/Sanitize.js";
 
 describe("sanitize", () => {
   it("redacts tokens, codes, and JWTs", () => {

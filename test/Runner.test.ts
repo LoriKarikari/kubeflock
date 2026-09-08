@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runKubectl } from "./Runner.js";
+import { runKubectl } from "../src/Runner.js";
 
 const writeExe = (dir: string, name: string, body: string): string => {
   const p = Path.join(dir, name);

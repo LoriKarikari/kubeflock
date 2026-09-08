@@ -7,7 +7,7 @@
     "kubeflock": "dist/Cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "pretest": "npm run build",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings && npm run typecheck",
