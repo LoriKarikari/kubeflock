@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classify } from "../src/Classify.js";
+import { classify } from "../src/classify.js";
 
 describe("classify", () => {
   it.each([

@@ -1,8 +1,8 @@
 import { CoreV1Api, CustomObjectsApi, KubeConfig } from "@kubernetes/client-node";
 import { Effect, Either, Schema } from "effect";
-import type { KubeTarget } from "./Config.js";
-import type { SandboxIdentity } from "./ConnectionState.js";
-import { kubectlStderr, kubectlStdout, runCredentialHelper } from "./Runner.js";
+import type { KubeTarget } from "./config.js";
+import type { SandboxIdentity } from "./connection-state.js";
+import { kubectlStderr, kubectlStdout, runCredentialHelper } from "./runner.js";
 
 const sandboxSchema = Schema.Struct({
   metadata: Schema.Struct({

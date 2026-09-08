@@ -1,13 +1,13 @@
 import { Effect, Either, Option, Schema } from "effect";
-import type { KubeTarget } from "./Config.js";
-import { classify, remediation, type Category } from "./Classify.js";
+import type { KubeTarget } from "./config.js";
+import { classify, remediation, type Category } from "./classify.js";
 import {
   kubectlStderr,
   kubectlStdout,
   runKubectl,
   type KubectlError as KubectlErr,
-} from "./Runner.js";
-import { sanitizeLines } from "./Sanitize.js";
+} from "./runner.js";
+import { sanitizeLines } from "./sanitize.js";
 
 export interface CheckResult {
   readonly name: string;

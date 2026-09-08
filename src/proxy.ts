@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { loadConnection } from "./ConnectionState.js";
-import { resolveSandbox } from "./Kubernetes.js";
+import { loadConnection } from "./connection-state.js";
+import { resolveSandbox } from "./kubernetes.js";
 
 const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
   if (pid === undefined || process.platform === "win32") return;

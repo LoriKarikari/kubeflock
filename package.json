@@ -4,7 +4,7 @@
   "description": "Herdr agent environments on Kubernetes",
   "type": "module",
   "bin": {
-    "kubeflock": "dist/Cli.js"
+    "kubeflock": "dist/cli.js"
   },
   "scripts": {
     "build": "rm -rf dist && tsc",
@@ -12,7 +12,7 @@
     "test": "vitest run",
     "lint": "oxlint --deny-warnings && npm run typecheck",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "check": "node dist/Cli.js cluster check"
+    "check": "node dist/cli.js cluster check"
   },
   "engines": {
     "node": "^22.18.0 || >=24.0.0"

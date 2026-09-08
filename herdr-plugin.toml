@@ -18,25 +18,25 @@ id = "cluster-check"
 title = "Kubeflock: Check cluster target"
 description = "Check whether the configured Kubernetes context and namespace meet Kubeflock prerequisites."
 contexts = ["workspace", "pane"]
-command = ["node", "dist/Cli.js", "cluster", "check", "--output", "text"]
+command = ["node", "dist/cli.js", "cluster", "check", "--output", "text"]
 
 [[actions]]
 id = "cluster-config-show"
 title = "Kubeflock: Show cluster target"
 description = "Show the Kubernetes context and namespace configured for Kubeflock."
 contexts = ["workspace", "pane"]
-command = ["node", "dist/Cli.js", "cluster", "config", "show"]
+command = ["node", "dist/cli.js", "cluster", "config", "show"]
 
 [[actions]]
 id = "sandbox-reconnect"
 title = "Kubeflock: Reconnect sandbox"
 description = "Reconnect the saved sandbox without changing the current Herdr selection."
 contexts = ["workspace", "pane"]
-command = ["node", "dist/Cli.js", "sandbox", "reconnect"]
+command = ["node", "dist/cli.js", "sandbox", "reconnect"]
 
 [[actions]]
 id = "sandbox-disconnect"
 title = "Kubeflock: Disconnect sandbox"
 description = "Disconnect the saved sandbox while leaving its remote processes running."
 contexts = ["workspace", "pane"]
-command = ["node", "dist/Cli.js", "sandbox", "disconnect"]
+command = ["node", "dist/cli.js", "sandbox", "disconnect"]

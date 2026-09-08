@@ -5,7 +5,7 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultPath, load, save, validate } from "../src/Config.js";
+import { defaultPath, load, save, validate } from "../src/config.js";
 
 describe("config round trip", () => {
   it("saves and loads", async () => {

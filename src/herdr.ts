@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { Schema } from "effect";
-import type { Connection } from "./ConnectionState.js";
+import type { Connection } from "./connection-state.js";
 
 const machineSchema = Schema.Array(Schema.Struct({
   id: Schema.String,

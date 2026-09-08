@@ -2,18 +2,18 @@ import { Effect, Either } from "effect";
 import { access, realpath } from "node:fs/promises";
 import * as Os from "node:os";
 import * as Path from "node:path";
-import type { KubeTarget } from "./Config.js";
+import type { KubeTarget } from "./config.js";
 import {
   connectionPath,
   defaultStateDir,
   listConnections,
   saveConnection,
   type Connection,
-} from "./ConnectionState.js";
-import { disableMachine, ensureMachine } from "./Herdr.js";
-import { resolveSandbox } from "./Kubernetes.js";
-import { kubectlStderr, kubectlStdout, runKubectl } from "./Runner.js";
-import { ensureSshFiles, normalizeHostKey } from "./SSH.js";
+} from "./connection-state.js";
+import { disableMachine, ensureMachine } from "./herdr.js";
+import { resolveSandbox } from "./kubernetes.js";
+import { kubectlStderr, kubectlStdout, runKubectl } from "./runner.js";
+import { ensureSshFiles, normalizeHostKey } from "./ssh.js";
 
 export interface ConnectOptions {
   readonly name?: string;

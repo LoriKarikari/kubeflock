@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const root = join(import.meta.dirname, "..");
-const cli = join(root, "dist", "Cli.js");
+const cli = join(root, "dist", "cli.js");
 const dir = mkdtempSync(join(tmpdir(), "kubeflock-connection-"));
 const stateDir = join(dir, "state");
 const config = join(dir, "config.yaml");
@@ -192,8 +192,8 @@ it("reconciles connection failures, duplicate requests, Herdr actions, and repla
   expect(JSON.parse(readFileSync(herdrState, "utf8")).addCount).toBe(1);
 
   const manifest = readFileSync(join(root, "herdr-plugin.toml"), "utf8");
-  expect(manifest).toContain('command = ["node", "dist/Cli.js", "sandbox", "disconnect"]');
-  expect(manifest).toContain('command = ["node", "dist/Cli.js", "sandbox", "reconnect"]');
+  expect(manifest).toContain('command = ["node", "dist/cli.js", "sandbox", "disconnect"]');
+  expect(manifest).toContain('command = ["node", "dist/cli.js", "sandbox", "reconnect"]');
   const sleeper = spawn("sleep", ["30"]);
   writeFileSync(config, "invalid: [");
   expect((await invoke(["sandbox", "disconnect"])).status).toBe(0);

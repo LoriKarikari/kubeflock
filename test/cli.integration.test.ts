@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-const cli = fileURLToPath(new URL("../dist/Cli.js", import.meta.url));
+const cli = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
 let dir: string;
 let config: string;
 

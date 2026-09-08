@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import * as Path from "node:path";
-import type { Connection } from "./ConnectionState.js";
+import type { Connection } from "./connection-state.js";
 
 const atomicWrite = async (file: string, data: string, mode: number): Promise<void> => {
   await mkdir(Path.dirname(file), { recursive: true, mode: 0o700 });

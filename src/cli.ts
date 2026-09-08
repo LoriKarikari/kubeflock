@@ -4,13 +4,13 @@ import { FileSystem } from "@effect/platform";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NodeFileSystem, NodeRuntime } from "@effect/platform-node";
-import { runCheck, type CheckReport } from "./Check.js";
-import { connect, disconnect } from "./Connection.js";
-import { defaultStateDir } from "./ConnectionState.js";
-import { runProxy } from "./Proxy.js";
-import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./Config.js";
-import { sanitizeLines } from "./Sanitize.js";
-import { kubectlStderr, kubectlStdout, runKubectl } from "./Runner.js";
+import { runCheck, type CheckReport } from "./check.js";
+import { connect, disconnect } from "./connection.js";
+import { defaultStateDir } from "./connection-state.js";
+import { runProxy } from "./proxy.js";
+import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./config.js";
+import { sanitizeLines } from "./sanitize.js";
+import { kubectlStderr, kubectlStdout, runKubectl } from "./runner.js";
 
 export const version = "0.1.0";
 
