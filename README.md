@@ -6,7 +6,7 @@ Choose a Kubernetes context and namespace, then check the prerequisites from the
 
 ## Install
 
-You need Linux or macOS, kubectl, and either Node 22.18 or newer in the 22.x series, or Node 24 or newer.
+You need Linux or macOS, Herdr 0.9.0 or newer, kubectl, and either Node 22.18 or newer in the 22.x series, or Node 24 or newer.
 
 ```sh
 npm ci
