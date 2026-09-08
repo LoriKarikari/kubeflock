@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as Path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runCheck } from "../src/Check.js";
+import { runCheck } from "../src/check.js";
 
 const fakeKubectl = (dir: string, logPath: string): string => {
   const script = `#!/bin/sh

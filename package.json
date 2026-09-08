@@ -4,15 +4,15 @@
   "description": "Herdr agent environments on Kubernetes",
   "type": "module",
   "bin": {
-    "kubeflock": "dist/Cli.js"
+    "kubeflock": "dist/cli.js"
   },
   "scripts": {
     "build": "rm -rf dist && tsc",
     "pretest": "npm run build",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings && npm run typecheck",
-    "typecheck": "tsc --noEmit",
-    "check": "node dist/Cli.js cluster check"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "check": "node dist/cli.js cluster check"
   },
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
@@ -20,6 +20,7 @@
   "dependencies": {
     "@effect/platform": "^0.97.1",
     "@effect/platform-node": "^0.108.1",
+    "@kubernetes/client-node": "^2.0.0",
     "effect": "^3.22.1",
     "yaml": "^2.9.0"
   },

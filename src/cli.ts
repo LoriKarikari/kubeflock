@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NodeFileSystem, NodeRuntime } from "@effect/platform-node";
-import { runCheck, type CheckReport } from "./Check.js";
-import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./Config.js";
-import { sanitizeLines } from "./Sanitize.js";
-import { kubectlStderr, kubectlStdout, runKubectl } from "./Runner.js";
+import { runCheck, type CheckReport } from "./check.js";
+import { connect, disconnect } from "./connection.js";
+import { defaultStateDir } from "./connection-state.js";
+import { runProxy } from "./proxy.js";
+import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./config.js";
+import { sanitizeLines } from "./sanitize.js";
+import { kubectlStderr, kubectlStdout, runKubectl } from "./runner.js";
 
 export const version = "0.1.0";
 
@@ -17,12 +20,16 @@ Usage:
   kubeflock cluster config --context NAME --namespace NAME
   kubeflock cluster config show [--output text|json]
   kubeflock cluster check [--timeout 60s] [--output text|json]
+  kubeflock sandbox connect NAME --identity PATH
+  kubeflock sandbox reconnect [NAME]
+  kubeflock sandbox disconnect [NAME]
   kubeflock version
 
 Flags (each subcommand):
   --config PATH       config file (default $KUBEFLOCK_CONFIG or ~/.config/kubeflock/config.yaml)
   --kubeconfig PATH   kubeconfig file (default $KUBECONFIG or ~/.kube/config)
   --kubectl PATH      kubectl binary (default kubectl)
+  --state-dir PATH    connection state directory
 
 The saved context pins Kubeflock's target. Changing kubectl's current
 context never retargets Kubeflock; every check passes --context explicitly.`;
@@ -60,7 +67,9 @@ const printTextReport = (rep: CheckReport): void => {
   console.log(`Kubeflock cluster check: context="${rep.context}" namespace="${rep.namespace}"`);
   let nOk = 0;
   for (const c of rep.checks) {
-    const mark = c.ok ? "ok" : c.advisory ? "warn" : "FAIL";
+    let mark = "FAIL";
+    if (c.ok) mark = "ok";
+    else if (c.advisory) mark = "warn";
     console.log(`  [${mark}] ${c.name}: ${c.message}`);
     if (!c.ok && c.remediation) console.log(`         fix: ${c.remediation}`);
     if (!c.ok && c.category) console.log(`         category: ${c.category}`);
@@ -98,7 +107,15 @@ interface GlobalOpts {
   readonly configPath: string;
   readonly kubeconfig: string | undefined;
   readonly kubectlPath: string | undefined;
+  readonly stateDir: string;
 }
+
+class OperationError extends Data.TaggedError("OperationError")<{ readonly cause: string }> {}
+
+const operation = <A, E, R>(work: Effect.Effect<A, E, R>): Effect.Effect<A, OperationError, R> =>
+  Effect.mapError(work, (error) => new OperationError({
+    cause: sanitizeLines(error instanceof Error ? error.message : "operation failed"),
+  }));
 
 const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
@@ -169,6 +186,41 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
     return rep.ok ? 0 : 1;
   });
 
+const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError | OperationError, FileSystem.FileSystem> =>
+  Effect.gen(function*() {
+    const command = argv[0];
+    if (command === "proxy") {
+      const state = flagValue(argv.slice(1), "--state");
+      if (!state) {
+        console.error("kubeflock: sandbox proxy requires --state");
+        return 2;
+      }
+      return yield* operation(runProxy(state));
+    }
+    if (command !== "connect" && command !== "reconnect" && command !== "disconnect") {
+      console.error(`kubeflock: unknown sandbox subcommand "${command}"`);
+      return 2;
+    }
+    const name = argv[1]?.startsWith("-") ? undefined : argv[1];
+    if (command === "disconnect") {
+      const result = yield* operation(disconnect(name, g.stateDir));
+      console.log(`disconnected sandbox ${result.sandbox.namespace}/${result.sandbox.name}; remote processes are still running`);
+      return 0;
+    }
+    const cfg = yield* load(g.configPath);
+    const result = yield* operation(connect(cfg, {
+      name,
+      identityFile: flagValue(argv, "--identity"),
+      stateDir: g.stateDir,
+      kubeconfig: g.kubeconfig,
+      kubectl: g.kubectlPath,
+      nodePath: process.execPath,
+      cliPath: fileURLToPath(import.meta.url),
+    }));
+    console.log(`${command === "connect" ? "connected" : "reconnected"} sandbox ${result.sandbox.namespace}/${result.sandbox.name} as ${result.ssh.alias}`);
+    return 0;
+  });
+
 export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, FileSystem.FileSystem> =>
   Effect.gen(function*() {
     if (argv.length === 0 || argv.includes("--help") || argv[0] === "help" || argv[0] === "-h") {
@@ -180,16 +232,21 @@ export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, Fi
       console.log(`kubeflock ${version}`);
       return;
     }
-    if (argv[0] !== "cluster") {
+    if (argv[0] !== "cluster" && argv[0] !== "sandbox") {
       console.error(`kubeflock: unknown command "${argv[0]}"`);
       process.exitCode = 2;
       return;
     }
     const g: GlobalOpts = {
       configPath: flagValue(argv, "--config", defaultPath()),
-      kubeconfig: flagValue(argv, "--kubeconfig") ?? process.env["KUBECONFIG"],
+      kubeconfig: flagValue(argv, "--kubeconfig"),
       kubectlPath: flagValue(argv, "--kubectl"),
+      stateDir: flagValue(argv, "--state-dir", process.env["KUBEFLOCK_STATE_DIR"] ?? defaultStateDir()),
     };
+    if (argv[0] === "sandbox") {
+      process.exitCode = yield* cmdSandbox(argv.slice(1), g);
+      return;
+    }
     const sub = argv[1];
     if (sub === "config") {
       process.exitCode = yield* cmdConfig(argv.slice(2), g);
