@@ -19,7 +19,7 @@ const sandboxSchema = Schema.Struct({
 const execSchema = Schema.Struct({
   command: Schema.String,
   args: Schema.optional(Schema.Array(Schema.String)),
-  env: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String }))),
+  env: Schema.optional(Schema.NullOr(Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String })))),
 });
 
 const credentialSchema = Schema.Struct({
