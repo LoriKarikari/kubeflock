@@ -46,12 +46,6 @@ const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
   }
 };
 
-const firstLine = (s: string): string => {
-  const i = s.indexOf("\n");
-  const line = i >= 0 ? s.slice(0, i) : s;
-  return line.length > 300 ? line.slice(0, 300) : line;
-};
-
 // runKubectl executes kubectl in its own process group so credential-helper
 // descendants share the group and die with it. kubectl's --request-timeout
 // alone does not bound helpers holding the OIDC cache lock, so the Effect
@@ -64,10 +58,10 @@ export const runKubectl = (
 ): Effect.Effect<string, KubectlError> => {
   let pid: number | undefined;
   let stderr = "";
+  let stdout = "";
 
   const collect = (child: ChildProcess): Effect.Effect<string, KubectlFailedError | KubectlSpawnError> =>
     Effect.async<string, KubectlFailedError | KubectlSpawnError>((resume) => {
-      let stdout = "";
       child.stdout?.on("data", (d) => {
         stdout += d.toString();
       });
@@ -108,7 +102,7 @@ export const runKubectl = (
           // release follows with SIGKILL, so a helper that ignores TERM
           // cannot survive either way.
           killGroup(pid, "SIGTERM");
-          return new KubectlTimeoutError({ stderr, stdout: "" });
+          return new KubectlTimeoutError({ stderr, stdout });
         },
       }),
     ),

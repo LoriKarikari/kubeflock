@@ -85,7 +85,7 @@ const validateContext = (
       timeoutMs: 15000,
     }).pipe(
       Effect.mapError((e): Error => {
-        const raw = kubectlStderr(e) || kubectlStdout(e) || e.message;
+        const raw = kubectlStderr(e) || kubectlStdout(e) || (e._tag === "KubectlSpawnError" ? e.cause : "kubectl failed");
         return new Error(`could not read kubeconfig contexts: ${sanitizeLines(raw).split("\n")[0]?.slice(0, 200)}`);
       }),
     );
@@ -108,7 +108,7 @@ const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<nu
   Effect.gen(function*() {
     if (argv[0] === "show") {
       const rest = argv.slice(1);
-      const output = flagValue(rest, "--output", "text")!;
+      const output = flagValue(rest, "--output", "text");
       const loaded = yield* load(g.configPath).pipe(
         Effect.match({ onFailure: (e) => ({ failed: e.cause }) as const, onSuccess: (c) => ({ cfg: c }) as const }),
       );
@@ -165,8 +165,8 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
     let timeoutMs: number;
     let requestTimeoutSec: number;
     try {
-      timeoutMs = parseDuration(flagValue(argv, "--timeout", "60s")!);
-      requestTimeoutSec = Math.max(parseDuration(flagValue(argv, "--request-timeout", "10s")!) / 1000, 1);
+      timeoutMs = parseDuration(flagValue(argv, "--timeout", "60s"));
+      requestTimeoutSec = Math.max(parseDuration(flagValue(argv, "--request-timeout", "10s")) / 1000, 1);
     } catch (e) {
       console.error(`kubeflock: ${(e as Error).message}`);
       return 2;
@@ -223,7 +223,7 @@ export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, Fi
       return;
     }
     const g: GlobalOpts = {
-      configPath: flagValue(argv, "--config", defaultPath())!,
+      configPath: flagValue(argv, "--config", defaultPath()),
       kubeconfig: flagValue(argv, "--kubeconfig") ?? process.env["KUBECONFIG"],
       kubectlPath: flagValue(argv, "--kubectl", defaultKubectl()),
     };

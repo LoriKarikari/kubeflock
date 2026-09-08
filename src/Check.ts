@@ -122,7 +122,7 @@ const classifiedResult = (name: string, action: string, stdout: string, err: unk
   const stderr = isKubectlError(err) ? kubectlStderr(err) : "";
   const cat = classify(stderr, timedOut);
   const detail = isKubectlError(err)
-    ? firstUseful(stderr, kubectlStdout(err), err.message)
+    ? firstUseful(stderr, kubectlStdout(err), err._tag === "KubectlSpawnError" ? err.cause : "kubectl failed")
     : firstUseful(stdout, (err as Error)?.message ?? String(err));
   return fail(name, `could not ${action}: ${sanitizeLines(detail)}`, cat);
 };

@@ -23,6 +23,16 @@ describe("runner", () => {
     }
   });
 
+  it("reports a missing binary as a spawn error", async () => {
+    const err = await Effect.runPromise(
+      Effect.match(runKubectl(["get", "pods"], { kubectlPath: "/nonexistent/kubectl", timeoutMs: 5000 }), {
+        onFailure: (e) => e,
+        onSuccess: () => null,
+      }),
+    );
+    expect(err?._tag).toBe("KubectlSpawnError");
+  });
+
   it("kills a helper that ignores SIGTERM", async () => {
     const dir = mkdtempSync(Path.join(tmpdir(), "kf-run-"));
     try {
