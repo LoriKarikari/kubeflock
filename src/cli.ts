@@ -112,12 +112,10 @@ interface GlobalOpts {
 
 class OperationError extends Data.TaggedError("OperationError")<{ readonly cause: string }> {}
 
-const operation = <A>(work: () => Promise<A>): Effect.Effect<A, OperationError> => Effect.tryPromise({
-  try: work,
-  catch: (error) => new OperationError({
+const operation = <A, E, R>(work: Effect.Effect<A, E, R>): Effect.Effect<A, OperationError, R> =>
+  Effect.mapError(work, (error) => new OperationError({
     cause: sanitizeLines(error instanceof Error ? error.message : "operation failed"),
-  }),
-});
+  }));
 
 const cmdConfig = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
@@ -197,7 +195,7 @@ const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<n
         console.error("kubeflock: sandbox proxy requires --state");
         return 2;
       }
-      return yield* operation(() => runProxy(state));
+      return yield* operation(runProxy(state));
     }
     if (command !== "connect" && command !== "reconnect" && command !== "disconnect") {
       console.error(`kubeflock: unknown sandbox subcommand "${command}"`);
@@ -205,12 +203,12 @@ const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<n
     }
     const name = argv[1]?.startsWith("-") ? undefined : argv[1];
     if (command === "disconnect") {
-      const result = yield* operation(() => disconnect(name, g.stateDir));
+      const result = yield* operation(disconnect(name, g.stateDir));
       console.log(`disconnected sandbox ${result.sandbox.namespace}/${result.sandbox.name}; remote processes are still running`);
       return 0;
     }
     const cfg = yield* load(g.configPath);
-    const result = yield* operation(() => connect(cfg, {
+    const result = yield* operation(connect(cfg, {
       name,
       identityFile: flagValue(argv, "--identity"),
       stateDir: g.stateDir,

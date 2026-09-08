@@ -1,5 +1,5 @@
-import { Schema } from "effect";
-import { mkdir, readFile, readdir, rename, chmod, writeFile } from "node:fs/promises";
+import { FileSystem } from "@effect/platform";
+import { Effect, Schema } from "effect";
 import * as Os from "node:os";
 import * as Path from "node:path";
 
@@ -45,31 +45,43 @@ export const defaultStateDir = (): string => {
 
 export const connectionPath = (dir: string, uid: string): string => Path.join(dir, `${uid}.json`);
 
-export const loadConnection = async (file: string): Promise<Connection> => {
-  const raw: unknown = JSON.parse(await readFile(file, "utf8"));
-  return Schema.decodeUnknownSync(connectionSchema)(raw);
-};
+export const loadConnection = (file: string): Effect.Effect<Connection, Error, FileSystem.FileSystem> =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem;
+    const raw = yield* fs.readFileString(file);
+    return yield* Schema.decodeUnknown(Schema.parseJson(connectionSchema))(raw);
+  });
 
-export const listConnections = async (dir: string): Promise<ReadonlyArray<{ file: string; connection: Connection }>> => {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  }
-  return Promise.all(
-    names.filter((name) => name.endsWith(".json")).sort((left, right) => left.localeCompare(right)).map(async (name) => {
-      const file = Path.join(dir, name);
-      return { file, connection: await loadConnection(file) };
-    }),
-  );
-};
+export const listConnections = (
+  dir: string,
+): Effect.Effect<ReadonlyArray<{ file: string; connection: Connection }>, Error, FileSystem.FileSystem> =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem;
+    const names = yield* fs.readDirectory(dir).pipe(
+      Effect.catchIf(
+        (error) => error._tag === "SystemError" && error.reason === "NotFound",
+        () => Effect.succeed([]),
+      ),
+    );
+    return yield* Effect.forEach(
+      names.filter((name) => name.endsWith(".json")).sort((left, right) => left.localeCompare(right)),
+      (name) => {
+        const file = Path.join(dir, name);
+        return loadConnection(file).pipe(Effect.map((connection) => ({ file, connection })));
+      },
+      { concurrency: "unbounded" },
+    );
+  });
 
-export const saveConnection = async (file: string, connection: Connection): Promise<void> => {
-  await mkdir(Path.dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(connection, null, 2)}\n`, { mode: 0o600 });
-  await rename(temp, file);
-  await chmod(file, 0o600);
-};
+export const saveConnection = (
+  file: string,
+  connection: Connection,
+): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(Path.dirname(file), { recursive: true, mode: 0o700 });
+    const temp = `${file}.${process.pid}.tmp`;
+    yield* fs.writeFileString(temp, `${JSON.stringify(connection, null, 2)}\n`, { mode: 0o600 });
+    yield* fs.rename(temp, file);
+    yield* fs.chmod(file, 0o600);
+  });

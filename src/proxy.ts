@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { FileSystem } from "@effect/platform";
+import { Effect } from "effect";
 import { loadConnection } from "./connection-state.js";
 import { resolveSandbox } from "./kubernetes.js";
 
@@ -11,34 +13,45 @@ const killGroup = (pid: number | undefined, signal: NodeJS.Signals): void => {
   }
 };
 
-export const runProxy = async (stateFile: string): Promise<number> => {
-  const connection = await loadConnection(stateFile);
-  const resolved = await resolveSandbox(
-    { context: connection.sandbox.context, namespace: connection.sandbox.namespace },
-    connection.sandbox.name,
-    connection.kubeconfig ?? undefined,
-    connection.sandbox.uid,
+const relay = (command: string, args: ReadonlyArray<string>): Effect.Effect<number, Error> =>
+  Effect.acquireUseRelease(
+    Effect.try({
+      try: () => {
+        const child = spawn(command, [...args], { detached: process.platform !== "win32", stdio: "inherit" });
+        const terminate = (): void => killGroup(child.pid, "SIGTERM");
+        process.once("SIGINT", terminate);
+        process.once("SIGTERM", terminate);
+        return { child, terminate };
+      },
+      catch: (error) => error instanceof Error ? error : new Error("kubectl proxy failed"),
+    }),
+    ({ child }) => Effect.async<number, Error>((resume) => {
+      child.once("error", (error) => resume(Effect.fail(error)));
+      child.once("close", (code, signal) => resume(Effect.succeed(code ?? (signal ? 1 : 0))));
+    }),
+    ({ child, terminate }) => Effect.sync(() => {
+      process.off("SIGINT", terminate);
+      process.off("SIGTERM", terminate);
+      killGroup(child.pid, "SIGKILL");
+    }),
   );
-  const args = [
-    "--context", connection.sandbox.context,
-    "--namespace", connection.sandbox.namespace,
-    "exec", "-i", resolved.pod,
-    "-c", resolved.container,
-    "--", "socat", "STDIO", "TCP:127.0.0.1:2222",
-  ];
-  if (connection.kubeconfig) args.unshift("--kubeconfig", connection.kubeconfig);
-  const child = spawn(connection.kubectl, args, { detached: process.platform !== "win32", stdio: "inherit" });
-  const terminate = (): void => killGroup(child.pid, "SIGTERM");
-  process.once("SIGINT", terminate);
-  process.once("SIGTERM", terminate);
-  try {
-    return await new Promise<number>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
-    });
-  } finally {
-    process.off("SIGINT", terminate);
-    process.off("SIGTERM", terminate);
-    killGroup(child.pid, "SIGKILL");
-  }
-};
+
+export const runProxy = (stateFile: string): Effect.Effect<number, Error, FileSystem.FileSystem> =>
+  Effect.gen(function*() {
+    const connection = yield* loadConnection(stateFile);
+    const resolved = yield* resolveSandbox(
+      { context: connection.sandbox.context, namespace: connection.sandbox.namespace },
+      connection.sandbox.name,
+      connection.kubeconfig ?? undefined,
+      connection.sandbox.uid,
+    );
+    const args = [
+      "--context", connection.sandbox.context,
+      "--namespace", connection.sandbox.namespace,
+      "exec", "-i", resolved.pod,
+      "-c", resolved.container,
+      "--", "socat", "STDIO", "TCP:127.0.0.1:2222",
+    ];
+    if (connection.kubeconfig) args.unshift("--kubeconfig", connection.kubeconfig);
+    return yield* relay(connection.kubectl, args);
+  });
