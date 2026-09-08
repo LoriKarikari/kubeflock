@@ -13,6 +13,6 @@ describe("parseDuration", () => {
   });
 
   it("rejects garbage", () => {
-    expect(() => parseDuration("soon")).toThrow();
+    expect(() => parseDuration("soon")).toThrow('bad duration "soon"');
   });
 });

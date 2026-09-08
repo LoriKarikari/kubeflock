@@ -1,6 +1,7 @@
 import { defineConfig } from "oxlint";
 
 export default defineConfig({
+  plugins: ["eslint", "typescript", "unicorn", "oxc", "vitest"],
   ignorePatterns: [
     "dist/**",
     ".agent/**",
@@ -21,6 +22,10 @@ export default defineConfig({
     { name: "kubeflock-effect", specifier: "./tools/oxlint/effect/index.ts" },
   ],
   rules: {
+    "typescript/no-explicit-any": "error",
+    "vitest/no-focused-tests": "error",
+    "vitest/valid-expect": "error",
+    "vitest/no-conditional-expect": "off",
     "kubeflock/no-chained-type-assertions": "error",
     "kubeflock/no-conditional-empty-object-spread": "error",
     "kubeflock/no-known-value-widening": "error",
