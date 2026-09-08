@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { Data, Effect } from "effect";
-import { FileSystem } from "@effect/platform";
+import { FileSystem, Terminal } from "@effect/platform";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { NodeFileSystem, NodeRuntime } from "@effect/platform-node";
+import { NodeContext, NodeRuntime } from "@effect/platform-node";
 import { runCheck, type CheckReport } from "./check.js";
 import { connect, disconnect } from "./connection.js";
 import { defaultStateDir } from "./connection-state.js";
+import { openCreatePane } from "./herdr.js";
 import { runProxy } from "./proxy.js";
+import { createManagedSandbox, listManagedSandboxStatus } from "./sandbox.js";
 import { ConfigInvalidError, defaultPath, load, save, validate, type ConfigError } from "./config.js";
 import { sanitizeLines } from "./sanitize.js";
 import { kubectlStderr, kubectlStdout, runKubectl } from "./runner.js";
@@ -20,6 +22,8 @@ Usage:
   kubeflock cluster config --context NAME --namespace NAME
   kubeflock cluster config show [--output text|json]
   kubeflock cluster check [--timeout 60s] [--output text|json]
+  kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
+  kubeflock sandbox list [--output text|json]
   kubeflock sandbox connect NAME --identity PATH
   kubeflock sandbox reconnect [NAME]
   kubeflock sandbox disconnect [NAME]
@@ -186,9 +190,32 @@ const cmdCheck = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<num
     return rep.ok ? 0 : 1;
   });
 
-const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<number, ConfigError | OperationError, FileSystem.FileSystem> =>
+const cmdSandbox = (
+  argv: ReadonlyArray<string>,
+  g: GlobalOpts,
+): Effect.Effect<number, ConfigError | OperationError, FileSystem.FileSystem | Terminal.Terminal> =>
   Effect.gen(function*() {
     const command = argv[0];
+    if (command === "create-action") {
+      yield* operation(openCreatePane());
+      return 0;
+    }
+    if (command === "create-wizard") {
+      const terminal = yield* Terminal.Terminal;
+      yield* operation(terminal.display("Sandbox name: "));
+      const name = (yield* operation(terminal.readLine)).trim();
+      yield* operation(terminal.display("Approved template: "));
+      const template = (yield* operation(terminal.readLine)).trim();
+      yield* operation(terminal.display("SSH identity file: "));
+      const identity = (yield* operation(terminal.readLine)).trim();
+      yield* operation(terminal.display(`Create ${name} from ${template} with persistent home storage? [y/N] `));
+      const confirmed = (yield* operation(terminal.readLine)).trim().toLowerCase();
+      if (confirmed !== "y" && confirmed !== "yes") {
+        console.log("cancelled; no cluster resources were changed");
+        return 0;
+      }
+      return yield* cmdSandbox(["create", name, "--template", template, "--identity", identity], g);
+    }
     if (command === "proxy") {
       const state = flagValue(argv.slice(1), "--state");
       if (!state) {
@@ -197,11 +224,55 @@ const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<n
       }
       return yield* operation(runProxy(state));
     }
-    if (command !== "connect" && command !== "reconnect" && command !== "disconnect") {
+    if (command !== "create" && command !== "list" && command !== "connect" && command !== "reconnect" && command !== "disconnect") {
       console.error(`kubeflock: unknown sandbox subcommand "${command}"`);
       return 2;
     }
     const name = argv[1]?.startsWith("-") ? undefined : argv[1];
+    if (command === "list") {
+      const output = flagValue(argv, "--output", "text");
+      if (output !== "text" && output !== "json") {
+        console.error(`kubeflock: unknown --output "${output}"`);
+        return 2;
+      }
+      const cfg = yield* load(g.configPath);
+      const statuses = yield* operation(listManagedSandboxStatus(cfg, g.stateDir, g.kubeconfig));
+      if (output === "json") console.log(JSON.stringify(statuses, null, 2));
+      else if (statuses.length === 0) console.log("no Kubeflock sandboxes");
+      else for (const status of statuses) {
+        const detail = status.step ? ` (${status.step}: ${status.message ?? ""})` : "";
+        console.log(`${status.namespace}/${status.name}\t${status.state}${detail}`);
+      }
+      return 0;
+    }
+    if (command === "create") {
+      const template = flagValue(argv, "--template");
+      const identityFile = flagValue(argv, "--identity");
+      if (!name || !template || !identityFile) {
+        console.error("kubeflock: sandbox create requires NAME, --template, and --identity");
+        return 2;
+      }
+      let timeoutMs: number;
+      try {
+        timeoutMs = parseDuration(flagValue(argv, "--timeout", "5m"));
+      } catch (error) {
+        console.error(`kubeflock: ${error instanceof Error ? error.message : String(error)}`);
+        return 2;
+      }
+      const cfg = yield* load(g.configPath);
+      const created = yield* operation(createManagedSandbox(cfg, name, {
+        template,
+        identityFile,
+        timeoutMs,
+        stateDir: g.stateDir,
+        kubeconfig: g.kubeconfig,
+        kubectl: g.kubectlPath,
+        nodePath: process.execPath,
+        cliPath: fileURLToPath(import.meta.url),
+      }));
+      console.log(`ready sandbox ${created.name} from ${created.template}; home ${created.home.name} (${created.home.capacity}); connected as ${created.sshAlias}`);
+      return 0;
+    }
     if (command === "disconnect") {
       const result = yield* operation(disconnect(name, g.stateDir));
       console.log(`disconnected sandbox ${result.sandbox.namespace}/${result.sandbox.name}; remote processes are still running`);
@@ -221,7 +292,7 @@ const cmdSandbox = (argv: ReadonlyArray<string>, g: GlobalOpts): Effect.Effect<n
     return 0;
   });
 
-export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, FileSystem.FileSystem> =>
+export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, FileSystem.FileSystem | Terminal.Terminal> =>
   Effect.gen(function*() {
     if (argv.length === 0 || argv.includes("--help") || argv[0] === "help" || argv[0] === "-h") {
       console.log(usage());
@@ -275,5 +346,5 @@ const invokedAsMain = (): boolean => {
 };
 
 if (invokedAsMain()) {
-  NodeRuntime.runMain(Effect.provide(main(process.argv.slice(2)), NodeFileSystem.layer));
+  NodeRuntime.runMain(Effect.provide(main(process.argv.slice(2)), NodeContext.layer));
 }

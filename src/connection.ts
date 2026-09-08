@@ -17,6 +17,7 @@ import { ensureSshFiles, normalizeHostKey } from "./ssh.js";
 
 export interface ConnectOptions {
   readonly name?: string;
+  readonly expectedUid?: string;
   readonly identityFile?: string;
   readonly stateDir?: string;
   readonly kubeconfig?: string;
@@ -85,8 +86,9 @@ export const connect = (
       return yield* Effect.fail(new Error("the saved connection uses a different SSH identity file"));
     }
     const name = saved?.connection.sandbox.name ?? options.name!;
+    const expectedUid = saved?.connection.sandbox.uid ?? options.expectedUid;
     const paths = accessPaths(saved?.connection, options);
-    const resolved = yield* resolveSandbox(target, name, paths.kubeconfig ?? undefined, saved?.connection.sandbox.uid);
+    const resolved = yield* resolveSandbox(target, name, paths.kubeconfig ?? undefined, expectedUid);
     const currentPin = yield* pin(
       target.context,
       target.namespace,
