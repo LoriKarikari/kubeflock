@@ -1,0 +1,33 @@
+{
+  "name": "kubeflock",
+  "version": "0.1.0",
+  "description": "Herdr agent environments on Kubernetes",
+  "type": "module",
+  "bin": {
+    "kubeflock": "dist/Cli.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "lint": "oxlint --deny-warnings && npm run typecheck",
+    "typecheck": "tsc --noEmit",
+    "check": "node dist/Cli.js cluster check"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.97.1",
+    "@effect/platform-node": "^0.108.1",
+    "effect": "^3.22.1",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@oxlint/plugins": "1.82.0",
+    "@types/node": "^26.5.0",
+    "oxlint": "1.82.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}

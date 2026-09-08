@@ -1,0 +1,28 @@
+id = "kubeflock"
+name = "Kubeflock"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Herdr agent environments on Kubernetes (explicit context check first)"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["npm", "ci"]
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["npm", "run", "build"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "cluster-check"
+title = "Kubeflock: Check cluster target"
+description = "Check whether the configured Kubernetes context and namespace meet Kubeflock prerequisites."
+contexts = ["workspace", "pane"]
+command = ["node", "dist/Cli.js", "cluster", "check", "--output", "text"]
+
+[[actions]]
+id = "cluster-config-show"
+title = "Kubeflock: Show cluster target"
+description = "Show the Kubernetes context and namespace configured for Kubeflock."
+contexts = ["workspace", "pane"]
+command = ["node", "dist/Cli.js", "cluster", "config", "show"]
