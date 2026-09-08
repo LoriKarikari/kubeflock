@@ -1,0 +1,22 @@
+id = "kubeflock"
+name = "Kubeflock"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Herdr agent environments on Kubernetes (explicit context check first)"
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["go", "build", "-o", "kubeflock", "./cmd/kubeflock"]
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "cluster-check"
+title = "Kubeflock: Check cluster target"
+contexts = ["workspace"]
+command = ["./kubeflock", "cluster", "check", "--output", "text"]
+
+[[actions]]
+id = "cluster-config-show"
+title = "Kubeflock: Show cluster target"
+contexts = ["workspace"]
+command = ["./kubeflock", "cluster", "config", "show"]
