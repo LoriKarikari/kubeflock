@@ -67,7 +67,9 @@ const printTextReport = (rep: CheckReport): void => {
   console.log(`Kubeflock cluster check: context="${rep.context}" namespace="${rep.namespace}"`);
   let nOk = 0;
   for (const c of rep.checks) {
-    const mark = c.ok ? "ok" : c.advisory ? "warn" : "FAIL";
+    let mark = "FAIL";
+    if (c.ok) mark = "ok";
+    else if (c.advisory) mark = "warn";
     console.log(`  [${mark}] ${c.name}: ${c.message}`);
     if (!c.ok && c.remediation) console.log(`         fix: ${c.remediation}`);
     if (!c.ok && c.category) console.log(`         category: ${c.category}`);
@@ -113,7 +115,7 @@ class OperationError extends Data.TaggedError("OperationError")<{ readonly cause
 const operation = <A>(work: () => Promise<A>): Effect.Effect<A, OperationError> => Effect.tryPromise({
   try: work,
   catch: (error) => new OperationError({
-    cause: sanitizeLines(String(error)),
+    cause: sanitizeLines(error instanceof Error ? error.message : "operation failed"),
   }),
 });
 

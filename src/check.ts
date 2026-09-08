@@ -157,34 +157,21 @@ const shortResource = (r: string): string =>
     .replaceAll(".node.k8s.io", "")
     .replaceAll("/", "-");
 
-export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<CheckReport, never> => {
-  const req = `${opts.requestTimeoutSec ?? 10}s`;
-  const perCallMs = Math.max((opts.requestTimeoutSec ?? 10) * 1000 + 5000, 15000);
-  const run = (args: ReadonlyArray<string>): Effect.Effect<string, KubectlErr> =>
-    runKubectl(args, {
-      kubectlPath: opts.kubectlPath,
-      kubeconfig: opts.kubeconfig,
-      extraEnv: opts.extraEnv,
-      timeoutMs: perCallMs,
-    });
+interface Probe {
+  readonly out: string;
+  readonly err: CheckResult | null;
+}
 
-  const attempt = (
-    name: string,
-    action: string,
-    args: ReadonlyArray<string>,
-  ): Effect.Effect<{ out: string; err: CheckResult | null }> =>
-    Effect.match(run(args), {
-      onFailure: (err) => ({ out: kubectlStdout(err), err: classifiedResult(name, action, err) }),
-      onSuccess: (out) => ({ out, err: null }),
-    });
+type Attempt = (name: string, action: string, args: ReadonlyArray<string>) => Effect.Effect<Probe>;
+type Run = (args: ReadonlyArray<string>) => Effect.Effect<string, KubectlErr>;
 
-  return Effect.gen(function*() {
+const checkApis = (cfg: KubeTarget, req: string, attempt: Attempt): Effect.Effect<ReadonlyArray<CheckResult>> =>
+  Effect.gen(function*() {
     const checks: Array<CheckResult> = [];
-
     const connectivity = yield* attempt("api-connectivity", "reach the Kubernetes API with the saved context", baseArgs(cfg, req, ["api-versions"]));
-    const served: Set<string> | null = connectivity.err
+    const served = connectivity.err
       ? null
-      : new Set(connectivity.out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0));
+      : new Set(connectivity.out.split("\n").map((line) => line.trim()).filter(Boolean));
     checks.push(connectivity.err ?? ok("api-connectivity", "API reachable with saved context"));
 
     for (const group of [
@@ -207,142 +194,147 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
         checks.push(fail(group.name, `${group.display} is not served`, "missing-infrastructure"));
         continue;
       }
-      const r = yield* attempt(
+      const result = yield* attempt(
         group.name,
         `discover ${group.display}`,
         baseArgs(cfg, req, ["api-resources", `--api-group=${group.apiGroup}`, "-o", "name"]),
       );
-      if (r.err) {
-        checks.push(r.err);
+      if (result.err) {
+        checks.push(result.err);
         continue;
       }
-      const low = r.out.toLowerCase();
-      const missing = group.want.filter((w) => !low.includes(w));
-      checks.push(
-        missing.length > 0
-          ? fail(group.name, `${group.display} served but missing: ${missing.join(", ")}`, "missing-infrastructure")
-          : ok(group.name, `${group.display} served`),
+      const missing = group.want.filter((resource) => !result.out.toLowerCase().includes(resource));
+      checks.push(missing.length > 0
+        ? fail(group.name, `${group.display} served but missing: ${missing.join(", ")}`, "missing-infrastructure")
+        : ok(group.name, `${group.display} served`));
+    }
+    return checks;
+  });
+
+const checkRuntimeClass = (cfg: KubeTarget, req: string, attempt: Attempt): Effect.Effect<CheckResult> =>
+  Effect.gen(function*() {
+    const result = yield* attempt("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(cfg, req, ["get", "runtimeclass", "gvisor", "-o", "json"]));
+    if (result.err) return result.err;
+    const parsed = parseJson(result.out, runtimeClass);
+    if (parsed === null) return fail("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown");
+    const handler = parsed.handler ?? "";
+    return handler.toLowerCase().includes("runsc")
+      ? ok("runtimeclass-gvisor", `RuntimeClass gvisor present (handler ${handler})`)
+      : fail("runtimeclass-gvisor", `RuntimeClass gvisor handler is "${handler}", want runsc`, "missing-infrastructure");
+  });
+
+const checkStorage = (cfg: KubeTarget, req: string, attempt: Attempt): Effect.Effect<CheckResult> =>
+  Effect.gen(function*() {
+    const result = yield* attempt("storage", "list StorageClasses", baseArgs(cfg, req, ["get", "storageclass", "-o", "json"]));
+    if (result.err) return result.err;
+    const parsed = parseJson(result.out, storageClasses);
+    if (parsed === null) return fail("storage", "StorageClass list returned unreadable JSON", "unknown");
+    const items = parsed.items ?? [];
+    if (items.length === 0) return fail("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure");
+    const names = items.map((item) => item.metadata?.name ?? "?");
+    const defaultName = items.find((item) => item.metadata?.annotations?.["storageclass.kubernetes.io/is-default-class"] === "true")
+      ?.metadata?.name;
+    const defaultLabel = defaultName ? ` (default ${defaultName})` : "";
+    return ok("storage", `${names.length} StorageClass(es): ${names.join(", ")}${defaultLabel}`);
+  });
+
+const checkQuota = (cfg: KubeTarget, req: string, attempt: Attempt): Effect.Effect<CheckResult> =>
+  Effect.gen(function*() {
+    const result = yield* attempt("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(cfg, req, ["get", "resourcequota", "-o", "json"]));
+    if (result.err) return result.err;
+    const parsed = parseJson(result.out, resourceQuotas);
+    if (parsed === null) return fail("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown");
+    const items = parsed.items ?? [];
+    if (items.length === 0) {
+      return fail(
+        "budgets-quota",
+        "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart",
+        "missing-infrastructure",
       );
     }
+    const names = items.map((item) => item.metadata?.name ?? "?").join(", ");
+    const keys = [...new Set(items.flatMap((item) => Object.keys(item.spec?.hard ?? {})))];
+    const hasCompute = keys.some((key) => computeQuotaRe.test(key));
+    const hasStorage = keys.some((key) => storageQuotaRe.test(key));
+    if (hasCompute && hasStorage) return ok("budgets-quota", `ResourceQuota present: ${names}`);
+    const missing = [!hasCompute ? "compute (pods, cpu, memory)" : null, !hasStorage ? "storage" : null]
+      .filter((name) => name !== null)
+      .join(" and ");
+    return fail(
+      "budgets-quota",
+      `ResourceQuota ${names} sets no ${missing} budget (hard: ${keys.join(", ") || "empty"})`,
+      "missing-infrastructure",
+    );
+  });
 
-    const rc = yield* attempt("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(cfg, req, ["get", "runtimeclass", "gvisor", "-o", "json"]));
-    if (rc.err) {
-      checks.push(rc.err);
-    } else {
-      const parsed = parseJson(rc.out, runtimeClass);
-      if (parsed === null) {
-        checks.push(fail("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown"));
-      } else if (!String(parsed.handler ?? "").toLowerCase().includes("runsc")) {
-        checks.push(
-          fail("runtimeclass-gvisor", `RuntimeClass gvisor handler is "${String(parsed.handler ?? "")}", want runsc`, "missing-infrastructure"),
-        );
-      } else {
-        checks.push(ok("runtimeclass-gvisor", `RuntimeClass gvisor present (handler ${String(parsed.handler)})`));
-      }
+const checkLimits = (cfg: KubeTarget, req: string, attempt: Attempt): Effect.Effect<CheckResult> =>
+  Effect.gen(function*() {
+    const result = yield* attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(cfg, req, ["get", "limitrange", "-o", "json"]));
+    if (result.err) return { ...result.err, advisory: true };
+    const parsed = parseJson(result.out, limitRanges);
+    if (parsed === null) return { ...fail("budgets-limits", "LimitRange list returned unreadable JSON", "unknown"), advisory: true };
+    const count = (parsed.items ?? []).length;
+    return count === 0
+      ? { ...fail("budgets-limits", "no LimitRange in target namespace", "missing-infrastructure"), advisory: true }
+      : ok("budgets-limits", `${count} LimitRange(s) present`);
+  });
+
+const checkPermissions = (cfg: KubeTarget, req: string, run: Run): Effect.Effect<ReadonlyArray<CheckResult>> =>
+  Effect.forEach(requiredPerms, (permission) => Effect.gen(function*() {
+    const shown = permission.subresource ? `${permission.resource}/${permission.subresource}` : permission.resource;
+    const name = `perm-${permission.verb}-${shortResource(shown)}`;
+    const probed = yield* Effect.either(run(permArgs(cfg, req, permission)));
+    const out = Either.isLeft(probed) ? kubectlStdout(probed.left) : probed.right;
+    const answer = out.trim().toLowerCase();
+    if (answer === "yes") return ok(name, `can ${permission.verb} ${shown}`);
+    if (answer === "no" || answer.startsWith("no ")) {
+      const scope = permission.namespaced ? "namespace" : "cluster scope";
+      const denied = fail(name, `cannot ${permission.verb} ${shown} in ${scope}`, "denied");
+      return permission.advisory ? { ...denied, advisory: true } : denied;
     }
-
-    const sc = yield* attempt("storage", "list StorageClasses", baseArgs(cfg, req, ["get", "storageclass", "-o", "json"]));
-    if (sc.err) {
-      checks.push(sc.err);
-    } else {
-      const parsed = parseJson(sc.out, storageClasses);
-      if (parsed === null) {
-        checks.push(fail("storage", "StorageClass list returned unreadable JSON", "unknown"));
-      } else {
-        const items = parsed.items ?? [];
-        if (items.length === 0) {
-          checks.push(fail("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure"));
-        } else {
-          const names = items.map((i) => i.metadata?.name ?? "?");
-          const def = items.find((i) => i.metadata?.annotations?.["storageclass.kubernetes.io/is-default-class"] === "true")
-            ?.metadata?.name;
-          checks.push(ok("storage", `${names.length} StorageClass(es): ${names.join(", ")}${def ? ` (default ${def})` : ""}`));
-        }
-      }
+    if (Either.isLeft(probed)) {
+      const result = classifiedResult(name, `check permission ${permission.verb} ${shown}`, probed.left);
+      return permission.advisory ? { ...result, advisory: true } : result;
     }
+    const unexpected = fail(name, `unexpected permission answer for ${permission.verb} ${shown}: "${sanitizeLines(out)}"`, "unknown");
+    return permission.advisory ? { ...unexpected, advisory: true } : unexpected;
+  }), { concurrency: 6 });
 
-    const ns = yield* attempt("namespace", `read namespace "${cfg.namespace}"`, baseArgs(cfg, req, ["get", "namespace", cfg.namespace, "-o", "json"]));
-    checks.push(ns.err ?? ok("namespace", `namespace "${cfg.namespace}" exists`));
+export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<CheckReport, never> => {
+  const req = `${opts.requestTimeoutSec ?? 10}s`;
+  const perCallMs = Math.max((opts.requestTimeoutSec ?? 10) * 1000 + 5000, 15000);
+  const run: Run = (args) => runKubectl(args, {
+    kubectlPath: opts.kubectlPath,
+    kubeconfig: opts.kubeconfig,
+    extraEnv: opts.extraEnv,
+    timeoutMs: perCallMs,
+  });
+  const attempt: Attempt = (name, action, args) => Effect.match(run(args), {
+    onFailure: (error) => ({ out: kubectlStdout(error), err: classifiedResult(name, action, error) }),
+    onSuccess: (out) => ({ out, err: null }),
+  });
 
-    const quota = yield* attempt("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(cfg, req, ["get", "resourcequota", "-o", "json"]));
-    if (quota.err) {
-      checks.push(quota.err);
-    } else {
-      const parsed = parseJson(quota.out, resourceQuotas);
-      if (parsed === null) {
-        checks.push(fail("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown"));
-      } else if ((parsed.items ?? []).length === 0) {
-        checks.push(
-          fail(
-            "budgets-quota",
-            "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart",
-            "missing-infrastructure",
-          ),
-        );
-      } else {
-        const items = parsed.items ?? [];
-        const names = items.map((i) => i.metadata?.name ?? "?").join(", ");
-        const keys = [...new Set(items.flatMap((i) => Object.keys(i.spec?.hard ?? {})))];
-        const hasCompute = keys.some((k) => computeQuotaRe.test(k));
-        const hasStorage = keys.some((k) => storageQuotaRe.test(k));
-        if (!hasCompute || !hasStorage) {
-          const missing = [!hasCompute ? "compute (pods, cpu, memory)" : null, !hasStorage ? "storage" : null]
-            .filter((s) => s !== null)
-            .join(" and ");
-          checks.push(
-            fail(
-              "budgets-quota",
-              `ResourceQuota ${names} sets no ${missing} budget (hard: ${keys.join(", ") || "empty"})`,
-              "missing-infrastructure",
-            ),
-          );
-        } else {
-          checks.push(ok("budgets-quota", `ResourceQuota present: ${names}`));
-        }
-      }
-    }
-
-    const limits = yield* attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(cfg, req, ["get", "limitrange", "-o", "json"]));
-    if (limits.err) {
-      checks.push({ ...limits.err, advisory: true });
-    } else {
-      const parsed = parseJson(limits.out, limitRanges);
-      if (parsed === null) {
-        checks.push({ ...fail("budgets-limits", "LimitRange list returned unreadable JSON", "unknown"), advisory: true });
-      } else if ((parsed.items ?? []).length === 0) {
-        checks.push({ ...fail("budgets-limits", "no LimitRange in target namespace", "missing-infrastructure"), advisory: true });
-      } else {
-        checks.push(ok("budgets-limits", `${(parsed.items ?? []).length} LimitRange(s) present`));
-      }
-    }
-
-    const permResults = yield* Effect.forEach(requiredPerms, (p) =>
-      Effect.gen(function*() {
-        const shown = p.subresource ? `${p.resource}/${p.subresource}` : p.resource;
-        const name = `perm-${p.verb}-${shortResource(shown)}`;
-        const probed = yield* Effect.either(run(permArgs(cfg, req, p)));
-        const out = Either.isLeft(probed) ? kubectlStdout(probed.left) : probed.right;
-        // kubectl prints "no" and exits 1 for denied access.
-        const answer = out.trim().toLowerCase();
-        if (answer === "yes") return ok(name, `can ${p.verb} ${shown}`);
-        if (answer === "no" || answer.startsWith("no ")) {
-          const scope = p.namespaced ? "namespace" : "cluster scope";
-          const denied = fail(name, `cannot ${p.verb} ${shown} in ${scope}`, "denied");
-          return p.advisory ? { ...denied, advisory: true } : denied;
-        }
-        if (Either.isLeft(probed)) {
-          const r = classifiedResult(name, `check permission ${p.verb} ${shown}`, probed.left);
-          return p.advisory ? { ...r, advisory: true } : r;
-        }
-        const odd = fail(name, `unexpected permission answer for ${p.verb} ${shown}: "${sanitizeLines(out)}"`, "unknown");
-        return p.advisory ? { ...odd, advisory: true } : odd;
-      }), { concurrency: 6 });
-    checks.push(...permResults);
-
+  return Effect.gen(function*() {
+    const api = yield* checkApis(cfg, req, attempt);
+    const runtime = yield* checkRuntimeClass(cfg, req, attempt);
+    const storage = yield* checkStorage(cfg, req, attempt);
+    const namespace = yield* attempt("namespace", `read namespace "${cfg.namespace}"`, baseArgs(cfg, req, ["get", "namespace", cfg.namespace, "-o", "json"]));
+    const quota = yield* checkQuota(cfg, req, attempt);
+    const limits = yield* checkLimits(cfg, req, attempt);
+    const permissions = yield* checkPermissions(cfg, req, run);
+    const checks = [
+      ...api,
+      runtime,
+      storage,
+      namespace.err ?? ok("namespace", `namespace "${cfg.namespace}" exists`),
+      quota,
+      limits,
+      ...permissions,
+    ];
     return {
       context: cfg.context,
       namespace: cfg.namespace,
-      ok: checks.every((c) => c.ok || c.advisory),
+      ok: checks.every((check) => check.ok || check.advisory),
       checks,
       checkedAt: (opts.now?.() ?? new Date()).toISOString(),
     } satisfies CheckReport;

@@ -10,8 +10,9 @@ const atomicWrite = async (file: string, data: string, mode: number): Promise<vo
   await chmod(file, mode);
 };
 
-const sshQuote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-const shellQuote = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`;
+const escapedQuote = String.raw`\"`;
+const sshQuote = (value: string): string => `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', escapedQuote)}"`;
+const shellQuote = (value: string): string => "'" + value.replaceAll("'", `'"'"'`) + "'";
 
 export const normalizeHostKey = (raw: string): string => {
   const fields = raw.trim().split(/\s+/);

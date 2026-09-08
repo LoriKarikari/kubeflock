@@ -1,16 +1,27 @@
-const reBearer = /bearer\s+[A-Za-z0-9\-._~+/=]+/gi;
-const reTokenAssign =
-  /((?:id[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization[_-]?code|auth[_-]?code)\s*[:=]\s*"?)[^"\s;,}]+/gi;
-const reCodeParam = /([?&](?:code|token|id_token|access_token|refresh_token)="?)[^"&\s;,}]+/gi;
-const reJsonCred = /("[^"]*(?:code|token|secret)"\s*:\s*"?)[^"\s\],}]+/gi;
-const reJwt = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
+const reBearer = /bearer\s+[a-z0-9._~+/=-]+/gi;
+const reIdTokenAssign = /(id[_-]?token\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reAccessTokenAssign = /(access[_-]?token\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reRefreshTokenAssign = /(refresh[_-]?token\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reSecretAssign = /(client[_-]?secret\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reAuthCodeAssign = /((?:authorization|auth)[_-]?code\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reCodeParam = /([?&](?:code|token)="?)[^"&\s;,}]+/gi;
+const reTokenParam = /([?&](?:id_token|access_token|refresh_token)="?)[^"&\s;,}]+/gi;
+const reJsonValue = /("[^"]+"\s*:\s*"?)[^"\s\],}]+/gi;
+const credentialWords = ["code", "token", "secret"];
+const reJwt = /\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}/g;
 
 const redactOne = (s: string): string =>
   s
     .replace(reBearer, "bearer [redacted]")
-    .replace(reTokenAssign, "$1[redacted]")
+    .replace(reIdTokenAssign, "$1[redacted]")
+    .replace(reAccessTokenAssign, "$1[redacted]")
+    .replace(reRefreshTokenAssign, "$1[redacted]")
+    .replace(reSecretAssign, "$1[redacted]")
+    .replace(reAuthCodeAssign, "$1[redacted]")
     .replace(reCodeParam, "$1[redacted]")
-    .replace(reJsonCred, "$1[redacted]")
+    .replace(reTokenParam, "$1[redacted]")
+    .replace(reJsonValue, (match, key: string) =>
+      credentialWords.some((word) => key.toLowerCase().includes(word)) ? `${key}[redacted]` : match)
     .replace(reJwt, "[redacted-jwt]");
 
 export const sanitizeLines = (s: string): string => {
@@ -25,5 +36,5 @@ export const sanitizeLines = (s: string): string => {
     }
     out.push(r);
   }
-  return out.join("\n").replace(/^\n+|\n+$/g, "");
+  return out.join("\n").trim();
 };

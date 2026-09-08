@@ -10,7 +10,10 @@ export type Category =
 const reConn =
   /connection refused|no such host|dial tcp|i\/o timeout|context deadline exceeded|unable to connect|network (is )?unreachable|tls handshake (timeout|failure)|temporary failure in name resolution|no route to host|connection (timed out|reset)/i;
 const reAuth =
-  /unauthorized|invalid bearer token|id token (has )?expired|token (has )?expired|reauthentication required|reauth|login required|interactive.*auth|authorization (code|url)|invalid_grant|unknown user|no auth provider|exec credential.*(fail|error).*auth|oidc.*expir/i;
+  /unauthorized|invalid bearer token|id token (has )?expired|token (has )?expired|reauthentication required|reauth|login required|interactive.*auth/i;
+const reAuthHelper =
+  /authorization (code|url)|invalid_grant|unknown user|no auth provider|exec credential.*(fail|error).*auth|oidc.*expir/i;
+const isAuthError = (message: string): boolean => reAuth.test(message) || reAuthHelper.test(message);
 const reDeny = /forbidden|cannot (get|list|create|watch|delete|patch|update).*forbidden|is forbidden:|User .* cannot/i;
 const reMiss =
   /not found|NotFound|the server doesn'?t have a resource type|no matches for kind|resource mapping not found|could not find the requested resource|not served|no resources found|not installed/i;
@@ -20,13 +23,13 @@ const reCfg =
 export const classify = (stderr: string, timedOut: boolean): Category => {
   if (timedOut) {
     if (reConn.test(stderr)) return "connectivity";
-    if (reAuth.test(stderr)) return "expired-authentication";
+    if (isAuthError(stderr)) return "expired-authentication";
     return "timeout";
   }
   const s = stderr.trim();
   if (!s) return "unknown";
   if (reDeny.test(s)) return "denied";
-  if (reAuth.test(s)) return "expired-authentication";
+  if (isAuthError(s)) return "expired-authentication";
   if (reConn.test(s)) return "connectivity";
   if (reCfg.test(s)) return "configuration";
   if (reMiss.test(s)) return "missing-infrastructure";

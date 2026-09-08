@@ -59,7 +59,7 @@ export const listConnections = async (dir: string): Promise<ReadonlyArray<{ file
     throw error;
   }
   return Promise.all(
-    names.filter((name) => name.endsWith(".json")).sort().map(async (name) => {
+    names.filter((name) => name.endsWith(".json")).sort((left, right) => left.localeCompare(right)).map(async (name) => {
       const file = Path.join(dir, name);
       return { file, connection: await loadConnection(file) };
     }),

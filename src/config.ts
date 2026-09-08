@@ -54,7 +54,9 @@ export const load = (file: string): Effect.Effect<KubeTarget, ConfigError, FileS
     );
     const parsed: unknown = yield* Effect.try({
       try: () => parse(data),
-      catch: (e) => new ConfigParseError({ cause: `parse kubeflock config "${file}": ${String(e)}` }),
+      catch: (error) => new ConfigParseError({
+        cause: `parse kubeflock config "${file}": ${error instanceof Error ? error.message : "unknown parser error"}`,
+      }),
     });
     const target = yield* Schema.decodeUnknown(targetSchema)(parsed).pipe(
       Effect.mapError(() => new ConfigInvalidError({
