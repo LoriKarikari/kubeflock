@@ -42,7 +42,7 @@ Exit code is 0 when every required check passes and 1 when a prerequisite fails.
 
 The check only reads. It runs `api-versions`, `api-resources`, `get`, and `auth can-i` through kubectl with your saved `--context` on every call. It never creates, patches, or deletes anything. Permission probes use `auth can-i`, which asks the API for a yes or no and keeps nothing.
 
-It looks at API reachability with the saved context, the served Sandbox and Sandbox extension APIs, RuntimeClass `gvisor` with a runsc handler, StorageClasses and the default, namespace existence with ResourceQuotas and LimitRanges, and the RBAC the later sandbox operations need.
+It looks at API reachability with the saved context, the served Sandbox API versions, RuntimeClass `gvisor` with a runsc handler, StorageClasses and the default, namespace existence with ResourceQuotas covering compute and storage budgets plus LimitRanges, and the RBAC the later sandbox operations need.
 
 Failures fall into groups so you know what to do next. Missing parts, denied RBAC, expired login, broken network, bad config, and timeouts each get their own message and fix. The output redacts tokens and auth codes. Complete OIDC login in a terminal instead of pasting codes into logs.
 

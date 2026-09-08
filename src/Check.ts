@@ -45,6 +45,7 @@ export interface CheckOptions {
 interface Perm {
   readonly verb: string;
   readonly resource: string;
+  readonly subresource?: string;
   readonly namespaced: boolean;
   readonly advisory: boolean;
 }
@@ -67,8 +68,8 @@ const requiredPerms: ReadonlyArray<Perm> = [
   { verb: "list", resource: "sandboxwarmpools.extensions.agents.x-k8s.io", namespaced: true, advisory: false },
   { verb: "get", resource: "pods", namespaced: true, advisory: false },
   { verb: "list", resource: "pods", namespaced: true, advisory: false },
-  { verb: "create", resource: "pods/exec", namespaced: true, advisory: false },
-  { verb: "get", resource: "pods/log", namespaced: true, advisory: false },
+  { verb: "create", resource: "pods", subresource: "exec", namespaced: true, advisory: false },
+  { verb: "get", resource: "pods", subresource: "log", namespaced: true, advisory: false },
   { verb: "get", resource: "persistentvolumeclaims", namespaced: true, advisory: false },
   { verb: "list", resource: "persistentvolumeclaims", namespaced: true, advisory: false },
   { verb: "get", resource: "resourcequotas", namespaced: true, advisory: false },
@@ -135,6 +136,25 @@ const parseJson = <T>(raw: string): T | null => {
   }
 };
 
+const permArgs = (cfg: KubeTarget, req: string, p: Perm): Array<string> => {
+  const base = p.namespaced
+    ? namespacedArgs(cfg, req, ["auth", "can-i", p.verb, p.resource])
+    : baseArgs(cfg, req, ["auth", "can-i", p.verb, p.resource]);
+  // Subresources ride on --subresource. A TYPE/NAME argument like pods/exec
+  // would ask about a pod literally named exec instead.
+  return p.subresource ? [...base, `--subresource=${p.subresource}`] : base;
+};
+
+const permShown = (p: Perm): string => (p.subresource ? `${p.resource}/${p.subresource}` : p.resource);
+
+const computeQuotaRe = /^(pods|cpu|memory|requests\.cpu|requests\.memory|limits\.cpu|limits\.memory|requests\.ephemeral-storage|limits\.ephemeral-storage)$/;
+const storageQuotaRe = /^(persistentvolumeclaims|requests\.storage)$/;
+
+interface QuotaItem {
+  readonly metadata?: { readonly name?: string };
+  readonly spec?: { readonly hard?: Record<string, string> };
+}
+
 const shortResource = (r: string): string =>
   r
     .replaceAll(".agents.x-k8s.io", "")
@@ -175,22 +195,33 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     const checks: Array<CheckResult> = [];
 
     const connectivity = yield* attempt("api-connectivity", "reach the Kubernetes API with the saved context", baseArgs(cfg, req, ["api-versions"]));
+    // Served versions come from the same discovery output. A cluster serving
+    // only alpha versions must not report v1beta1 as served.
+    const served: Set<string> | null = connectivity.err
+      ? null
+      : new Set(connectivity.out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0));
     checks.push(connectivity.err ?? ok("api-connectivity", "API reachable with saved context"));
 
     for (const group of [
       {
         name: "agents-api",
         apiGroup: "agents.x-k8s.io",
+        version: "v1beta1",
         want: ["sandboxes"],
         display: "Sandbox API agents.x-k8s.io/v1beta1",
       },
       {
         name: "extensions-api",
         apiGroup: "extensions.agents.x-k8s.io",
+        version: "v1beta1",
         want: ["sandboxclaims", "sandboxtemplates", "sandboxwarmpools"],
         display: "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1",
       },
     ]) {
+      if (served !== null && !served.has(`${group.apiGroup}/${group.version}`)) {
+        checks.push(fail(group.name, `${group.display} is not served`, "missing-infrastructure"));
+        continue;
+      }
       const r = yield* attempt(
         group.name,
         `discover ${group.display}`,
@@ -254,7 +285,7 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
     if (quota.err) {
       checks.push(quota.err);
     } else {
-      const parsed = parseJson<{ items?: Array<{ metadata?: { name?: string } }> }>(quota.out);
+      const parsed = parseJson<{ items?: Array<QuotaItem> }>(quota.out);
       if (parsed === null) {
         checks.push(fail("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown"));
       } else if ((parsed.items ?? []).length === 0) {
@@ -266,7 +297,25 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
           ),
         );
       } else {
-        checks.push(ok("budgets-quota", `ResourceQuota present: ${(parsed.items ?? []).map((i) => i.metadata?.name ?? "?").join(", ")}`));
+        const items = parsed.items ?? [];
+        const names = items.map((i) => i.metadata?.name ?? "?").join(", ");
+        const keys = new Set(items.flatMap((i) => Object.keys(i.spec?.hard ?? {})));
+        const hasCompute = [...keys].some((k) => computeQuotaRe.test(k));
+        const hasStorage = [...keys].some((k) => storageQuotaRe.test(k));
+        if (!hasCompute || !hasStorage) {
+          const missing = [!hasCompute ? "compute (pods, cpu, memory)" : null, !hasStorage ? "storage" : null]
+            .filter((s) => s !== null)
+            .join(" and ");
+          checks.push(
+            fail(
+              "budgets-quota",
+              `ResourceQuota ${names} sets no ${missing} budget (hard: ${[...keys].join(", ") || "empty"})`,
+              "missing-infrastructure",
+            ),
+          );
+        } else {
+          checks.push(ok("budgets-quota", `ResourceQuota present: ${names}`));
+        }
       }
     }
 
@@ -286,20 +335,27 @@ export const runCheck = (cfg: KubeTarget, opts: CheckOptions): Effect.Effect<Che
 
     const permResults = yield* Effect.forEach(requiredPerms, (p) =>
       Effect.gen(function*() {
-        const args = p.namespaced
-          ? namespacedArgs(cfg, req, ["auth", "can-i", p.verb, p.resource])
-          : baseArgs(cfg, req, ["auth", "can-i", p.verb, p.resource]);
-        const name = `perm-${p.verb}-${shortResource(p.resource)}`;
-        const r = yield* attempt(name, `check permission ${p.verb} ${p.resource}`, args);
-        if (r.err) return p.advisory ? { ...r.err, advisory: true } : r.err;
-        const answer = r.out.trim().toLowerCase();
-        if (answer.includes("yes")) return ok(name, `can ${p.verb} ${p.resource}`);
-        if (answer.includes("no")) {
+        const shown = permShown(p);
+        const name = `perm-${p.verb}-${shortResource(shown)}`;
+        const probed = yield* Effect.matchEffect(run(permArgs(cfg, req, p)), {
+          onFailure: (err) => Effect.succeed({ out: kubectlStdout(err), err }),
+          onSuccess: (out) => Effect.succeed({ out, err: null as KubectlErr | null }),
+        });
+        // Read the answer before the exit code. kubectl prints no and
+        // exits 1 on denial, so a failure carrying no means denied access,
+        // not an unknown error.
+        const answer = probed.out.trim().toLowerCase();
+        if (answer === "yes") return ok(name, `can ${p.verb} ${shown}`);
+        if (answer === "no" || answer.startsWith("no ") || answer.startsWith("no -")) {
           const scope = p.namespaced ? "namespace" : "cluster scope";
-          const denied = fail(name, `cannot ${p.verb} ${p.resource} in ${scope}`, "denied");
+          const denied = fail(name, `cannot ${p.verb} ${shown} in ${scope}`, "denied");
           return p.advisory ? { ...denied, advisory: true } : denied;
         }
-        const odd = fail(name, `unexpected permission answer for ${p.verb} ${p.resource}: "${sanitizeLines(r.out)}"`, "unknown");
+        if (probed.err) {
+          const r = classifiedResult(name, `check permission ${p.verb} ${shown}`, probed.out, probed.err);
+          return p.advisory ? { ...r, advisory: true } : r;
+        }
+        const odd = fail(name, `unexpected permission answer for ${p.verb} ${shown}: "${sanitizeLines(probed.out)}"`, "unknown");
         return p.advisory ? { ...odd, advisory: true } : odd;
       }), { concurrency: 6 });
     checks.push(...permResults);

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { NodeFileSystem, NodeRuntime } from "@effect/platform-node";
 import { runCheck, type CheckReport } from "./Check.js";
 import { defaultPath, load, save, validate } from "./Config.js";
@@ -240,7 +242,15 @@ export const main = (argv: ReadonlyArray<string>): Effect.Effect<void, never, Fi
     process.exitCode = 2;
   });
 
-const isMain = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+const invokedAsMain = (): boolean => {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+};
+
+if (invokedAsMain()) {
   NodeRuntime.runMain(Effect.provide(main(process.argv.slice(2)), NodeFileSystem.layer));
 }

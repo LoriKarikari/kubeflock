@@ -4,8 +4,9 @@
 
 const reBearer = /bearer\s+[A-Za-z0-9\-._~+/=]+/gi;
 const reTokenAssign =
-  /((?:id[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization[_-]?code|auth[_-]?code)\s*[:=]\s*)[^\s;,}"]+/gi;
-const reCodeParam = /([?&](?:code|token|id_token|access_token|refresh_token)=)[^&\s;,}"]+/gi;
+  /((?:id[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization[_-]?code|auth[_-]?code)\s*[:=]\s*"?)[^"\s;,}]+/gi;
+const reCodeParam = /([?&](?:code|token|id_token|access_token|refresh_token)="?)[^"&\s;,}]+/gi;
+const reJsonCred = /("[^"]*(?:code|token|secret)"\s*:\s*"?)[^"\s\],}]+/gi;
 const reJwt = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g;
 
 const redactOne = (s: string): string =>
@@ -13,6 +14,7 @@ const redactOne = (s: string): string =>
     .replace(reBearer, "bearer [redacted]")
     .replace(reTokenAssign, "$1[redacted]")
     .replace(reCodeParam, "$1[redacted]")
+    .replace(reJsonCred, "$1[redacted]")
     .replace(reJwt, "[redacted-jwt]");
 
 export const sanitizeLines = (s: string): string => {
