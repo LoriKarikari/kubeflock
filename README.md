@@ -6,7 +6,7 @@ This repo starts with the cluster check. You pick an explicit context and namesp
 
 ## Install
 
-You need Linux or macOS, Node 20 or newer, and kubectl.
+You need Linux or macOS, kubectl, and either Node 22.18 or newer in the 22.x series, or Node 24 or newer.
 
 ```sh
 npm ci
@@ -56,11 +56,16 @@ Failures fall into groups so you know what to do next. Missing parts, denied RBA
 
 `cluster check` passes `--request-timeout` to each kubectl call. A separate process deadline bounds stalled credential helpers, and `--timeout` bounds the whole check. Cleanup kills each call's process group, including helpers that ignore SIGTERM.
 
-## Tests
+## Development checks
 
 ```sh
+npm run lint
 npm test
 ```
+
+`npm run lint` runs Oxlint with the vendored anti-slop rules, then TypeScript type checking. `npm run typecheck` runs the type checker alone. The TypeScript plugin setup requires the Node versions listed above.
+
+The rule source and update policy are documented in [tools/oxlint/README.md](tools/oxlint/README.md).
 
 `npm test` builds the CLI, then runs unit and subprocess tests with fake kubectl executables and temporary config files. Tests cover linked entry points, config validation, context pinning, API versions, quotas, RBAC, redaction, and process cleanup. They also check that probes use only permitted kubectl commands.
 

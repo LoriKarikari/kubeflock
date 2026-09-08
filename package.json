@@ -10,11 +10,12 @@
     "build": "tsc",
     "pretest": "npm run build",
     "test": "vitest run",
-    "lint": "tsc --noEmit",
+    "lint": "oxlint --deny-warnings && npm run typecheck",
+    "typecheck": "tsc --noEmit",
     "check": "node dist/Cli.js cluster check"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^22.18.0 || >=24.0.0"
   },
   "dependencies": {
     "@effect/platform": "^0.97.1",
@@ -23,7 +24,9 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.82.0",
     "@types/node": "^26.5.0",
+    "oxlint": "1.82.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   }
