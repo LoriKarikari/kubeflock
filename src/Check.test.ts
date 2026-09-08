@@ -21,22 +21,31 @@ if [ -n "$EXPECTED_CONTEXT" ]; then
 fi
 case "$*" in
   *"api-versions"*)
+    if [ -n "$ALPHA_ONLY" ]; then
+      echo "v1"; echo "agents.x-k8s.io/v1alpha1"; echo "extensions.agents.x-k8s.io/v1alpha1"; exit 0
+    fi
     echo "v1"; echo "agents.x-k8s.io/v1beta1"; echo "extensions.agents.x-k8s.io/v1beta1"; exit 0 ;;
   *"auth can-i"*)
-    if [ -n "$DENY_ALL" ]; then echo "no"; exit 0; fi
+    if [ -n "$DENY_ALL" ]; then echo "no"; exit 1; fi
     echo "yes"; exit 0 ;;
   *"api-resources"*"extensions.agents.x-k8s.io"*)
     echo "sandboxclaims"; echo "sandboxtemplates"; echo "sandboxwarmpools"; exit 0 ;;
   *"api-resources"*"agents.x-k8s.io"*)
     echo "sandboxes"; exit 0 ;;
   *"get runtimeclass"*)
+    if [ -n "$TOKEN_LEAK" ]; then
+      echo 'access_token="REPORT_TOKEN_XYZ"' >&2; exit 1
+    fi
     echo '{"metadata":{"name":"gvisor"},"handler":"runsc"}'; exit 0 ;;
   *"get storageclass"*)
     echo '{"items":[{"metadata":{"name":"longhorn","annotations":{"storageclass.kubernetes.io/is-default-class":"true"}},"provisioner":"driver.longhorn.io"}]}'; exit 0 ;;
   *"get namespace"*)
     echo '{"metadata":{"name":"ns"}}'; exit 0 ;;
   *"get resourcequota"*)
-    echo '{"items":[{"metadata":{"name":"quota"}}]}'; exit 0 ;;
+    if [ -n "$CONFIGMAP_ONLY" ]; then
+      echo '{"items":[{"metadata":{"name":"thin"},"spec":{"hard":{"count/configmaps":"5"}}}]}'; exit 0
+    fi
+    echo '{"items":[{"metadata":{"name":"quota"},"spec":{"hard":{"pods":"1","requests.cpu":"1","requests.memory":"1Gi","requests.storage":"1Gi","persistentvolumeclaims":"1"}}}]}'; exit 0 ;;
   *"get limitrange"*)
     echo '{"items":[{}]}'; exit 0 ;;
   *"config get-contexts"*)
@@ -88,6 +97,45 @@ describe("permissions", () => {
     for (const c of report.checks) {
       expect(c.message).not.toContain("Bearer");
       expect(c.message).not.toContain("eyJ");
+    }
+  });
+
+  it("probes exec and log as subresources, not named pods", async () => {
+    const { log } = await runWithFake({});
+    expect(log).toContain("auth can-i create pods --subresource=exec");
+    expect(log).toContain("auth can-i get pods --subresource=log");
+    expect(log).not.toContain("pods/exec");
+    expect(log).not.toContain("pods/log");
+  });
+});
+
+describe("served versions", () => {
+  it("fails when only alpha versions are served", async () => {
+    const { report } = await runWithFake({ ALPHA_ONLY: "1" });
+    expect(report.ok).toBe(false);
+    for (const name of ["agents-api", "extensions-api"]) {
+      const found = report.checks.find((c) => c.name === name);
+      expect(found?.ok).toBe(false);
+      expect(found?.category).toBe("missing-infrastructure");
+    }
+  });
+});
+
+describe("budgets", () => {
+  it("fails a quota with no compute or storage", async () => {
+    const { report } = await runWithFake({ CONFIGMAP_ONLY: "1" });
+    expect(report.ok).toBe(false);
+    const quota = report.checks.find((c) => c.name === "budgets-quota");
+    expect(quota?.ok).toBe(false);
+    expect(quota?.category).toBe("missing-infrastructure");
+  });
+});
+
+describe("credential redaction", () => {
+  it("keeps quoted tokens out of the report", async () => {
+    const { report } = await runWithFake({ TOKEN_LEAK: "1" });
+    for (const c of report.checks) {
+      expect(c.message).not.toContain("REPORT_TOKEN_XYZ");
     }
   });
 });
