@@ -1,8 +1,8 @@
 # Kubeflock
 
-Kubeflock gives Herdr users agent work environments on Kubernetes.
+Kubeflock is a Herdr plugin for checking whether a Kubernetes cluster is ready for agent work environments.
 
-This repo starts with the cluster check. You pick an explicit context and namespace, then run a read-only check before anything else gets created.
+Choose a Kubernetes context and namespace, then check the prerequisites from the CLI or Herdr. Kubeflock currently configures and checks the target. It does not create sandboxes.
 
 ## Install
 
@@ -42,7 +42,7 @@ Exit codes are 0 when every required check passes, 1 for failed prerequisites or
 
 ## What the check does
 
-The check runs `api-versions`, `api-resources`, `get`, and `auth can-i` through kubectl with your saved `--context` on every call. It does not change persistent cluster resources. Permission probes use transient SelfSubjectAccessReviews through `auth can-i`.
+The check uses your saved context and namespace. It does not change persistent cluster resources.
 
 It checks the following prerequisites:
 
@@ -54,26 +54,8 @@ It checks the following prerequisites:
 
 Failures fall into groups so you know what to do next. Missing parts, denied RBAC, expired login, broken network, bad config, and timeouts each get their own message and fix. The output redacts tokens and auth codes. Complete OIDC login in a terminal instead of pasting codes into logs.
 
-`cluster check` passes `--request-timeout` to each kubectl call. A separate process deadline bounds stalled credential helpers, and `--timeout` bounds the whole check. Cleanup kills each call's process group, including helpers that ignore SIGTERM.
-
-## Development checks
+Use `--timeout` to limit the whole check and `--request-timeout` to limit individual Kubernetes requests.
 
 ```sh
-npm run lint
-npm test
+node dist/Cli.js cluster check --timeout 60s --request-timeout 10s
 ```
-
-`npm run lint` runs Oxlint with the Kubeflock lint rules, then TypeScript type checking. `npm run typecheck` runs the type checker alone. The TypeScript plugin setup requires the Node versions listed above.
-
-The rule source and update policy are documented in [tools/oxlint/README.md](tools/oxlint/README.md).
-
-`npm test` builds the CLI, then runs unit and subprocess tests with fake kubectl executables and temporary config files. Tests cover linked entry points, config validation, context pinning, API versions, quotas, RBAC, redaction, and process cleanup. They also check that probes use only permitted kubectl commands.
-
-## Code map
-
-- `src/Config.ts` loads, validates, and saves the target.
-- `src/Runner.ts` runs kubectl with process deadlines and cleanup.
-- `src/Classify.ts` groups failures and supplies remediation text.
-- `src/Sanitize.ts` redacts credentials from diagnostics.
-- `src/Check.ts` runs probes and builds the report.
-- `src/Cli.ts` handles flags, output, and exit codes.
