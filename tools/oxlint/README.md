@@ -1,6 +1,6 @@
-# Vendored anti-slop rules
+# Kubeflock lint rules
 
-`anti-slop/` comes from [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop), commit `e8c4880471b23ab7f216fba7b27d173a6ef07d4c`. It contains the installer skill's plugin assets and the upstream MIT license. The rule source is unchanged.
+The rules in this directory come from [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop), commit `e8c4880471b23ab7f216fba7b27d173a6ef07d4c`. The upstream MIT license is preserved. Plugin names are adapted for Kubeflock. Rule implementations are unchanged.
 
 `oxlint.config.ts` enables all generic rules and the Effect rule group. The Effect rule checks relative service-constructor imports, not package aliases. Generated output and the vendored plugin are excluded from linting.
 

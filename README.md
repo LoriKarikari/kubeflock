@@ -63,7 +63,7 @@ npm run lint
 npm test
 ```
 
-`npm run lint` runs Oxlint with the vendored anti-slop rules, then TypeScript type checking. `npm run typecheck` runs the type checker alone. The TypeScript plugin setup requires the Node versions listed above.
+`npm run lint` runs Oxlint with the Kubeflock lint rules, then TypeScript type checking. `npm run typecheck` runs the type checker alone. The TypeScript plugin setup requires the Node versions listed above.
 
 The rule source and update policy are documented in [tools/oxlint/README.md](tools/oxlint/README.md).
 

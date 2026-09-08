@@ -4,7 +4,7 @@ import { noServiceConstructorImportsRule } from "./rules/no-service-constructor-
 
 /** Opt-in Oxlint rules for Effect service and Layer architecture. */
 const antiSlopEffectPlugin = eslintCompatPlugin({
-	meta: { name: "anti-slop-effect" },
+	meta: { name: "kubeflock-effect" },
 	rules: {
 		"no-service-constructor-imports": noServiceConstructorImportsRule,
 	},
