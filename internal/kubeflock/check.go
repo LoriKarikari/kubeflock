@@ -15,6 +15,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
+const (
+	extensionsAPIGroup            = "extensions.agents.x-k8s.io"
+	missingInfrastructureCategory = "missing-infrastructure"
+	runtimeClassCheckName         = "runtimeclass-gvisor"
+	quotaCheckName                = "budgets-quota"
+	limitsCheckName               = "budgets-limits"
+)
+
 type globalOptions struct {
 	ConfigPath string
 	Kubeconfig string
@@ -49,10 +57,10 @@ func (c accessCheck) qualified() string {
 
 var requiredAccess = []accessCheck{
 	{Name: "perm-get-sandboxes", Verb: "get", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
-	{Name: "perm-list-sandboxclaims", Verb: "list", Group: "extensions.agents.x-k8s.io", Resource: "sandboxclaims", Namespaced: true},
-	{Name: "perm-create-sandboxclaims", Verb: "create", Group: "extensions.agents.x-k8s.io", Resource: "sandboxclaims", Namespaced: true},
-	{Name: "perm-get-sandboxtemplates", Verb: "get", Group: "extensions.agents.x-k8s.io", Resource: "sandboxtemplates", Namespaced: true},
-	{Name: "perm-list-sandboxwarmpools", Verb: "list", Group: "extensions.agents.x-k8s.io", Resource: "sandboxwarmpools", Namespaced: true},
+	{Name: "perm-list-sandboxclaims", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
+	{Name: "perm-create-sandboxclaims", Verb: "create", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
+	{Name: "perm-get-sandboxtemplates", Verb: "get", Group: extensionsAPIGroup, Resource: "sandboxtemplates", Namespaced: true},
+	{Name: "perm-list-sandboxwarmpools", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxwarmpools", Namespaced: true},
 	{Name: "perm-list-pods", Verb: "list", Resource: "pods", Namespaced: true},
 	{Name: "perm-create-pods-exec", Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
 	{Name: "perm-get-persistentvolumeclaims", Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
@@ -135,7 +143,7 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 	online := connectivity == nil
 	for _, expectation := range expectedAPIGroups {
 		if online && !served.Has(expectation.Group+"/v1beta1") {
-			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", "missing-infrastructure"))
+			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", missingInfrastructureCategory))
 			continue
 		}
 		checks = append(checks, probe(
@@ -147,14 +155,14 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 	}
 
 	checks = append(checks,
-		probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, requestTimeoutArg, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck),
+		probe(runtimeClassCheckName, "read RuntimeClass gvisor", baseArgs(target, requestTimeoutArg, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck),
 		probe("storage", "list StorageClasses", baseArgs(target, requestTimeoutArg, "get", "storageclass", "-o", "json"), storageCheck),
 		probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, requestTimeoutArg, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
 			return okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))
 		}),
-		probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "resourcequota", "-o", "json"), quotaCheck),
+		probe(quotaCheckName, "read ResourceQuotas in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "resourcequota", "-o", "json"), quotaCheck),
 	)
-	out, failure := attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "limitrange", "-o", "json"))
+	out, failure := attempt(limitsCheckName, "read LimitRanges in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "limitrange", "-o", "json"))
 	limits := limitsCheck(out)
 	if failure != nil {
 		limits = *failure
@@ -192,7 +200,7 @@ var expectedAPIGroups = []apiGroupExpectation{
 	},
 	{
 		Check: "extensions-api",
-		Group: "extensions.agents.x-k8s.io",
+		Group: extensionsAPIGroup,
 		Label: "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1",
 		Resources: []string{
 			"sandboxclaims",
@@ -211,7 +219,7 @@ func (expectation apiGroupExpectation) check(out string) CheckResult {
 		}
 	}
 	if len(missing) != 0 {
-		return failedCheck(expectation.Check, expectation.Label+" served but missing: "+strings.Join(missing, ", "), "missing-infrastructure")
+		return failedCheck(expectation.Check, expectation.Label+" served but missing: "+strings.Join(missing, ", "), missingInfrastructureCategory)
 	}
 	return okCheck(expectation.Check, expectation.Label+" served")
 }
@@ -221,12 +229,12 @@ func runtimeClassCheck(out string) CheckResult {
 		Handler string `json:"handler"`
 	}
 	if json.Unmarshal([]byte(out), &value) != nil {
-		return failedCheck("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown")
+		return failedCheck(runtimeClassCheckName, "RuntimeClass gvisor returned unreadable JSON", "unknown")
 	}
 	if !strings.Contains(strings.ToLower(value.Handler), "runsc") {
-		return failedCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler), "missing-infrastructure")
+		return failedCheck(runtimeClassCheckName, fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler), missingInfrastructureCategory)
 	}
-	return okCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler))
+	return okCheck(runtimeClassCheckName, fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler))
 }
 
 type storageClass struct {
@@ -244,7 +252,7 @@ func storageCheck(out string) CheckResult {
 		return failedCheck("storage", "StorageClass list returned unreadable JSON", "unknown")
 	}
 	if len(value.Items) == 0 {
-		return failedCheck("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure")
+		return failedCheck("storage", "no StorageClasses available for sandbox homes", missingInfrastructureCategory)
 	}
 	names := make([]string, len(value.Items))
 	label := ""
@@ -285,10 +293,10 @@ func quotaCheck(raw string) CheckResult {
 		Items []resourceQuota `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
-		return failedCheck("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown")
+		return failedCheck(quotaCheckName, "ResourceQuota list returned unreadable JSON", "unknown")
 	}
 	if len(value.Items) == 0 {
-		return failedCheck("budgets-quota", "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", "missing-infrastructure")
+		return failedCheck(quotaCheckName, "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", missingInfrastructureCategory)
 	}
 	names := make([]string, len(value.Items))
 	seen := sets.New[string]()
@@ -301,7 +309,7 @@ func quotaCheck(raw string) CheckResult {
 	hasCompute := seen.Intersection(computeQuotaKeys).Len() != 0
 	hasStorage := seen.Intersection(storageQuotaKeys).Len() != 0
 	if hasCompute && hasStorage {
-		return okCheck("budgets-quota", "ResourceQuota present: "+strings.Join(names, ", "))
+		return okCheck(quotaCheckName, "ResourceQuota present: "+strings.Join(names, ", "))
 	}
 	missing := []string{}
 	if !hasCompute {
@@ -314,7 +322,7 @@ func quotaCheck(raw string) CheckResult {
 	if hard == "" {
 		hard = "empty"
 	}
-	return failedCheck("budgets-quota", fmt.Sprintf("ResourceQuota %s sets no %s budget (hard: %s)", strings.Join(names, ", "), strings.Join(missing, " and "), hard), "missing-infrastructure")
+	return failedCheck(quotaCheckName, fmt.Sprintf("ResourceQuota %s sets no %s budget (hard: %s)", strings.Join(names, ", "), strings.Join(missing, " and "), hard), missingInfrastructureCategory)
 }
 
 func limitsCheck(raw string) CheckResult {
@@ -322,16 +330,16 @@ func limitsCheck(raw string) CheckResult {
 		Items []jsontext.Value `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
-		result := failedCheck("budgets-limits", "LimitRange list returned unreadable JSON", "unknown")
+		result := failedCheck(limitsCheckName, "LimitRange list returned unreadable JSON", "unknown")
 		result.Advisory = true
 		return result
 	}
 	if len(value.Items) == 0 {
-		result := failedCheck("budgets-limits", "no LimitRange in target namespace", "missing-infrastructure")
+		result := failedCheck(limitsCheckName, "no LimitRange in target namespace", missingInfrastructureCategory)
 		result.Advisory = true
 		return result
 	}
-	return okCheck("budgets-limits", fmt.Sprintf("%d LimitRange(s) present", len(value.Items)))
+	return okCheck(limitsCheckName, fmt.Sprintf("%d LimitRange(s) present", len(value.Items)))
 }
 
 func permissionCheck(

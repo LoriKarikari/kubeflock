@@ -273,22 +273,26 @@ func (a *App) listCommand(options *globalOptions) *cobra.Command {
 			if output == outputJSON {
 				return writeJSON(a.Out, statuses)
 			}
-			if len(statuses) == 0 {
-				fmt.Fprintln(a.Out, "no Kubeflock sandboxes")
-				return nil
-			}
-			for _, status := range statuses {
-				detail := ""
-				if status.Step != "" {
-					detail = fmt.Sprintf(" (%s: %s)", status.Step, status.Message)
-				}
-				fmt.Fprintf(a.Out, "%s/%s\t%s%s\n", status.Namespace, status.Name, status.State, detail)
-			}
+			printSandboxStatuses(a.Out, statuses)
 			return nil
 		},
 	}
 	output.declare(command)
 	return command
+}
+
+func printSandboxStatuses(out io.Writer, statuses []SandboxStatus) {
+	if len(statuses) == 0 {
+		fmt.Fprintln(out, "no Kubeflock sandboxes")
+		return
+	}
+	for _, status := range statuses {
+		detail := ""
+		if status.Step != "" {
+			detail = fmt.Sprintf(" (%s: %s)", status.Step, status.Message)
+		}
+		fmt.Fprintf(out, "%s/%s\t%s%s\n", status.Namespace, status.Name, status.State, detail)
+	}
 }
 
 func (a *App) connectCommand(name string, options *globalOptions) *cobra.Command {

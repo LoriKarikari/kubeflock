@@ -66,19 +66,7 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 		return "", err
 	}
 	if connection.Phase == "connected" {
-		for _, machine := range machines {
-			if machine.ID != connection.ProfileID {
-				continue
-			}
-			if !connection.owns(machine) {
-				return "", fmt.Errorf("saved Herdr profile %s is missing or no longer matches its identity", connection.ProfileID)
-			}
-			if !machine.Enabled {
-				_, err = runHerdr(ctx, "machine", "enable", machine.ID)
-			}
-			return machine.ID, err
-		}
-		return "", fmt.Errorf("saved Herdr profile %s is missing or no longer matches its identity", connection.ProfileID)
+		return ensureSavedMachine(ctx, machines, connection)
 	}
 	matches := matchingMachines(machines, connection)
 	if len(matches) > 1 {
@@ -106,6 +94,23 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 		_, err = runHerdr(ctx, "machine", "enable", matches[0].ID)
 	}
 	return matches[0].ID, err
+}
+
+func ensureSavedMachine(ctx context.Context, machines []herdrMachine, connection Connection) (string, error) {
+	for _, machine := range machines {
+		if machine.ID != connection.ProfileID {
+			continue
+		}
+		if !connection.owns(machine) {
+			break
+		}
+		if !machine.Enabled {
+			_, err := runHerdr(ctx, "machine", "enable", machine.ID)
+			return machine.ID, err
+		}
+		return machine.ID, nil
+	}
+	return "", fmt.Errorf("saved Herdr profile %s is missing or no longer matches its identity", connection.ProfileID)
 }
 
 func matchingMachines(machines []herdrMachine, connection Connection) []herdrMachine {
@@ -168,20 +173,8 @@ func connect(ctx context.Context, target KubeTarget, options connectOptions) (Co
 	if err != nil {
 		return Connection{}, err
 	}
-	if saved == nil && options.Name == "" {
-		return Connection{}, errors.New("specify a sandbox name for the first connection")
-	}
-	if saved == nil && options.IdentityFile == "" {
-		return Connection{}, errors.New("specify --identity for the first connection")
-	}
-	if saved != nil && options.IdentityFile != "" {
-		identity, err := filepath.Abs(options.IdentityFile)
-		if err != nil {
-			return Connection{}, err
-		}
-		if identity != saved.Connection.SSH.IdentityFile {
-			return Connection{}, errors.New("the saved connection uses a different SSH identity file")
-		}
+	if err := validateSavedConnection(saved, options); err != nil {
+		return Connection{}, err
 	}
 	name, expectedUID := options.Name, options.ExpectedUID
 	kubeconfig, kubectl := options.Global.Kubeconfig, options.Global.Kubectl
@@ -217,61 +210,43 @@ func connect(ctx context.Context, target KubeTarget, options connectOptions) (Co
 	if err != nil {
 		return Connection{}, err
 	}
+	return activateConnection(ctx, target, options, saved, resolved.Identity, kubectl, currentPin)
+}
+
+func validateSavedConnection(saved *savedConnection, options connectOptions) error {
+	if saved == nil && options.Name == "" {
+		return errors.New("specify a sandbox name for the first connection")
+	}
+	if saved == nil && options.IdentityFile == "" {
+		return errors.New("specify --identity for the first connection")
+	}
+	if saved == nil || options.IdentityFile == "" {
+		return nil
+	}
+	identity, err := filepath.Abs(options.IdentityFile)
+	if err != nil {
+		return err
+	}
+	if identity != saved.Connection.SSH.IdentityFile {
+		return errors.New("the saved connection uses a different SSH identity file")
+	}
+	return nil
+}
+
+func activateConnection(ctx context.Context, target KubeTarget, options connectOptions, saved *savedConnection, sandbox SandboxIdentity, kubectl, hostKey string) (Connection, error) {
 	var path string
 	var connection Connection
+	var err error
 	if saved != nil {
 		path, connection = saved.File, saved.Connection
 	} else {
-		identity, err := filepath.EvalSymlinks(options.IdentityFile)
+		path, connection, err = prepareConnection(options, sandbox, kubectl, hostKey)
 		if err != nil {
-			return Connection{}, err
-		}
-		identity, err = filepath.Abs(identity)
-		if err != nil {
-			return Connection{}, err
-		}
-		if _, err := os.Stat(identity); err != nil {
-			return Connection{}, err
-		}
-		uid := resolved.Identity.UID
-		sshDir := filepath.Join(filepath.Dir(options.Global.StateDir), "ssh")
-		configFile := os.Getenv("KUBEFLOCK_SSH_CONFIG")
-		if configFile == "" {
-			home, _ := os.UserHomeDir()
-			configFile = filepath.Join(home, ".ssh", "config")
-		}
-		kubeconfigValue := (*string)(nil)
-		if options.Global.Kubeconfig != "" {
-			value := options.Global.Kubeconfig
-			kubeconfigValue = &value
-		}
-		connection = Connection{
-			Version:    1,
-			Phase:      "prepared",
-			Sandbox:    resolved.Identity,
-			Kubeconfig: kubeconfigValue,
-			Kubectl:    kubectl,
-			SSH: SSHState{
-				Alias:          "kubeflock-" + uid,
-				IdentityFile:   identity,
-				KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"),
-				EntryFile:      filepath.Join(sshDir, uid+".conf"),
-				ProxyFile:      filepath.Join(sshDir, uid+"-proxy"),
-				ConfigFile:     configFile,
-				HostKey:        currentPin,
-			},
-			Herdr: HerdrState{
-				Label:   fmt.Sprintf("Kubeflock: %s [%s]", name, truncate(uid, 8)),
-				Session: "agent",
-			},
-		}
-		path = filepath.Join(options.Global.StateDir, uid+".json")
-		if err := saveJSON(path, connection); err != nil {
 			return Connection{}, err
 		}
 	}
-	if currentPin != connection.SSH.HostKey {
-		return Connection{}, fmt.Errorf("SSH host key mismatch for sandbox %s/%s; refusing to replace the saved pin", target.Namespace, name)
+	if hostKey != connection.SSH.HostKey {
+		return Connection{}, fmt.Errorf("SSH host key mismatch for sandbox %s/%s; refusing to replace the saved pin", target.Namespace, sandbox.Name)
 	}
 	if err := ensureSSHFiles(connection, path); err != nil {
 		return Connection{}, err
@@ -288,6 +263,53 @@ func connect(ctx context.Context, target KubeTarget, options connectOptions) (Co
 		return Connection{}, err
 	}
 	return connection, nil
+}
+
+func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl, hostKey string) (string, Connection, error) {
+	identity, err := filepath.EvalSymlinks(options.IdentityFile)
+	if err != nil {
+		return "", Connection{}, err
+	}
+	identity, err = filepath.Abs(identity)
+	if err != nil {
+		return "", Connection{}, err
+	}
+	if _, err := os.Stat(identity); err != nil {
+		return "", Connection{}, err
+	}
+	uid := sandbox.UID
+	sshDir := filepath.Join(filepath.Dir(options.Global.StateDir), "ssh")
+	configFile := os.Getenv("KUBEFLOCK_SSH_CONFIG")
+	if configFile == "" {
+		home, _ := os.UserHomeDir()
+		configFile = filepath.Join(home, ".ssh", "config")
+	}
+	var kubeconfig *string
+	if options.Global.Kubeconfig != "" {
+		kubeconfig = &options.Global.Kubeconfig
+	}
+	connection := Connection{
+		Version:    1,
+		Phase:      "prepared",
+		Sandbox:    sandbox,
+		Kubeconfig: kubeconfig,
+		Kubectl:    kubectl,
+		SSH: SSHState{
+			Alias:          "kubeflock-" + uid,
+			IdentityFile:   identity,
+			KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"),
+			EntryFile:      filepath.Join(sshDir, uid+".conf"),
+			ProxyFile:      filepath.Join(sshDir, uid+"-proxy"),
+			ConfigFile:     configFile,
+			HostKey:        hostKey,
+		},
+		Herdr: HerdrState{
+			Label:   fmt.Sprintf("Kubeflock: %s [%s]", sandbox.Name, truncate(uid, 8)),
+			Session: "agent",
+		},
+	}
+	path := filepath.Join(options.Global.StateDir, uid+".json")
+	return path, connection, saveJSON(path, connection)
 }
 
 func disconnect(ctx context.Context, name, stateDir string) (Connection, error) {

@@ -19,14 +19,15 @@ import (
 	"k8s.io/client-go/dynamic"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/ptr"
 )
 
 var (
 	sandboxResource  = schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxes"}
-	claimResource    = schema.GroupVersionResource{Group: "extensions.agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxclaims"}
-	templateResource = schema.GroupVersionResource{Group: "extensions.agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxtemplates"}
-	poolResource     = schema.GroupVersionResource{Group: "extensions.agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxwarmpools"}
+	claimResource    = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxclaims"}
+	templateResource = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxtemplates"}
+	poolResource     = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxwarmpools"}
 )
 
 type kubeClient struct {
@@ -99,42 +100,11 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	var execToken string
 	var execCert, execKey []byte
 	if auth := raw.AuthInfos[contextConfig.AuthInfo]; auth != nil && auth.Exec != nil {
-		timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		env := make([]string, 0, len(auth.Exec.Env))
-		for _, item := range auth.Exec.Env {
-			env = append(env, item.Name+"="+item.Value)
-		}
-		output, err := runCaptured(timeoutCtx, auth.Exec.Command, auth.Exec.Args, env, nil)
+		execToken, execCert, execKey, err = runExecCredential(ctx, auth.Exec)
 		if err != nil {
-			return nil, fmt.Errorf("kubeconfig credential helper: %w", err)
-		}
-		var credential struct {
-			Status struct {
-				Token                 string `json:"token"`
-				ClientCertificateData string `json:"clientCertificateData"`
-				ClientKeyData         string `json:"clientKeyData"`
-			} `json:"status"`
-		}
-		if json.Unmarshal([]byte(output), &credential) != nil {
-			return nil, errors.New("kubeconfig credential helper returned an invalid ExecCredential")
-		}
-		status := credential.Status
-		if status.Token == "" && (status.ClientCertificateData == "" || status.ClientKeyData == "") {
-			return nil, errors.New("kubeconfig credential helper returned no usable credentials")
+			return nil, err
 		}
 		auth.Exec = nil
-		execToken = status.Token
-		if status.ClientCertificateData != "" {
-			execCert, err = base64.StdEncoding.DecodeString(status.ClientCertificateData)
-			if err != nil {
-				return nil, errors.New("kubeconfig credential helper returned invalid certificate data")
-			}
-			execKey, err = base64.StdEncoding.DecodeString(status.ClientKeyData)
-			if err != nil {
-				return nil, errors.New("kubeconfig credential helper returned invalid key data")
-			}
-		}
 	}
 	config, err := clientcmd.NewNonInteractiveClientConfig(*raw, target.Context, &clientcmd.ConfigOverrides{}, rules).ClientConfig()
 	if err != nil {
@@ -155,6 +125,45 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 		return nil, err
 	}
 	return &kubeClient{dynamic: dynamicClient, core: coreClient}, nil
+}
+
+func runExecCredential(ctx context.Context, execConfig *clientcmdapi.ExecConfig) (string, []byte, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	env := make([]string, 0, len(execConfig.Env))
+	for _, item := range execConfig.Env {
+		env = append(env, item.Name+"="+item.Value)
+	}
+	output, err := runCaptured(ctx, execConfig.Command, execConfig.Args, env, nil)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("kubeconfig credential helper: %w", err)
+	}
+	var credential struct {
+		Status struct {
+			Token                 string `json:"token"`
+			ClientCertificateData string `json:"clientCertificateData"`
+			ClientKeyData         string `json:"clientKeyData"`
+		} `json:"status"`
+	}
+	if json.Unmarshal([]byte(output), &credential) != nil {
+		return "", nil, nil, errors.New("kubeconfig credential helper returned an invalid ExecCredential")
+	}
+	status := credential.Status
+	if status.Token == "" && (status.ClientCertificateData == "" || status.ClientKeyData == "") {
+		return "", nil, nil, errors.New("kubeconfig credential helper returned no usable credentials")
+	}
+	if status.ClientCertificateData == "" {
+		return status.Token, nil, nil, nil
+	}
+	cert, err := base64.StdEncoding.DecodeString(status.ClientCertificateData)
+	if err != nil {
+		return "", nil, nil, errors.New("kubeconfig credential helper returned invalid certificate data")
+	}
+	key, err := base64.StdEncoding.DecodeString(status.ClientKeyData)
+	if err != nil {
+		return "", nil, nil, errors.New("kubeconfig credential helper returned invalid key data")
+	}
+	return status.Token, cert, key, nil
 }
 
 func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*sandboxClaim, error) {
@@ -298,18 +307,28 @@ func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, 
 			if mount.MountPath != "/home/agent" {
 				continue
 			}
-			claimName := ""
-			for _, volume := range pod.Volumes {
-				if volume.Name == mount.Name && volume.PersistentVolumeClaim != nil {
-					claimName = volume.PersistentVolumeClaim.ClaimName
-				}
+			claimName := mountedClaimName(pod.Volumes, mount.Name)
+			if home, ok := validHomeTemplate(template.Spec.VolumeClaimTemplates, claimName); ok {
+				return home, true
 			}
-			for _, home := range template.Spec.VolumeClaimTemplates {
-				capacity := home.Spec.Resources.Requests.Storage()
-				if home.Name == claimName && home.Spec.StorageClassName != nil && capacity != nil {
-					return home, true
-				}
-			}
+		}
+	}
+	return corev1.PersistentVolumeClaim{}, false
+}
+
+func mountedClaimName(volumes []corev1.Volume, mountName string) string {
+	for _, volume := range volumes {
+		if volume.Name == mountName && volume.PersistentVolumeClaim != nil {
+			return volume.PersistentVolumeClaim.ClaimName
+		}
+	}
+	return ""
+}
+
+func validHomeTemplate(templates []corev1.PersistentVolumeClaim, claimName string) (corev1.PersistentVolumeClaim, bool) {
+	for _, home := range templates {
+		if home.Name == claimName && home.Spec.StorageClassName != nil && home.Spec.Resources.Requests.Storage() != nil {
+			return home, true
 		}
 	}
 	return corev1.PersistentVolumeClaim{}, false

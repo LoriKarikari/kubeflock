@@ -82,73 +82,11 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if strings.HasSuffix(path, "/sandboxclaims") && request.Method == http.MethodPost {
-		var body map[string]any
-		if json.NewDecoder(request.Body).Decode(&body) != nil {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		metadata, ok := body["metadata"].(map[string]any)
-		if !ok {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		spec, ok := body["spec"].(map[string]any)
-		if !ok {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		ref, ok := spec["warmPoolRef"].(map[string]any)
-		if !ok {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		name, ok := metadata["name"].(string)
-		if !ok {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		pool, ok := ref["name"].(string)
-		if !ok {
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		if _, exists := f.claims[name]; exists {
-			response.WriteHeader(http.StatusConflict)
-			writeFixture(response, map[string]string{"message": "already exists"})
-			return
-		}
-		f.creates++
-		claim := claimFixture(name, pool)
-		if name != "delayed" && name != "waiting" {
-			claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-			claim.Status.Sandbox.Name = name
-		}
-		f.claims[name] = claim
-		response.WriteHeader(http.StatusCreated)
-		writeFixture(response, claim)
+		f.createClaim(response, request)
 		return
 	}
 	if strings.HasSuffix(path, "/sandboxclaims") {
-		items := []fixtureClaim{}
-		if field := request.URL.Query().Get("fieldSelector"); field != "" {
-			name := strings.TrimPrefix(field, "metadata.name=")
-			if claim, ok := f.claims[name]; ok {
-				f.reads[name]++
-				if name == "delayed" && f.reads[name] >= 2 {
-					claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-					claim.Status.Sandbox.Name = name
-					f.claims[name] = claim
-				}
-				items = append(items, claim)
-			}
-		} else {
-			for _, claim := range f.claims {
-				if claim.Metadata.Labels[managedByLabel] == managedByValue {
-					items = append(items, claim)
-				}
-			}
-		}
-		writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
+		f.listClaims(response, request)
 		return
 	}
 	if strings.Contains(path, "/sandboxes/") {
@@ -220,6 +158,71 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	}
 	response.WriteHeader(http.StatusNotFound)
 	writeFixture(response, map[string]string{"message": "not found"})
+}
+
+func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Request) {
+	var body map[string]any
+	if json.NewDecoder(request.Body).Decode(&body) != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	metadata, metadataOK := body["metadata"].(map[string]any)
+	spec, specOK := body["spec"].(map[string]any)
+	if !metadataOK || !specOK {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	ref, refOK := spec["warmPoolRef"].(map[string]any)
+	name, nameOK := metadata["name"].(string)
+	if !refOK || !nameOK {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	pool, ok := ref["name"].(string)
+	if !ok {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if _, exists := f.claims[name]; exists {
+		response.WriteHeader(http.StatusConflict)
+		writeFixture(response, map[string]string{"message": "already exists"})
+		return
+	}
+	f.creates++
+	claim := claimFixture(name, pool)
+	if name != "delayed" && name != "waiting" {
+		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+		claim.Status.Sandbox.Name = name
+	}
+	f.claims[name] = claim
+	response.WriteHeader(http.StatusCreated)
+	writeFixture(response, claim)
+}
+
+func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Request) {
+	items := []fixtureClaim{}
+	field := request.URL.Query().Get("fieldSelector")
+	if field == "" {
+		for _, claim := range f.claims {
+			if claim.Metadata.Labels[managedByLabel] == managedByValue {
+				items = append(items, claim)
+			}
+		}
+		writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
+		return
+	}
+	name := strings.TrimPrefix(field, "metadata.name=")
+	claim, ok := f.claims[name]
+	if ok {
+		f.reads[name]++
+		if name == "delayed" && f.reads[name] >= 2 {
+			claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+			claim.Status.Sandbox.Name = name
+			f.claims[name] = claim
+		}
+		items = append(items, claim)
+	}
+	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
 }
 
 func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Encode(value) }
@@ -482,9 +485,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	env := []string{"GO_WANT_KUBEFLOCK_HELPER=1", "KUBEFLOCK_CONFIG=" + config, "KUBEFLOCK_STATE_DIR=" + stateDir, "KUBEFLOCK_KUBECTL=" + kubectl, "KUBEFLOCK_HERDR=" + herdr, "KUBEFLOCK_SSH_CONFIG=" + sshConfig, "FAKE_HERDR_STATE=" + herdrState, "FAKE_HOST_KEY=" + keyA, "FAKE_KUBECTL_LOG=" + kubectlLog}
 
 	failed := invoke(t, binary, []string{"sandbox", "create", "delayed", "--template", "dev-small", "--identity", identity, "--timeout", "10s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_ADD=1"), "")
-	if failed.status != 2 || !strings.Contains(failed.stderr, "herdr exited") {
-		t.Fatalf("failed create = %#v", failed)
-	}
+	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
 	creates, reads, _, _, _ := api.snapshot()
 	if creates != 1 || reads["delayed"] != 2 {
 		t.Fatalf("creates=%d reads=%d", creates, reads["delayed"])
@@ -492,9 +493,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	connectionFile := filepath.Join(stateDir, "sandbox-delayed.json")
 	assertJSONField(t, connectionFile, "phase", "prepared")
 	connected := invoke(t, binary, []string{"sandbox", "create", "delayed", "--template", "dev-small", "--identity", identity, "--timeout", "2s", "--kubeconfig", kubeconfig}, env, "")
-	if connected.status != 0 || !strings.Contains(connected.stdout, "ready sandbox delayed") {
-		t.Fatalf("connected = %#v", connected)
-	}
+	assertCLI(t, "connected", connected, 0, "ready sandbox delayed", "")
 	creates, _, _, _, _ = api.snapshot()
 	if creates != 1 {
 		t.Fatalf("duplicate created %d claims", creates)
@@ -515,17 +514,11 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	}
 
 	disconnected := invoke(t, binary, []string{"sandbox", "disconnect", "delayed"}, env, "")
-	if disconnected.status != 0 || !strings.Contains(disconnected.stdout, "remote processes are still running") {
-		t.Fatalf("disconnect = %#v", disconnected)
-	}
+	assertCLI(t, "disconnect", disconnected, 0, "remote processes are still running", "")
 	listed := invoke(t, binary, []string{"sandbox", "list", "--output", "json", "--kubeconfig", kubeconfig}, env, "")
-	if listed.status != 0 || !strings.Contains(listed.stdout, `"state": "disconnected"`) {
-		t.Fatalf("list = %#v", listed)
-	}
+	assertCLI(t, "list", listed, 0, `"state": "disconnected"`, "")
 	reconnected := invoke(t, binary, []string{"sandbox", "reconnect", "delayed", "--kubeconfig", kubeconfig}, env, "")
-	if reconnected.status != 0 {
-		t.Fatalf("reconnect = %#v", reconnected)
-	}
+	assertCLI(t, "reconnect", reconnected, 0, "", "")
 	var herdrData herdrFixture
 	data, _ := os.ReadFile(herdrState)
 	_ = json.Unmarshal(data, &herdrData)
@@ -534,17 +527,18 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	}
 
 	mismatch := invoke(t, binary, []string{"sandbox", "reconnect", "delayed", "--kubeconfig", kubeconfig}, append(env, "FAKE_HOST_KEY="+keyB), "")
-	if !strings.Contains(mismatch.stderr, "host key mismatch") {
-		t.Fatalf("mismatch = %#v", mismatch)
-	}
+	assertCLI(t, "mismatch", mismatch, -1, "", "host key mismatch")
 	insecure := invoke(t, binary, []string{"sandbox", "create", "unsafe", "--template", "insecure", "--identity", identity, "--kubeconfig", kubeconfig}, env, "")
-	if !strings.Contains(insecure.stderr, "does not meet Kubeflock pod hardening requirements") {
-		t.Fatalf("insecure = %#v", insecure)
-	}
+	assertCLI(t, "insecure", insecure, -1, "", "does not meet Kubeflock pod hardening requirements")
 	_, _, claims, methods, auths := api.snapshot()
 	if _, exists := claims["unsafe"]; exists {
 		t.Fatal("insecure template created a claim")
 	}
+	assertAPITrace(t, methods, auths)
+}
+
+func assertAPITrace(t *testing.T, methods, auths []string) {
+	t.Helper()
 	for _, method := range methods {
 		if method != http.MethodGet && method != http.MethodPost {
 			t.Fatalf("unexpected API method %s", method)
@@ -554,6 +548,19 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		if auth != "Bearer fixture" {
 			t.Fatalf("authorization = %q; all = %#v", auth, auths)
 		}
+	}
+}
+
+func assertCLI(t *testing.T, label string, got result, status int, stdout, stderr string) {
+	t.Helper()
+	if status >= 0 && got.status != status {
+		t.Fatalf("%s = %#v", label, got)
+	}
+	if stdout != "" && !strings.Contains(got.stdout, stdout) {
+		t.Fatalf("%s = %#v", label, got)
+	}
+	if stderr != "" && !strings.Contains(got.stderr, stderr) {
+		t.Fatalf("%s = %#v", label, got)
 	}
 }
 
