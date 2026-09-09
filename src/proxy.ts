@@ -50,7 +50,7 @@ export const runProxy = (stateFile: string): Effect.Effect<number, Error, FileSy
       "--namespace", connection.sandbox.namespace,
       "exec", "-i", resolved.pod,
       "-c", resolved.container,
-      "--", "socat", "STDIO", "TCP:127.0.0.1:2222",
+      "--", "socat", "STDIO", `TCP:127.0.0.1:${resolved.sshPort}`,
     ];
     if (connection.kubeconfig) args.unshift("--kubeconfig", connection.kubeconfig);
     return yield* relay(connection.kubectl, args);

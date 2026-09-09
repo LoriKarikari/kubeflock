@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["namespace", "access", "sandbox", "capacity"],
+  "properties": {
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 }
+      }
+    },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subjects"],
+      "properties": {
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "name"],
+            "properties": {
+              "kind": { "enum": ["User", "Group", "ServiceAccount"] },
+              "name": { "type": "string", "minLength": 1 },
+              "namespace": { "type": "string", "minLength": 1 }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "kind": { "const": "ServiceAccount" } } },
+                "then": { "required": ["namespace"] }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["templateName", "image", "imagePullPolicy", "sshPort", "sshPublicKey", "resources", "storage"],
+      "properties": {
+        "templateName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "image": { "type": "string", "minLength": 1 },
+        "imagePullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
+        "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "sshPublicKey": { "type": "string", "pattern": "^ssh-(ed25519|rsa) " },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpuRequestMillicores", "cpuLimitMillicores", "memoryRequestMi", "memoryLimitMi"],
+          "properties": {
+            "cpuRequestMillicores": { "type": "integer", "minimum": 1 },
+            "cpuLimitMillicores": { "type": "integer", "minimum": 1 },
+            "memoryRequestMi": { "type": "integer", "minimum": 1 },
+            "memoryLimitMi": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["className", "sizeGi"],
+          "properties": {
+            "className": { "type": "string", "minLength": 1 },
+            "sizeGi": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "capacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxActiveSandboxes", "maxRetainedHomes"],
+      "properties": {
+        "maxActiveSandboxes": { "type": "integer", "minimum": 1 },
+        "maxRetainedHomes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

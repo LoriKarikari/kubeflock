@@ -1,0 +1,94 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes"]
+    verbs: ["get"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxclaims"]
+    verbs: ["list", "create"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates"]
+    verbs: ["get"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxwarmpools"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+subjects:
+{{- range .Values.access.subjects }}
+  - kind: {{ .kind }}
+    name: {{ .name | quote }}
+    {{- if eq .kind "ServiceAccount" }}
+    namespace: {{ .namespace | quote }}
+    {{- else }}
+    apiGroup: rbac.authorization.k8s.io
+    {{- end }}
+{{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Release.Name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["list"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    resourceNames: ["gvisor"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: [{{ .Values.namespace.name | quote }}]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+subjects:
+{{- range .Values.access.subjects }}
+  - kind: {{ .kind }}
+    name: {{ .name | quote }}
+    {{- if eq .kind "ServiceAccount" }}
+    namespace: {{ .namespace | quote }}
+    {{- else }}
+    apiGroup: rbac.authorization.k8s.io
+    {{- end }}
+{{- end }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}

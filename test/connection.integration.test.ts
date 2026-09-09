@@ -16,6 +16,7 @@ const identity = join(dir, "id_ed25519");
 const herdrState = join(dir, "herdr.json");
 const uidFile = join(dir, "uid");
 const kubectl = join(dir, "kubectl");
+const kubectlLog = join(dir, "kubectl.log");
 const herdr = join(dir, "herdr");
 const credential = join(dir, "credential");
 const keyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -71,6 +72,7 @@ const baseEnv = (): NodeJS.ProcessEnv => ({
   KUBEFLOCK_SSH_CONFIG: sshConfig,
   FAKE_HERDR_STATE: herdrState,
   FAKE_HOST_KEY: keyA,
+  FAKE_KUBECTL_LOG: kubectlLog,
 });
 
 const metadata = (name: string, uid = `${name}-uid`) => ({ name, namespace: "dev", uid });
@@ -97,7 +99,7 @@ const templateFixture = (name: string, secure: boolean) => ({
           capabilities: { drop: ["ALL"] },
           seccompProfile: { type: "RuntimeDefault" },
         },
-        ports: [{ containerPort: 2222 }],
+        ports: [{ name: "ssh", containerPort: 2200 }],
         resources: { requests: { cpu: "500m", memory: "1Gi" }, limits: { cpu: "2", memory: "4Gi" } },
         volumeMounts: [{ name: "home", mountPath: "/home/agent" }],
       }],
@@ -143,7 +145,9 @@ beforeAll(async () => {
     }],
   }));
   writeFileSync(kubectl, `#!/usr/bin/env node
+const fs = require("node:fs");
 const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_KUBECTL_LOG, args.join(" ") + "\\n");
 if (args.some((arg) => arg.endsWith("ssh_host_ed25519_key.pub"))) process.stdout.write(process.env.FAKE_HOST_KEY + "\\n");
 else if (args.includes("socat")) process.stdin.pipe(process.stdout);
 else process.exit(2);
@@ -254,7 +258,7 @@ printf '%s\\n' '{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCred
       const uid = name === "demo" ? readFileSync(uidFile, "utf8") : `sandbox-${name}`;
       response.end(JSON.stringify({ items: [{
         metadata: { name, ownerReferences: [{ uid, controller: true }] },
-        spec: { containers: [{ name: "sandbox" }] },
+        spec: { containers: [{ name: "sandbox", ports: [{ name: "ssh", containerPort: 2200 }] }] },
       }] }));
       return;
     }
@@ -342,6 +346,7 @@ it("reconciles connection failures, duplicate requests, Herdr actions, and repla
 
   const proxyFile = join(dir, "state", "..", "ssh", "uid-1-proxy");
   expect((await run(proxyFile, [], {}, "through-api")).stdout).toBe("through-api");
+  expect(readFileSync(kubectlLog, "utf8")).toContain("TCP:127.0.0.1:2200");
 
   expect((await invoke(["sandbox", "reconnect", "--kubeconfig", kubeconfig], { FAKE_HOST_KEY: keyB })).stderr).toContain("host key mismatch");
   writeFileSync(uidFile, "uid-2");

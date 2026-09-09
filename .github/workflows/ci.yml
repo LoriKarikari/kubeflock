@@ -17,6 +17,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
       - run: npm ci
       - run: npm run lint
       - run: npm test
+      - run: helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
+      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 > /dev/null

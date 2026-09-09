@@ -1,0 +1,25 @@
+namespace:
+  create: true
+  name: ""
+
+access:
+  subjects: []
+
+sandbox:
+  templateName: dev-small
+  image: ""
+  imagePullPolicy: IfNotPresent
+  sshPort: 2222
+  sshPublicKey: ""
+  resources:
+    cpuRequestMillicores: 500
+    cpuLimitMillicores: 2000
+    memoryRequestMi: 1024
+    memoryLimitMi: 4096
+  storage:
+    className: ""
+    sizeGi: 10
+
+capacity:
+  maxActiveSandboxes: 2
+  maxRetainedHomes: 4
