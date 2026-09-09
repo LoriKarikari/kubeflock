@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
@@ -307,6 +308,12 @@ func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, 
 	return corev1.PersistentVolumeClaim{}, false
 }
 
+func controlledBy(owners []metav1.OwnerReference, uid types.UID) bool {
+	return slices.ContainsFunc(owners, func(owner metav1.OwnerReference) bool {
+		return ptr.Deref(owner.Controller, false) && owner.UID == uid
+	})
+}
+
 func findSSHPort(ports []corev1.ContainerPort) int32 {
 	for _, port := range ports {
 		if port.Name == "ssh" && port.ContainerPort > 0 && port.ContainerPort <= 65535 {
@@ -340,13 +347,10 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 	if err != nil {
 		return resolvedSandbox{}, err
 	}
-	owned := make([]corev1.Pod, 0, 1)
+	owned := []corev1.Pod{}
 	for _, pod := range pods.Items {
-		for _, owner := range pod.OwnerReferences {
-			if owner.Controller != nil && *owner.Controller && owner.UID == sandbox.Metadata.UID {
-				owned = append(owned, pod)
-				break
-			}
+		if controlledBy(pod.OwnerReferences, sandbox.Metadata.UID) {
+			owned = append(owned, pod)
 		}
 	}
 	if len(owned) != 1 {
@@ -357,18 +361,11 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 	if container == "" && len(pod.Spec.Containers) == 1 {
 		container = pod.Spec.Containers[0].Name
 	}
-	var port int32
-	found := false
-	for _, candidate := range pod.Spec.Containers {
-		if candidate.Name != container {
-			continue
-		}
-		found = true
-		port = findSSHPort(candidate.Ports)
-	}
-	if !found {
+	index := slices.IndexFunc(pod.Spec.Containers, func(c corev1.Container) bool { return c.Name == container })
+	if index < 0 {
 		return resolvedSandbox{}, fmt.Errorf("pod %s/%s has no unambiguous default container", target.Namespace, pod.Name)
 	}
+	port := findSSHPort(pod.Spec.Containers[index].Ports)
 	if port < 1 || port > 65535 {
 		return resolvedSandbox{}, fmt.Errorf("pod %s/%s has no valid SSH port", target.Namespace, pod.Name)
 	}
@@ -380,13 +377,7 @@ func (k *kubeClient) resolveHome(ctx context.Context, target KubeTarget, sandbox
 	if err != nil {
 		return PersistentHome{}, err
 	}
-	owned := false
-	for _, owner := range pvc.OwnerReferences {
-		if owner.Controller != nil && *owner.Controller && string(owner.UID) == sandbox.UID {
-			owned = true
-		}
-	}
-	if !owned {
+	if !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
 		return PersistentHome{}, fmt.Errorf("PersistentVolumeClaim %s is not owned by Sandbox UID %s", pvc.Name, sandbox.UID)
 	}
 	capacity := "unknown"

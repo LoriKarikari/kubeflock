@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -278,19 +279,13 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 		if saved.Sandbox != nil {
 			status.SandboxUID = saved.Sandbox.UID
 		}
-		var claim *sandboxClaim
-		for i := range claims {
-			if string(claims[i].Metadata.UID) == saved.Claim.UID {
-				claim = &claims[i]
-				break
-			}
-		}
-		if claim == nil {
+		claim := slices.IndexFunc(claims, func(c sandboxClaim) bool { return string(c.Metadata.UID) == saved.Claim.UID })
+		if claim < 0 {
 			status.State, status.Step, status.Message = "failed", "claim", "saved SandboxClaim is missing"
 			statuses = append(statuses, status)
 			continue
 		}
-		claimState := progress(*claim)
+		claimState := progress(claims[claim])
 		if claimState.State != "ready" {
 			status.State, status.Step, status.Message = claimState.State, claimState.Step, claimState.Message
 			statuses = append(statuses, status)
@@ -301,34 +296,23 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 			statuses = append(statuses, status)
 			continue
 		}
-		var connection *Connection
-		for i := range connections {
-			if connections[i].Connection.Sandbox.UID == saved.Sandbox.UID {
-				connection = &connections[i].Connection
-				break
-			}
-		}
-		if connection == nil {
+		found := slices.IndexFunc(connections, func(c savedConnection) bool { return c.Connection.Sandbox.UID == saved.Sandbox.UID })
+		if found < 0 {
 			status.State, status.Step, status.Message = "provisioning", "connection", "waiting for native Herdr registration"
 			statuses = append(statuses, status)
 			continue
 		}
+		connection := connections[found].Connection
 		if connection.Phase == "prepared" {
 			status.State, status.Step, status.Message = "failed", "connection", "native Herdr registration did not complete"
 			statuses = append(statuses, status)
 			continue
 		}
-		var machine *herdrMachine
-		for i := range machines {
-			if machines[i].ID == connection.ProfileID {
-				machine = &machines[i]
-				break
-			}
-		}
+		machine := slices.IndexFunc(machines, func(m herdrMachine) bool { return m.ID == connection.ProfileID })
 		switch {
-		case machine == nil:
+		case machine < 0:
 			status.State, status.Step, status.Message = "failed", "connection", "saved Herdr machine is missing"
-		case machine.Enabled:
+		case machines[machine].Enabled:
 			status.State = "ready"
 		default:
 			status.State = "disconnected"
