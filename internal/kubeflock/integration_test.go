@@ -643,6 +643,16 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	assertAPITrace(t, methods, auths)
 }
 
+func TestConditionObservedRequiresCurrentGeneration(t *testing.T) {
+	condition := &metav1.Condition{Status: metav1.ConditionTrue, ObservedGeneration: 2}
+	if conditionObserved(condition, 3, metav1.ConditionTrue) {
+		t.Fatal("accepted a stale Ready condition")
+	}
+	if !conditionObserved(condition, 2, metav1.ConditionTrue) {
+		t.Fatal("rejected the current Ready condition")
+	}
+}
+
 func assertAPITrace(t *testing.T, methods, auths []string) {
 	t.Helper()
 	for _, method := range methods {

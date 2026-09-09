@@ -402,17 +402,18 @@ func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTa
 		}
 		condition := meta.FindStatusCondition(sandbox.Status.Conditions, conditionType)
 		latest = conditionDetail(condition)
-		if condition != nil && condition.Status == metav1.ConditionFalse && failedReason.MatchString(latest) {
+		if conditionObserved(condition, sandbox.Metadata.Generation, metav1.ConditionFalse) && failedReason.MatchString(latest) {
 			return false, fmt.Errorf("sandbox failed while entering %s mode: %s", mode, latest)
 		}
 		pods, err := client.ownedPods(ctx, target, sandbox)
 		if err != nil {
 			return false, err
 		}
+		observed := conditionObserved(condition, sandbox.Metadata.Generation, metav1.ConditionTrue)
 		if mode == modeSuspended {
-			return condition != nil && condition.Status == metav1.ConditionTrue && len(pods) == 0, nil
+			return observed && len(pods) == 0, nil
 		}
-		return condition != nil && condition.Status == metav1.ConditionTrue && len(pods) == 1, nil
+		return observed && len(pods) == 1, nil
 	})
 	if err == nil {
 		return nil
@@ -421,6 +422,10 @@ func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTa
 		return fmt.Errorf("sandbox %s timed out while entering %s mode: %s", identity.Name, mode, latest)
 	}
 	return err
+}
+
+func conditionObserved(condition *metav1.Condition, generation int64, status metav1.ConditionStatus) bool {
+	return condition != nil && condition.ObservedGeneration == generation && condition.Status == status
 }
 
 func conditionDetail(condition *metav1.Condition) string {
