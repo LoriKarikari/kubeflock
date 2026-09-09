@@ -7,7 +7,7 @@ The starter image runs a rootless SSH server and a headless Herdr server. It inc
 - Node.js 24.15.0
 - Git, OpenSSH, `socat`, `curl`, `fd`, `jq`, `ripgrep`, Python 3, and build tools
 
-The image supports `linux/amd64` and `linux/arm64`.
+The image supports `linux/amd64` and `linux/arm64`. It enables Herdr's `child-groups` process-detection fallback because gVisor does not expose terminal foreground process groups.
 
 ## Build and test
 

@@ -43,6 +43,7 @@ done
 docker exec "$container" test -s /home/agent/sshd.pid
 docker exec "$container" sh -eu -c '
   test "$(id -u):$(id -g)" = 1000:1000
+  test "$HERDR_PROCESS_DETECTION" = child-groups
   test "$(herdr --version)" = "herdr 0.9.0"
   test "$(pi --version)" = "0.85.1"
   command -v fd >/dev/null

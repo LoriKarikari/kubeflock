@@ -31,6 +31,7 @@ RUN apt-get update \
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/kubeflock-entrypoint
 
 ENV HOME=/home/agent
+ENV HERDR_PROCESS_DETECTION=child-groups
 USER 1000:1000
 WORKDIR /home/agent
 EXPOSE 2222
