@@ -11,6 +11,15 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Conn
 
 ## Install
 
+Build and push the starter Sandbox image, or use a compatible custom image:
+
+```bash
+docker build --tag REGISTRY/kubeflock-sandbox:VERSION sandbox-image
+docker push REGISTRY/kubeflock-sandbox:VERSION
+```
+
+Set `sandbox.image` in your values file to that tag or digest. See [`sandbox-image/README.md`](sandbox-image/README.md) for the image contents and authentication model.
+
 ```bash
 npm ci
 npm run build
