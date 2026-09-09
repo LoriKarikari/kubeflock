@@ -27,4 +27,6 @@ Set these environment variables through the Sandbox template:
 
 Mount persistent storage at `/home/agent`. The entrypoint stores SSH host keys, the authorized key, the Herdr state, the Pi integration, Pi sessions, and provider credentials in that home.
 
-Authenticate from a terminal inside the Sandbox. For example, run `pi`, enter `/login`, and complete the provider flow. Pi can store the resulting credential in `/home/agent/.pi/agent/auth.json`. The credential persists with the home volume. It is not part of the image layer, build output, Kubeflock state, or plugin logs.
+Authenticate from a terminal inside the Sandbox. For example, run `pi`, enter `/login`, and complete the provider flow. If OAuth redirects to an unreachable `localhost` callback, copy the failed redirect URL from the browser and paste it into Pi's login prompt. Treat that URL as a credential and do not share it.
+
+Pi can store the resulting credential in `/home/agent/.pi/agent/auth.json`. The credential persists with the home volume. It is not part of the image layer, build output, Kubeflock state, or plugin logs.
