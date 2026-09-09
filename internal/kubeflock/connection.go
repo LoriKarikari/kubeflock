@@ -232,7 +232,7 @@ func (a *App) connect(ctx context.Context, target KubeTarget, options connectOpt
 			value := options.Global.Kubeconfig
 			kubeconfigValue = &value
 		}
-		connection = Connection{Version: 1, Phase: "prepared", Sandbox: resolved.Identity, SSH: SSHState{Alias: "kubeflock-" + uid, IdentityFile: identity, KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"), EntryFile: filepath.Join(sshDir, uid+".conf"), ProxyFile: filepath.Join(sshDir, uid+"-proxy"), ConfigFile: configFile, HostKey: currentPin}, Herdr: HerdrState{Label: fmt.Sprintf("Kubeflock: %s [%s]", name, prefix(uid, 8)), Session: "agent"}, Kubeconfig: kubeconfigValue, Kubectl: kubectl}
+		connection = Connection{Version: 1, Phase: "prepared", Sandbox: resolved.Identity, SSH: SSHState{Alias: "kubeflock-" + uid, IdentityFile: identity, KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"), EntryFile: filepath.Join(sshDir, uid+".conf"), ProxyFile: filepath.Join(sshDir, uid+"-proxy"), ConfigFile: configFile, HostKey: currentPin}, Herdr: HerdrState{Label: fmt.Sprintf("Kubeflock: %s [%s]", name, truncate(uid, 8)), Session: "agent"}, Kubeconfig: kubeconfigValue, Kubectl: kubectl}
 		path = filepath.Join(options.Global.StateDir, uid+".json")
 		if err := saveJSON(path, connection); err != nil {
 			return Connection{}, err
@@ -353,11 +353,4 @@ func (a *App) runProxy(ctx context.Context, stateFile string) (int, error) {
 		args = append([]string{"--kubeconfig", kubeconfig}, args...)
 	}
 	return relay(ctx, connection.Kubectl, args, a.In, a.Out, a.Err)
-}
-
-func prefix(value string, size int) string {
-	if len(value) <= size {
-		return value
-	}
-	return value[:size]
 }

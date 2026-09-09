@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
+// ponytail: failure guessed from condition text; upgrade path is the controller's condition reason taxonomy
 var failedReason = regexp.MustCompile(`(?i)error|fail|invalid|forbidden|quota|unschedulable|conflict|not.?found|multiple`)
 
 type claimProgress struct {
@@ -59,8 +60,8 @@ type createOptions struct {
 }
 
 type createdSandbox struct {
-	Name, ClaimUID, SandboxUID, Template, WarmPool, SSHAlias string
-	Home                                                     PersistentHome
+	Name, Template, WarmPool, SSHAlias string
+	Home                               PersistentHome
 }
 
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
@@ -245,7 +246,7 @@ func (a *App) createSandbox(ctx context.Context, target KubeTarget, name string,
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	return createdSandbox{Name: name, ClaimUID: string(claim.Metadata.UID), SandboxUID: resolved.Identity.UID, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}, nil
+	return createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}, nil
 }
 
 func (a *App) listSandboxStatus(ctx context.Context, target KubeTarget, options globalOptions) ([]SandboxStatus, error) {

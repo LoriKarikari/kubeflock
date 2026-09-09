@@ -82,7 +82,7 @@ func failedCheck(name, message, category string) CheckResult {
 func commandOutput(err error) (stderr, stdout string, timedOut bool) {
 	var command *commandError
 	if errors.As(err, &command) {
-		return command.Stderr, command.Stdout, command.Kind == "timeout"
+		return command.Stderr, command.Stdout, command.TimedOut
 	}
 	return err.Error(), "", false
 }
@@ -111,20 +111,18 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		return out, &result
 	}
 
-	checks := make([]CheckResult, 0, 21)
+	checks := []CheckResult{}
 	versions, connectivity := attempt("api-connectivity", "reach the Kubernetes API with the saved context", baseArgs(target, req, "api-versions"))
-	served := map[string]bool{}
+	served := sets.New[string]()
 	if connectivity != nil {
 		checks = append(checks, *connectivity)
 	} else {
 		checks = append(checks, okCheck("api-connectivity", "API reachable with saved context"))
-		for line := range strings.FieldsSeq(versions) {
-			served[line] = true
-		}
+		served.Insert(strings.Fields(versions)...)
 	}
 	online := connectivity == nil
 	for _, expectation := range expectedAPIGroups {
-		if online && !served[expectation.Group+"/v1beta1"] {
+		if online && !served.Has(expectation.Group+"/v1beta1") {
 			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", "missing-infrastructure"))
 			continue
 		}

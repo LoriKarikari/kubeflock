@@ -14,10 +14,10 @@ import (
 )
 
 type commandError struct {
-	Kind     string
 	Stderr   string
 	Stdout   string
 	ExitCode int
+	TimedOut bool
 	Cause    error
 }
 
@@ -54,19 +54,12 @@ func runCaptured(ctx context.Context, command string, args, env []string, stdin 
 	if err == nil {
 		return stdout.String(), nil
 	}
-	kind, code := "failed", -1
-	var spawn *exec.Error
-	if errors.As(err, &spawn) {
-		kind = "spawn"
-	}
-	if ctx.Err() != nil {
-		kind = "timeout"
-	}
+	code := -1
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		code = exit.ExitCode()
 	}
-	return "", &commandError{Kind: kind, Stderr: stderr.String(), Stdout: stdout.String(), ExitCode: code, Cause: err}
+	return "", &commandError{Stderr: stderr.String(), Stdout: stdout.String(), ExitCode: code, TimedOut: ctx.Err() != nil, Cause: err}
 }
 
 func relay(ctx context.Context, command string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
