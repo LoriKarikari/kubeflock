@@ -40,7 +40,7 @@ type fixtureClaim struct {
 		Sandbox    struct {
 			Name string `json:"name"`
 		} `json:"sandbox"`
-	} `json:"status,omitempty"`
+	} `json:"status"`
 }
 
 type fixtureAPI struct {
@@ -65,7 +65,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	response.Header().Set("content-type", "application/json")
 	path := request.URL.Path
 	if strings.Contains(path, "/sandboxtemplates/") {
-		name := path[strings.LastIndex(path, "/")+1:]
+		_, name, _ := strings.CutLast(path, "/")
 		writeFixture(response, templateFixture(name, name != "insecure"))
 		return
 	}
@@ -144,7 +144,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if strings.Contains(path, "/sandboxes/") {
-		name := path[strings.LastIndex(path, "/")+1:]
+		_, name, _ := strings.CutLast(path, "/")
 		writeFixture(response, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "metadata": map[string]any{"name": name, "namespace": "dev", "uid": "sandbox-" + name}, "status": map[string]any{"selector": "agents.x-k8s.io/sandbox=" + name, "conditions": []any{map[string]string{"type": "Ready", "status": "True"}}}})
 		return
 	}
@@ -155,7 +155,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
-		name := path[strings.LastIndex(path, "/")+1:]
+		_, name, _ := strings.CutLast(path, "/")
 		sandbox := strings.TrimPrefix(name, "home-")
 		controller := true
 		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": name, "namespace": "dev", "uid": name + "-uid", "ownerReferences": []any{map[string]any{"uid": "sandbox-" + sandbox, "controller": controller}}}, "spec": map[string]any{"storageClassName": "longhorn"}, "status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}}})
@@ -302,7 +302,7 @@ func buildCLI(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "kubeflock")
 	command := exec.Command("go", "build", "-o", path, "../../cmd/kubeflock")
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=go1.26.0")
+	command.Env = append(os.Environ(), "GOTOOLCHAIN=go1.27.1")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build CLI: %v\n%s", err, output)

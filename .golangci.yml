@@ -23,9 +23,6 @@ linters:
       - text: "^(exported|package-comments|unused-parameter):"
         linters:
           - revive
-      - text: "^omitzero:"
-        linters:
-          - modernize
 linters-settings:
   forbidigo:
     exclude-gotest-files: true

@@ -224,7 +224,26 @@ func connect(ctx context.Context, target KubeTarget, options connectOptions) (Co
 			value := options.Global.Kubeconfig
 			kubeconfigValue = &value
 		}
-		connection = Connection{Version: 1, Phase: "prepared", Sandbox: resolved.Identity, SSH: SSHState{Alias: "kubeflock-" + uid, IdentityFile: identity, KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"), EntryFile: filepath.Join(sshDir, uid+".conf"), ProxyFile: filepath.Join(sshDir, uid+"-proxy"), ConfigFile: configFile, HostKey: currentPin}, Herdr: HerdrState{Label: fmt.Sprintf("Kubeflock: %s [%s]", name, truncate(uid, 8)), Session: "agent"}, Kubeconfig: kubeconfigValue, Kubectl: kubectl}
+		connection = Connection{
+			Version:    1,
+			Phase:      "prepared",
+			Sandbox:    resolved.Identity,
+			Kubeconfig: kubeconfigValue,
+			Kubectl:    kubectl,
+			SSH: SSHState{
+				Alias:          "kubeflock-" + uid,
+				IdentityFile:   identity,
+				KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"),
+				EntryFile:      filepath.Join(sshDir, uid+".conf"),
+				ProxyFile:      filepath.Join(sshDir, uid+"-proxy"),
+				ConfigFile:     configFile,
+				HostKey:        currentPin,
+			},
+			Herdr: HerdrState{
+				Label:   fmt.Sprintf("Kubeflock: %s [%s]", name, truncate(uid, 8)),
+				Session: "agent",
+			},
+		}
 		path = filepath.Join(options.Global.StateDir, uid+".json")
 		if err := saveJSON(path, connection); err != nil {
 			return Connection{}, err

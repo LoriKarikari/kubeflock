@@ -4,7 +4,7 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Conn
 
 ## Requirements
 
-- Go 1.26 or newer
+- Go 1.27 or newer
 - Herdr 0.9.0 or newer
 - Helm 3
 - A kubeconfig for a cluster with Agent Sandbox `v1beta1`, gVisor, and persistent storage

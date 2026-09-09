@@ -1,4 +1,4 @@
-export GOTOOLCHAIN := "go1.26.0"
+export GOTOOLCHAIN := "go1.27.1"
 
 default: verify
 
