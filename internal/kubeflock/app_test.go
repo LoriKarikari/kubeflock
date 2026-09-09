@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -29,6 +30,34 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestConfigCommandSavesVerifiedTarget(t *testing.T) {
+	dir := t.TempDir()
+	kubectl := filepath.Join(dir, "kubectl")
+	if err := os.WriteFile(kubectl, []byte("#!/bin/sh\nprintf 'homelab\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "config.yaml")
+	var output, stderr strings.Builder
+	app := NewApp(strings.NewReader(""), &output, &stderr)
+	status := app.Run(context.Background(), []string{
+		"--config", config,
+		"--kubectl", kubectl,
+		"cluster", "config",
+		"--context", "homelab",
+		"--namespace", "developer",
+	})
+	if status != 0 {
+		t.Fatalf("status=%d stderr=%q", status, stderr.String())
+	}
+	got, err := loadConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != (KubeTarget{Context: "homelab", Namespace: "developer"}) {
+		t.Fatalf("config = %#v", got)
 	}
 }
 
