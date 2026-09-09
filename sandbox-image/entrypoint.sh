@@ -20,6 +20,7 @@ fi
 
 umask 077
 mkdir -p "$HOME/.ssh" "$HOME/.pi/agent"
+chmod 700 "$HOME/.ssh"
 printf '%s\n' "$SANDBOX_SSH_PUBKEY" > "$HOME/.ssh/authorized_keys.new"
 if ! ssh-keygen -l -f "$HOME/.ssh/authorized_keys.new" >/dev/null 2>&1; then
   rm -f "$HOME/.ssh/authorized_keys.new"
@@ -31,6 +32,7 @@ mv "$HOME/.ssh/authorized_keys.new" "$HOME/.ssh/authorized_keys"
 if [ ! -f "$HOME/.ssh/ssh_host_ed25519_key" ]; then
   ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/ssh_host_ed25519_key"
 fi
+chmod 600 "$HOME/.ssh/ssh_host_ed25519_key"
 
 herdr integration install pi >/dev/null
 /usr/sbin/sshd -e \
