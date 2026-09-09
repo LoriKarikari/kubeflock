@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/samber/lo"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -66,12 +67,10 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	if err != nil {
 		return nil, err
 	}
-	matches := []ManagedSandbox{}
-	for _, item := range saved {
-		if item.Sandbox.Claim.Context == target.Context && item.Sandbox.Claim.Namespace == target.Namespace && item.Sandbox.Claim.Name == name {
-			matches = append(matches, item.Sandbox)
-		}
-	}
+	matches := lo.FilterMap(saved, func(item savedSandbox, _ int) (ManagedSandbox, bool) {
+		claim := item.Sandbox.Claim
+		return item.Sandbox, claim.Context == target.Context && claim.Namespace == target.Namespace && claim.Name == name
+	})
 	if len(matches) > 1 {
 		return nil, fmt.Errorf("multiple saved sandboxes match %s/%s", target.Namespace, name)
 	}
@@ -251,12 +250,10 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	if err != nil {
 		return nil, err
 	}
-	managed := []ManagedSandbox{}
-	for _, item := range managedFiles {
-		if item.Sandbox.Claim.Context == target.Context && item.Sandbox.Claim.Namespace == target.Namespace {
-			managed = append(managed, item.Sandbox)
-		}
-	}
+	managed := lo.FilterMap(managedFiles, func(item savedSandbox, _ int) (ManagedSandbox, bool) {
+		claim := item.Sandbox.Claim
+		return item.Sandbox, claim.Context == target.Context && claim.Namespace == target.Namespace
+	})
 	client, err := newKubeClient(ctx, target, options.Kubeconfig)
 	if err != nil {
 		return nil, err

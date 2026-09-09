@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
@@ -197,14 +198,16 @@ func runtimeClassCheck(out string) CheckResult {
 	return okCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler))
 }
 
+type storageClass struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+}
+
 func storageCheck(out string) CheckResult {
 	var value struct {
-		Items []struct {
-			Metadata struct {
-				Name        string            `json:"name"`
-				Annotations map[string]string `json:"annotations"`
-			} `json:"metadata"`
-		} `json:"items"`
+		Items []storageClass `json:"items"`
 	}
 	if json.Unmarshal([]byte(out), &value) != nil {
 		return failedCheck("storage", "StorageClass list returned unreadable JSON", "unknown")
@@ -212,17 +215,12 @@ func storageCheck(out string) CheckResult {
 	if len(value.Items) == 0 {
 		return failedCheck("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure")
 	}
-	names := make([]string, len(value.Items))
-	defaultName := ""
-	for i, item := range value.Items {
-		names[i] = item.Metadata.Name
-		if item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
-			defaultName = item.Metadata.Name
-		}
-	}
+	names := lo.Map(value.Items, func(item storageClass, _ int) string { return item.Metadata.Name })
 	label := ""
-	if defaultName != "" {
-		label = " (default " + defaultName + ")"
+	if fallback, found := lo.Find(value.Items, func(item storageClass) bool {
+		return item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true"
+	}); found {
+		label = " (default " + fallback.Metadata.Name + ")"
 	}
 	return okCheck("storage", fmt.Sprintf("%d StorageClass(es): %s%s", len(names), strings.Join(names, ", "), label))
 }
@@ -241,16 +239,18 @@ func checkAccess(ctx context.Context, target KubeTarget, options globalOptions, 
 	return permissions
 }
 
+type resourceQuota struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Hard map[string]string `json:"hard"`
+	} `json:"spec"`
+}
+
 func quotaCheck(raw string) CheckResult {
 	var value struct {
-		Items []struct {
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-			Spec struct {
-				Hard map[string]string `json:"hard"`
-			} `json:"spec"`
-		} `json:"items"`
+		Items []resourceQuota `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
 		return failedCheck("budgets-quota", "ResourceQuota list returned unreadable JSON", "unknown")
@@ -258,14 +258,10 @@ func quotaCheck(raw string) CheckResult {
 	if len(value.Items) == 0 {
 		return failedCheck("budgets-quota", "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", "missing-infrastructure")
 	}
-	names := []string{}
-	seen := sets.New[string]()
-	for _, item := range value.Items {
-		names = append(names, item.Metadata.Name)
-		for key := range item.Spec.Hard {
-			seen.Insert(key)
-		}
-	}
+	names := lo.Map(value.Items, func(item resourceQuota, _ int) string { return item.Metadata.Name })
+	seen := sets.New(lo.FlatMap(value.Items, func(item resourceQuota, _ int) []string {
+		return slices.Sorted(maps.Keys(item.Spec.Hard))
+	})...)
 	hasCompute := seen.Intersection(computeQuotaKeys).Len() != 0
 	hasStorage := seen.Intersection(storageQuotaKeys).Len() != 0
 	if hasCompute && hasStorage {

@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/gofrs/flock v0.13.1
 	github.com/google/renameio/v2 v2.0.2
+	github.com/samber/lo v1.53.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.44.0
 	golang.org/x/sync v0.18.0

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -100,13 +101,7 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 }
 
 func matchingMachines(machines []herdrMachine, connection Connection) []herdrMachine {
-	matches := []herdrMachine{}
-	for _, machine := range machines {
-		if owns(machine, connection) {
-			matches = append(matches, machine)
-		}
-	}
-	return matches
+	return lo.Filter(machines, func(machine herdrMachine, _ int) bool { return owns(machine, connection) })
 }
 
 func disableMachine(ctx context.Context, connection Connection) error {
@@ -137,17 +132,13 @@ func selectConnection(target *KubeTarget, stateDir, name string) (*savedConnecti
 	if err != nil {
 		return nil, err
 	}
-	matches := []savedConnection{}
-	for _, saved := range connections {
-		connection := saved.Connection
-		if target != nil && (connection.Sandbox.Context != target.Context || connection.Sandbox.Namespace != target.Namespace) {
-			continue
+	matches := lo.Filter(connections, func(saved savedConnection, _ int) bool {
+		sandbox := saved.Connection.Sandbox
+		if target != nil && (sandbox.Context != target.Context || sandbox.Namespace != target.Namespace) {
+			return false
 		}
-		if name != "" && connection.Sandbox.Name != name {
-			continue
-		}
-		matches = append(matches, saved)
-	}
+		return name == "" || sandbox.Name == name
+	})
 	if len(matches) > 1 {
 		return nil, errors.New("multiple saved sandboxes match; specify a sandbox name")
 	}
