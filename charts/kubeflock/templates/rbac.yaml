@@ -23,7 +23,7 @@ rules:
     verbs: ["list"]
   - apiGroups: [""]
     resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["create"] # NOSONAR -- required to read the sandbox host key and proxy SSH
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get"]

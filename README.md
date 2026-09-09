@@ -4,7 +4,7 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Conn
 
 ## Requirements
 
-- Node.js 22.18 or newer
+- Go 1.27 or newer
 - Herdr 0.9.0 or newer
 - Helm 3
 - A kubeconfig for a cluster with Agent Sandbox `v1beta1`, gVisor, and persistent storage
@@ -21,9 +21,8 @@ docker push REGISTRY/kubeflock-sandbox:VERSION
 Set `sandbox.image` in your values file to that tag or digest. See [`sandbox-image/README.md`](sandbox-image/README.md) for the image contents and authentication model.
 
 ```bash
-npm ci
-npm run build
-npm link
+go build -o bin/kubeflock ./cmd/kubeflock
+go install ./cmd/kubeflock
 herdr plugin link .
 ```
 
@@ -87,3 +86,13 @@ kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
 ```
 
 Kubeflock does not copy private keys, repository credentials, model credentials, or SSH agents into a Sandbox. It provides no Sandbox or PVC deletion command.
+
+## Development
+
+Install [`just`](https://just.systems), then run the same gates CI runs:
+
+```bash
+just verify
+just helm
+just image
+```

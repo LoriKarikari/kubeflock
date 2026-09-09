@@ -10,18 +10,37 @@ permissions:
 
 jobs:
   verify:
+    name: Go
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
-          node-version: 24
-          cache: npm
+          go-version: 1.27.1
+          cache: true
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063
+        with:
+          tool: just@1.58.0
+      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - run: just verify
+
+  helm:
+    name: Helm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - run: helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
-      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 > /dev/null
-      - run: docker build --tag kubeflock-sandbox:test sandbox-image
-      - run: sandbox-image/test.sh kubeflock-sandbox:test
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063
+        with:
+          tool: just@1.58.0
+      - run: just helm
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063
+        with:
+          tool: just@1.58.0
+      - run: just image
