@@ -21,4 +21,5 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: test/chart.sh
+      - run: helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
+      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml > /dev/null
