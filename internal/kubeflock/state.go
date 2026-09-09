@@ -1,8 +1,8 @@
 package kubeflock
 
 import (
-	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -21,7 +21,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 }
 
 func saveJSON(path string, value any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := json.Marshal(value, jsontext.WithIndent("  "), json.Deterministic(true))
 	if err != nil {
 		return err
 	}
@@ -33,9 +33,7 @@ func loadJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
+	if err := json.Unmarshal(data, value, json.RejectUnknownMembers(true)); err != nil {
 		return fmt.Errorf("decode %q: %w", path, err)
 	}
 	return nil

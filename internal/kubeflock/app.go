@@ -3,7 +3,8 @@ package kubeflock
 import (
 	"cmp"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -424,7 +425,10 @@ func printCheckReport(out io.Writer, report CheckReport) {
 }
 
 func writeJSON(out io.Writer, value any) error {
-	encoder := json.NewEncoder(out)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
+	data, err := json.Marshal(value, jsontext.WithIndent("  "), json.Deterministic(true))
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(append(data, '\n'))
+	return err
 }

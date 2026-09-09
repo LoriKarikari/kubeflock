@@ -3,7 +3,8 @@ package kubeflock
 import (
 	"cmp"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
@@ -283,7 +284,7 @@ func quotaCheck(raw string) CheckResult {
 
 func limitsCheck(raw string) CheckResult {
 	var value struct {
-		Items []json.RawMessage `json:"items"`
+		Items []jsontext.Value `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
 		result := failedCheck("budgets-limits", "LimitRange list returned unreadable JSON", "unknown")

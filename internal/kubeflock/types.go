@@ -44,7 +44,7 @@ type Connection struct {
 	Herdr      HerdrState      `json:"herdr"`
 	Kubeconfig *string         `json:"kubeconfig"`
 	Kubectl    string          `json:"kubectl"`
-	ProfileID  string          `json:"profileId,omitempty"`
+	ProfileID  string          `json:"profileId,omitzero"`
 }
 
 type PersistentHome struct {
@@ -61,17 +61,17 @@ type ManagedSandbox struct {
 	Template     string           `json:"template"`
 	WarmPool     string           `json:"warmPool"`
 	IdentityFile string           `json:"identityFile"`
-	Sandbox      *SandboxIdentity `json:"sandbox,omitempty"`
-	Home         *PersistentHome  `json:"home,omitempty"`
+	Sandbox      *SandboxIdentity `json:"sandbox,omitzero"`
+	Home         *PersistentHome  `json:"home,omitzero"`
 }
 
 type CheckResult struct {
 	Name        string `json:"name"`
 	OK          bool   `json:"ok"`
-	Advisory    bool   `json:"advisory,omitempty"`
-	Category    string `json:"category,omitempty"`
+	Advisory    bool   `json:"advisory,omitzero"`
+	Category    string `json:"category,omitzero"`
 	Message     string `json:"message"`
-	Remediation string `json:"remediation,omitempty"`
+	Remediation string `json:"remediation,omitzero"`
 }
 
 type CheckReport struct {
@@ -86,11 +86,11 @@ type SandboxStatus struct {
 	Name       string          `json:"name"`
 	Namespace  string          `json:"namespace"`
 	State      string          `json:"state"`
-	Step       string          `json:"step,omitempty"`
-	Message    string          `json:"message,omitempty"`
+	Step       string          `json:"step,omitzero"`
+	Message    string          `json:"message,omitzero"`
 	ClaimUID   string          `json:"claimUid"`
-	SandboxUID string          `json:"sandboxUid,omitempty"`
+	SandboxUID string          `json:"sandboxUid,omitzero"`
 	Template   string          `json:"template"`
 	WarmPool   string          `json:"warmPool"`
-	Home       *PersistentHome `json:"home,omitempty"`
+	Home       *PersistentHome `json:"home,omitzero"`
 }

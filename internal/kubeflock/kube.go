@@ -4,7 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
@@ -110,7 +110,9 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 		}
 		var credential struct {
 			Status struct {
-				Token, ClientCertificateData, ClientKeyData string
+				Token                 string `json:"token"`
+				ClientCertificateData string `json:"clientCertificateData"`
+				ClientKeyData         string `json:"clientKeyData"`
 			} `json:"status"`
 		}
 		if json.Unmarshal([]byte(output), &credential) != nil {
