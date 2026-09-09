@@ -304,7 +304,7 @@ func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl,
 			HostKey:        hostKey,
 		},
 		Herdr: HerdrState{
-			Label:   fmt.Sprintf("Kubeflock: %s [%s]", sandbox.Name, truncate(uid, 8)),
+			Label:   sandbox.Name,
 			Session: "agent",
 		},
 	}

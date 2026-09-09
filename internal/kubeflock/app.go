@@ -240,15 +240,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(
-				a.Out,
-				"ready sandbox %s from %s; home %s (%s); connected as %s\n",
-				created.Name,
-				created.Template,
-				created.Home.Name,
-				created.Home.Capacity,
-				created.SSHAlias,
-			)
+			fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
 			return nil
 		},
 	}
@@ -319,7 +311,7 @@ func (a *App) connectCommand(name string, options *globalOptions) *cobra.Command
 			if name == "connect" {
 				verb = "connected"
 			}
-			fmt.Fprintf(a.Out, "%s sandbox %s/%s as %s\n", verb, connection.Sandbox.Namespace, connection.Sandbox.Name, connection.SSH.Alias)
+			fmt.Fprintf(a.Out, "%s %s to Herdr\n", verb, connection.Sandbox.Name)
 			return nil
 		},
 	}
@@ -467,15 +459,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(
-				a.Out,
-				"ready sandbox %s from %s; home %s (%s); connected as %s\n",
-				created.Name,
-				created.Template,
-				created.Home.Name,
-				created.Home.Capacity,
-				created.SSHAlias,
-			)
+			fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
 			return nil
 		},
 	}
