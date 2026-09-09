@@ -22,4 +22,4 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
-      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml > /dev/null
+      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 > /dev/null

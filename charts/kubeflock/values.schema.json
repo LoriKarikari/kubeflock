@@ -43,11 +43,12 @@
     "sandbox": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["templateName", "image", "imagePullPolicy", "sshPublicKey", "resources", "storage"],
+      "required": ["templateName", "image", "imagePullPolicy", "sshPort", "sshPublicKey", "resources", "storage"],
       "properties": {
         "templateName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
         "image": { "type": "string", "minLength": 1 },
         "imagePullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] },
+        "sshPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "sshPublicKey": { "type": "string", "pattern": "^ssh-(ed25519|rsa) " },
         "resources": {
           "type": "object",

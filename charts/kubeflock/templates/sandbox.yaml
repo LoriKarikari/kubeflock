@@ -25,9 +25,11 @@ spec:
           env:
             - name: SANDBOX_SSH_PUBKEY
               value: {{ .Values.sandbox.sshPublicKey | quote }}
+            - name: SSH_PORT
+              value: {{ .Values.sandbox.sshPort | quote }}
           ports:
             - name: ssh
-              containerPort: 2222
+              containerPort: {{ .Values.sandbox.sshPort }}
           resources:
             requests:
               cpu: {{ printf "%dm" (int .Values.sandbox.resources.cpuRequestMillicores) | quote }}

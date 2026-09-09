@@ -14,7 +14,7 @@ cp charts/kubeflock/values.example.yaml values.yaml
 
 `namespace.name` is the developer namespace managed by the chart. The Helm release itself lives separately in `kubeflock-system`.
 
-The image must provide Herdr 0.9.0 or newer, OpenSSH on port 2222, `socat`, and UID/GID 1000. The private SSH key remains on the workstation. Only its public key belongs in values.
+The image must provide Herdr 0.9.0 or newer, OpenSSH configured through `SSH_PORT`, `socat`, and UID/GID 1000. `sandbox.sshPort` defaults to 2222. The private SSH key remains on the workstation. Only its public key belongs in values.
 
 Capacity is explicit. `maxActiveSandboxes` determines namespace Pod, CPU, and memory quotas. `maxRetainedHomes` determines PVC and storage quotas. A retained home consumes storage after its Sandbox stops using compute.
 

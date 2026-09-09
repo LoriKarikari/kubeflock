@@ -40,7 +40,13 @@ const podListSchema = Schema.Struct({
       })),
       annotations: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.String })),
     }),
-    spec: Schema.Struct({ containers: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+    spec: Schema.Struct({ containers: Schema.Array(Schema.Struct({
+      name: Schema.String,
+      ports: Schema.optional(Schema.Array(Schema.Struct({
+        name: Schema.optional(Schema.String),
+        containerPort: Schema.Number,
+      }))),
+    })) }),
   })),
 });
 
@@ -85,7 +91,10 @@ const securityContextSchema = Schema.Struct({
 
 const containerSchema = Schema.Struct({
   securityContext: Schema.optional(securityContextSchema),
-  ports: Schema.optional(Schema.Array(Schema.Struct({ containerPort: Schema.Number }))),
+  ports: Schema.optional(Schema.Array(Schema.Struct({
+    name: Schema.optional(Schema.String),
+    containerPort: Schema.Number,
+  }))),
   resources: Schema.optional(Schema.Struct({
     requests: Schema.optional(Schema.Struct({ cpu: Schema.String, memory: Schema.String })),
     limits: Schema.optional(Schema.Struct({ cpu: Schema.String, memory: Schema.String })),
@@ -155,6 +164,7 @@ export interface ResolvedSandbox {
   readonly identity: SandboxIdentity;
   readonly pod: string;
   readonly container: string;
+  readonly sshPort: number;
 }
 
 const config = (context: string, kubeconfig?: string): Effect.Effect<KubeConfig, Error> =>
@@ -201,6 +211,19 @@ const config = (context: string, kubeconfig?: string): Effect.Effect<KubeConfig,
     } : candidate);
     return kc;
   });
+
+interface ContainerPort {
+  readonly name?: string;
+  readonly containerPort: number;
+}
+
+const findSshPort = (ports: ReadonlyArray<ContainerPort> | undefined): number | undefined => {
+  const port = ports?.find((candidate) => candidate.name === "ssh")
+    ?? ports?.find((candidate) => candidate.containerPort === 2222);
+  return port && Number.isInteger(port.containerPort) && port.containerPort >= 1 && port.containerPort <= 65_535
+    ? port.containerPort
+    : undefined;
+};
 
 export const resolveSandbox = (
   target: KubeTarget,
@@ -249,8 +272,13 @@ export const resolveSandbox = (
     const pod = pods[0]!;
     const preferred = pod.metadata.annotations?.["kubectl.kubernetes.io/default-container"];
     const container = preferred ?? (pod.spec.containers.length === 1 ? pod.spec.containers[0]!.name : undefined);
-    if (!container || !pod.spec.containers.some((candidate) => candidate.name === container)) {
+    const selected = pod.spec.containers.find((candidate) => candidate.name === container);
+    if (!container || !selected) {
       return yield* Effect.fail(new Error(`pod ${target.namespace}/${pod.metadata.name} has no unambiguous default container`));
+    }
+    const sshPort = findSshPort(selected.ports);
+    if (sshPort === undefined) {
+      return yield* Effect.fail(new Error(`pod ${target.namespace}/${pod.metadata.name} has no valid SSH port`));
     }
     return {
       identity: {
@@ -261,6 +289,7 @@ export const resolveSandbox = (
       },
       pod: pod.metadata.name,
       container,
+      sshPort,
     };
   });
 
@@ -295,7 +324,7 @@ const validateTemplate = (
   }
 
   const sshContainer = pod.containers.find((container) =>
-    container.ports?.some((port) => port.containerPort === 2222)
+    findSshPort(container.ports) !== undefined
     && container.volumeMounts?.some((mount) => mount.mountPath === "/home/agent"),
   );
   const mount = sshContainer?.volumeMounts?.find((candidate) => candidate.mountPath === "/home/agent");
@@ -304,7 +333,7 @@ const validateTemplate = (
     (candidate) => candidate.metadata.name === volume?.persistentVolumeClaim?.claimName,
   );
   if (!sshContainer || !homeTemplate) {
-    throw new Error(`SandboxTemplate ${template.metadata.name} must expose SSH on 2222 and mount a persistent home at /home/agent`);
+    throw new Error(`SandboxTemplate ${template.metadata.name} must expose a valid SSH port and mount a persistent home at /home/agent`);
   }
   return {
     name: template.metadata.name,
