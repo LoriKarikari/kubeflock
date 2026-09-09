@@ -1,0 +1,86 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: {{ .Values.sandbox.templateName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+spec:
+  networkPolicyManagement: Managed
+  podTemplate:
+    spec:
+      runtimeClassName: gvisor
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: {{ .Values.sandbox.image | quote }}
+          imagePullPolicy: {{ .Values.sandbox.imagePullPolicy }}
+          env:
+            - name: SANDBOX_SSH_PUBKEY
+              value: {{ .Values.sandbox.sshPublicKey | quote }}
+          ports:
+            - name: ssh
+              containerPort: 2222
+          resources:
+            requests:
+              cpu: {{ printf "%dm" .Values.sandbox.resources.cpuRequestMillicores | quote }}
+              memory: {{ printf "%dMi" .Values.sandbox.resources.memoryRequestMi | quote }}
+            limits:
+              cpu: {{ printf "%dm" .Values.sandbox.resources.cpuLimitMillicores | quote }}
+              memory: {{ printf "%dMi" .Values.sandbox.resources.memoryLimitMi | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: home
+              mountPath: /home/agent
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: home
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.sandbox.storage.className | quote }}
+        resources:
+          requests:
+            storage: {{ printf "%dGi" .Values.sandbox.storage.sizeGi | quote }}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: {{ .Values.sandbox.templateName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+spec:
+  replicas: 0
+  sandboxTemplateRef:
+    name: {{ .Values.sandbox.templateName }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-default-deny-ingress
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]

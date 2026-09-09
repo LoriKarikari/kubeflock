@@ -95,12 +95,12 @@ describe("permissions", () => {
     }
   });
 
-  it("probes exec and log as subresources, not named pods", async () => {
+  it("probes only the permissions used by current commands", async () => {
     const { log } = await runWithFake({});
     expect(log).toContain("auth can-i create pods --subresource=exec");
-    expect(log).toContain("auth can-i get pods --subresource=log");
-    expect(log).not.toContain("pods/exec");
-    expect(log).not.toContain("pods/log");
+    expect(log).not.toContain("auth can-i delete");
+    expect(log).not.toContain("auth can-i patch");
+    expect(log).not.toContain("auth can-i get secrets");
   });
 });
 

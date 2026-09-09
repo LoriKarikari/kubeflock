@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+spec:
+  hard:
+    pods: {{ .Values.capacity.maxActiveSandboxes | quote }}
+    persistentvolumeclaims: {{ .Values.capacity.maxRetainedHomes | quote }}
+    requests.cpu: {{ printf "%dm" (mul .Values.sandbox.resources.cpuRequestMillicores .Values.capacity.maxActiveSandboxes) | quote }}
+    limits.cpu: {{ printf "%dm" (mul .Values.sandbox.resources.cpuLimitMillicores .Values.capacity.maxActiveSandboxes) | quote }}
+    requests.memory: {{ printf "%dMi" (mul .Values.sandbox.resources.memoryRequestMi .Values.capacity.maxActiveSandboxes) | quote }}
+    limits.memory: {{ printf "%dMi" (mul .Values.sandbox.resources.memoryLimitMi .Values.capacity.maxActiveSandboxes) | quote }}
+    requests.storage: {{ printf "%dGi" (mul .Values.sandbox.storage.sizeGi .Values.capacity.maxRetainedHomes) | quote }}
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubeflock.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: {{ printf "%dm" .Values.sandbox.resources.cpuRequestMillicores | quote }}
+        memory: {{ printf "%dMi" .Values.sandbox.resources.memoryRequestMi | quote }}
+      default:
+        cpu: {{ printf "%dm" .Values.sandbox.resources.cpuLimitMillicores | quote }}
+        memory: {{ printf "%dMi" .Values.sandbox.resources.memoryLimitMi | quote }}

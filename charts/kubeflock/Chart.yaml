@@ -1,0 +1,9 @@
+apiVersion: v2
+name: kubeflock
+description: Kubernetes resources for personal Kubeflock sandboxes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/LoriKarikari/kubeflock
+sources:
+  - https://github.com/LoriKarikari/kubeflock
