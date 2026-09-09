@@ -12,6 +12,7 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr throu
 - A persistent StorageClass
 - A namespace with ResourceQuota
 - An administrator-defined `SandboxTemplate` and `SandboxWarmPool`
+- Helm 3 for cluster setup
 
 Install the CLI and link the Herdr plugin from this repository:
 
@@ -50,14 +51,23 @@ kubeflock cluster check --timeout 2m --output json
 
 A cluster administrator creates each template with Kubernetes manifests. A template fixes the image, compute budget, storage budget, runtime, security settings, home mount, and SSH environment.
 
-Each usable template has one `SandboxWarmPool` with the same namespace and a reference to the template. Kubeflock cold creation requires `spec.replicas: 0`.
-
-Apply the administrator-owned resources with Kubernetes tooling:
+The Kubeflock Helm chart creates a developer namespace, least-privilege access, quotas, a starter template, and its zero-replica warm pool. Copy and edit its values first:
 
 ```bash
-kubectl apply -f sandbox-template.yaml
-kubectl apply -f sandbox-warm-pool.yaml
+cp charts/kubeflock/values.example.yaml values.yaml
+helm template kubeflock charts/kubeflock \
+  --namespace agent-sandboxes \
+  --values values.yaml
+helm upgrade --install kubeflock charts/kubeflock \
+  --namespace agent-sandboxes \
+  --create-namespace \
+  --values values.yaml \
+  --wait
 ```
+
+See [`charts/kubeflock/README.md`](charts/kubeflock/README.md) for controller installation, GitOps rendering, access, budgets, and upgrades.
+
+Each usable template has one `SandboxWarmPool` with the same namespace and a reference to the template. Kubeflock cold creation requires `spec.replicas: 0`.
 
 Kubeflock accepts only templates that provide:
 

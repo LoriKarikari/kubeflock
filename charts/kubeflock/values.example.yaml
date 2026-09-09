@@ -1,0 +1,14 @@
+access:
+  subjects:
+    - kind: User
+      name: developer@example.com
+
+sandbox:
+  image: registry.example.com/kubeflock-sandbox@sha256:replace-me
+  sshPublicKey: ssh-ed25519 replace-me
+  storage:
+    className: standard
+
+capacity:
+  maxActiveSandboxes: 2
+  maxRetainedHomes: 4
