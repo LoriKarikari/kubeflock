@@ -43,6 +43,10 @@ func managedSandboxDir(dir string) string { return filepath.Join(dir, "sandboxes
 func managedSandboxPath(dir, uid string) string {
 	return filepath.Join(managedSandboxDir(dir), uid+".json")
 }
+func retainedHomeDir(dir string) string { return filepath.Join(dir, "retained-homes") }
+func retainedHomePath(dir, uid string) string {
+	return filepath.Join(retainedHomeDir(dir), uid+".json")
+}
 
 func validateConnection(connection Connection) error {
 	if connection.Version != 1 || (connection.Phase != "prepared" && connection.Phase != "connected") {
@@ -141,4 +145,38 @@ func listManagedSandboxes(stateDir string) ([]savedSandbox, error) {
 type savedSandbox struct {
 	File    string
 	Sandbox ManagedSandbox
+}
+
+func validateRetainedHome(home RetainedHome) error {
+	if home.Version != 1 || home.State != "available" || !home.Origin.complete() || home.Home.Name == "" || home.Home.UID == "" || home.Home.Capacity == "" {
+		return errors.New("invalid retained home")
+	}
+	return nil
+}
+
+func listRetainedHomes(stateDir string) ([]RetainedHome, error) {
+	entries, err := os.ReadDir(retainedHomeDir(stateDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var homes []RetainedHome
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		var home RetainedHome
+		path := filepath.Join(retainedHomeDir(stateDir), entry.Name())
+		if err := loadJSON(path, &home); err != nil {
+			return nil, err
+		}
+		if err := validateRetainedHome(home); err != nil {
+			return nil, fmt.Errorf("decode %q: %w", path, err)
+		}
+		homes = append(homes, home)
+	}
+	slices.SortFunc(homes, func(a, b RetainedHome) int { return strings.Compare(a.Home.UID, b.Home.UID) })
+	return homes, nil
 }

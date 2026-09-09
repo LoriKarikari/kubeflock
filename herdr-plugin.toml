@@ -59,6 +59,20 @@ contexts = ["workspace", "pane"]
 command = ["bin/kubeflock", "sandbox", "resume"]
 
 [[actions]]
+id = "sandbox-delete"
+title = "Kubeflock: Delete sandbox and retain home"
+description = "Stop and remove a sandbox while preserving its persistent home."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "delete"]
+
+[[actions]]
+id = "home-list"
+title = "Kubeflock: List retained homes"
+description = "List persistent homes retained from deleted sandboxes."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "home", "list"]
+
+[[actions]]
 id = "sandbox-disconnect"
 title = "Kubeflock: Disconnect sandbox"
 description = "Disconnect the saved sandbox while leaving its remote processes running."

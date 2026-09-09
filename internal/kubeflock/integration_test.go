@@ -44,15 +44,21 @@ type fixtureClaim struct {
 }
 
 type fixtureAPI struct {
-	mu          sync.Mutex
-	claims      map[string]fixtureClaim
-	modes       map[string]sandboxOperatingMode
-	generations map[string]int
-	holdMode    bool
-	creates     int
-	reads       map[string]int
-	methods     []string
-	auth        []string
+	mu            sync.Mutex
+	claims        map[string]fixtureClaim
+	modes         map[string]sandboxOperatingMode
+	generations   map[string]int
+	sandboxes     map[string]bool
+	homeOwned     map[string]bool
+	homeAdoptable map[string]bool
+	failDelete    map[string]int
+	failHomePatch int
+	holdMode      bool
+	creates       int
+	reads         map[string]int
+	methods       []string
+	paths         []string
+	auth          []string
 }
 
 func (f *fixtureAPI) snapshot() (int, map[string]int, map[string]fixtureClaim, []string, []string) {
@@ -65,6 +71,25 @@ func (f *fixtureAPI) holdLifecycle(hold bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.holdMode = hold
+}
+
+func (f *fixtureAPI) failNextDelete(resource string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failDelete[resource]++
+}
+
+func (f *fixtureAPI) failNextHomePatch() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failHomePatch++
+}
+
+func (f *fixtureAPI) retentionSnapshot(name string) (claim, sandbox, homeOwned bool, paths []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, claim = f.claims[name]
+	return claim, f.sandboxes[name], f.homeOwned[name], slices.Clone(f.paths)
 }
 
 func (f *fixtureAPI) lifecycleSnapshot(name string) (sandboxOperatingMode, string, string) {
@@ -81,6 +106,9 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.methods = append(f.methods, request.Method)
+	if request.Method == http.MethodDelete {
+		f.paths = append(f.paths, request.URL.Path)
+	}
 	f.auth = append(f.auth, request.Header.Get("Authorization"))
 	response.Header().Set("content-type", "application/json")
 	path := request.URL.Path
@@ -104,12 +132,49 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		f.createClaim(response, request)
 		return
 	}
+	if strings.Contains(path, "/sandboxclaims/") && request.Method == http.MethodDelete {
+		_, name, _ := strings.CutLast(path, "/")
+		if !validOrphanDelete(request, "claim-"+name) {
+			response.WriteHeader(http.StatusConflict)
+			return
+		}
+		if f.failDelete["claim"] > 0 {
+			f.failDelete["claim"]--
+			response.WriteHeader(http.StatusInternalServerError)
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim delete failed", "code": 500})
+			return
+		}
+		delete(f.claims, name)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+		return
+	}
 	if strings.HasSuffix(path, "/sandboxclaims") {
 		f.listClaims(response, request)
 		return
 	}
 	if strings.Contains(path, "/sandboxes/") {
 		_, name, _ := strings.CutLast(path, "/")
+		if request.Method == http.MethodDelete {
+			if !validOrphanDelete(request, "sandbox-"+name) {
+				response.WriteHeader(http.StatusConflict)
+				return
+			}
+			if f.failDelete["sandbox"] > 0 {
+				f.failDelete["sandbox"]--
+				response.WriteHeader(http.StatusInternalServerError)
+				writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "sandbox delete failed", "code": 500})
+				return
+			}
+			f.sandboxes[name] = false
+			f.homeOwned[name] = f.homeAdoptable[name]
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+			return
+		}
+		if !f.sandboxes[name] {
+			response.WriteHeader(http.StatusNotFound)
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "sandbox not found", "code": 404})
+			return
+		}
 		if request.Method == http.MethodPatch {
 			var operations []struct {
 				Path  string               `json:"path"`
@@ -169,17 +234,39 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
 		_, name, _ := strings.CutLast(path, "/")
 		sandbox := strings.TrimPrefix(name, "home-")
+		if request.Method == http.MethodPatch {
+			data, _ := io.ReadAll(request.Body)
+			if f.failHomePatch > 0 {
+				f.failHomePatch--
+				response.WriteHeader(http.StatusForbidden)
+				writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC patch forbidden", "code": 403})
+				return
+			}
+			if !bytes.Contains(data, []byte("sandbox-name-hash")) || bytes.Contains(data, []byte("ownerReferences")) {
+				response.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			f.homeAdoptable[sandbox] = false
+		}
 		controller := true
+		owners := []any{}
+		if f.homeOwned[sandbox] {
+			owners = append(owners, map[string]any{"uid": "sandbox-" + sandbox, "controller": controller})
+		}
+		labels := map[string]string{}
+		if f.homeAdoptable[sandbox] {
+			labels[sandboxNameHashLabel] = "fixture"
+		}
 		writeFixture(response, map[string]any{
 			"apiVersion": "v1",
 			"kind":       "PersistentVolumeClaim",
 			"metadata": map[string]any{
-				"name":      name,
-				"namespace": "dev",
-				"uid":       name + "-uid",
-				"ownerReferences": []any{map[string]any{
-					"uid": "sandbox-" + sandbox, "controller": controller,
-				}},
+				"name":            name,
+				"namespace":       "dev",
+				"uid":             name + "-uid",
+				"resourceVersion": "1",
+				"labels":          labels,
+				"ownerReferences": owners,
 			},
 			"spec":   map[string]any{"storageClassName": "longhorn"},
 			"status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}},
@@ -227,6 +314,9 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	f.claims[name] = claim
 	f.modes[name] = modeRunning
 	f.generations[name] = 1
+	f.sandboxes[name] = true
+	f.homeOwned[name] = true
+	f.homeAdoptable[name] = true
 	response.WriteHeader(http.StatusCreated)
 	writeFixture(response, claim)
 }
@@ -286,6 +376,13 @@ func (f *fixtureAPI) sandboxFixture(name string) map[string]any {
 			"conditions": []any{condition},
 		},
 	}
+}
+
+func validOrphanDelete(request *http.Request, uid string) bool {
+	var options metav1.DeleteOptions
+	return json.NewDecoder(request.Body).Decode(&options) == nil &&
+		options.PropagationPolicy != nil && *options.PropagationPolicy == metav1.DeletePropagationOrphan &&
+		options.Preconditions != nil && options.Preconditions.UID != nil && string(*options.Preconditions.UID) == uid
 }
 
 func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Encode(value) }
@@ -452,6 +549,14 @@ func helperHerdr(args []string) {
 		save()
 		return
 	}
+	if len(args) == 3 && args[0] == "machine" && args[1] == "remove" {
+		if os.Getenv("FAKE_HERDR_FAIL_REMOVE") == "1" {
+			os.Exit(1)
+		}
+		state.Machines = slices.DeleteFunc(state.Machines, func(machine herdrMachine) bool { return machine.ID == args[2] })
+		save()
+		return
+	}
 	if len(args) == 3 && args[0] == "machine" && (args[1] == "enable" || args[1] == "disable") {
 		if os.Getenv("FAKE_HERDR_FAIL_"+strings.ToUpper(args[1])) == "1" {
 			os.Exit(1)
@@ -532,7 +637,10 @@ func invoke(t *testing.T, binary string, args, env []string, input string) resul
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	api := &fixtureAPI{claims: map[string]fixtureClaim{}, modes: map[string]sandboxOperatingMode{}, generations: map[string]int{}, reads: map[string]int{}}
+	api := &fixtureAPI{
+		claims: map[string]fixtureClaim{}, modes: map[string]sandboxOperatingMode{}, generations: map[string]int{},
+		sandboxes: map[string]bool{}, homeOwned: map[string]bool{}, homeAdoptable: map[string]bool{}, failDelete: map[string]int{}, reads: map[string]int{},
+	}
 	server := httptest.NewServer(api)
 	defer server.Close()
 	binary := buildCLI(t, dir)
@@ -634,6 +742,69 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 
 	mismatch := invoke(t, binary, []string{"sandbox", "reconnect", "delayed", "--kubeconfig", kubeconfig}, append(env, "FAKE_HOST_KEY="+keyB), "")
 	assertCLI(t, "mismatch", mismatch, -1, "", "host key mismatch")
+
+	api.mu.Lock()
+	api.homeOwned["delayed"] = false
+	api.mu.Unlock()
+	unknownOwner := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "unknown home owner", unknownOwner, 2, "", "sandbox home home-delayed was replaced")
+	api.mu.Lock()
+	api.homeOwned["delayed"] = true
+	api.mu.Unlock()
+
+	api.failNextDelete("claim")
+	failedClaimDelete := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "failed claim delete", failedClaimDelete, 2, "", "orphan Sandbox from claim")
+	claim, sandbox, owned, _ := api.retentionSnapshot("delayed")
+	if !claim || !sandbox || !owned {
+		t.Fatal("claim delete failure changed ownership")
+	}
+	api.failNextHomePatch()
+	failedHomePatch := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "failed home patch", failedHomePatch, 2, "", "prevent controller re-adoption")
+	claim, sandbox, owned, _ = api.retentionSnapshot("delayed")
+	if claim || !sandbox || !owned {
+		t.Fatal("home patch failure changed ownership")
+	}
+	api.failNextDelete("sandbox")
+	failedSandboxDelete := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "failed sandbox delete", failedSandboxDelete, 2, "", "orphan home from Sandbox")
+	claim, sandbox, owned, _ = api.retentionSnapshot("delayed")
+	if claim || !sandbox || !owned {
+		t.Fatal("sandbox delete failure lost the retained home")
+	}
+	failedProfileRemove := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_REMOVE=1"), "")
+	assertCLI(t, "failed profile remove", failedProfileRemove, 2, "", "remove Herdr connection")
+	deleted := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "delete and retain", deleted, 0, "retained home home-delayed-uid", "stopping compute")
+	claim, sandbox, owned, paths := api.retentionSnapshot("delayed")
+	if claim || sandbox || owned {
+		t.Fatalf("retention state: claim=%v sandbox=%v owned=%v", claim, sandbox, owned)
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "/persistentvolumeclaims/") {
+			t.Fatalf("PVC deletion requested at %s", path)
+		}
+	}
+	homes := invoke(t, binary, []string{"sandbox", "home", "list", "--output", "json"}, env, "")
+	assertCLI(t, "retained homes", homes, 0, `"uid": "home-delayed-uid"`, "")
+	_, _, retainedHash := api.lifecycleSnapshot("delayed")
+	if retainedHash != originalHome || !strings.Contains(retainedHash, "sha256:fixture-home") {
+		t.Fatalf("retained home readback = %q; want %q", retainedHash, originalHome)
+	}
+	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("connection state still exists: %v", err)
+	}
+	data, _ = os.ReadFile(herdrState)
+	_ = json.Unmarshal(data, &herdrData)
+	if len(herdrData.Machines) != 1 || herdrData.Machines[0].Target != "unrelated" {
+		t.Fatalf("managed Herdr profile was not removed: %#v", herdrData.Machines)
+	}
+	sshData, _ = os.ReadFile(sshConfig)
+	if strings.Contains(string(sshData), "kubeflock-") || !strings.Contains(string(sshData), "Host unrelated") {
+		t.Fatalf("managed SSH entry was not removed safely: %s", sshData)
+	}
+
 	insecure := invoke(t, binary, []string{"sandbox", "create", "unsafe", "--template", "insecure", "--identity", identity, "--kubeconfig", kubeconfig}, env, "")
 	assertCLI(t, "insecure", insecure, -1, "", "does not meet Kubeflock pod hardening requirements")
 	_, _, claims, methods, auths := api.snapshot()
@@ -656,7 +827,7 @@ func TestConditionObservedRequiresCurrentGeneration(t *testing.T) {
 func assertAPITrace(t *testing.T, methods, auths []string) {
 	t.Helper()
 	for _, method := range methods {
-		if method != http.MethodGet && method != http.MethodPost && method != http.MethodPatch {
+		if method != http.MethodGet && method != http.MethodPost && method != http.MethodPatch && method != http.MethodDelete {
 			t.Fatalf("unexpected API method %s", method)
 		}
 	}

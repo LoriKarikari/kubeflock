@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,6 +24,8 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/ptr"
 )
+
+const sandboxNameHashLabel = "agents.x-k8s.io/sandbox-name-hash"
 
 var (
 	sandboxResource  = schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxes"}
@@ -358,7 +362,21 @@ func findSSHPort(ports []corev1.ContainerPort) int32 {
 }
 
 func (k *kubeClient) getSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxObject, error) {
+	sandbox, err := k.getSandboxIfExists(ctx, target, name, expectedUID)
+	if err != nil {
+		return nil, err
+	}
+	if sandbox == nil {
+		return nil, fmt.Errorf("sandbox %s/%s is missing", target.Namespace, name)
+	}
+	return sandbox, nil
+}
+
+func (k *kubeClient) getSandboxIfExists(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxObject, error) {
 	object, err := k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -420,6 +438,74 @@ func (k *kubeClient) verifyHome(ctx context.Context, target KubeTarget, sandbox 
 		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
 	}
 	return nil
+}
+
+func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if string(pvc.UID) != expected.UID || !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
+		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
+	}
+	patch := []map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
+	}
+	for _, label := range []string{sandboxNameHashLabel, "agents.x-k8s.io/adoptable"} {
+		if _, exists := pvc.Labels[label]; exists {
+			patch = append(patch, map[string]any{"op": "remove", "path": "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
+		}
+	}
+	if len(patch) == 2 {
+		return nil
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = k.core.PersistentVolumeClaims(target.Namespace).Patch(ctx, pvc.Name, types.JSONPatchType, data, metav1.PatchOptions{})
+	return err
+}
+
+func (k *kubeClient) verifyRetainedHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if string(pvc.UID) != expected.UID {
+		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
+	}
+	if slices.ContainsFunc(pvc.OwnerReferences, func(owner metav1.OwnerReference) bool { return owner.UID == types.UID(sandbox.UID) }) {
+		return fmt.Errorf("sandbox home %s is still owned by Sandbox UID %s", expected.Name, sandbox.UID)
+	}
+	return nil
+}
+
+func (k *kubeClient) orphanDeleteClaim(ctx context.Context, target KubeTarget, identity SandboxIdentity) error {
+	uid := types.UID(identity.UID)
+	policy := metav1.DeletePropagationOrphan
+	err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
+		Preconditions:     &metav1.Preconditions{UID: &uid},
+		PropagationPolicy: &policy,
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (k *kubeClient) orphanDeleteSandbox(ctx context.Context, target KubeTarget, identity SandboxIdentity) error {
+	uid := types.UID(identity.UID)
+	policy := metav1.DeletePropagationOrphan
+	err := k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
+		Preconditions:     &metav1.Preconditions{UID: &uid},
+		PropagationPolicy: &policy,
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (resolvedSandbox, error) {

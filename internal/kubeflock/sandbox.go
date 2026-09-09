@@ -86,6 +86,11 @@ type lifecycleResult struct {
 	SSHAlias string
 }
 
+type retainResult struct {
+	Name string
+	Home PersistentHome
+}
+
 type createdSandbox struct {
 	Name     string
 	Template string
@@ -384,6 +389,129 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 		result.SSHAlias = connection.SSH.Alias
 	}
 	return result, nil
+}
+
+func retainSandboxHome(ctx context.Context, target KubeTarget, name string, options lifecycleOptions) (retainResult, error) {
+	managed, err := selectManaged(target, name, options.Global.StateDir)
+	if err != nil {
+		return retainResult{}, err
+	}
+	if managed == nil {
+		return retainResult{}, errors.New("no saved Kubeflock sandbox matches this target")
+	}
+	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
+		return retainResult{}, fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return retainResult{}, err
+	}
+	claim, err := client.getClaim(ctx, target.Namespace, managed.Claim.Name)
+	if err != nil {
+		return retainResult{}, err
+	}
+	sandbox, err := client.getSandboxIfExists(ctx, target, managed.Sandbox.Name, managed.Sandbox.UID)
+	if err != nil {
+		return retainResult{}, err
+	}
+	if claim != nil {
+		if err := verifyClaim(claim, target, managed.Claim.Name, managed.WarmPool, managed); err != nil {
+			return retainResult{}, err
+		}
+		if sandbox == nil || claim.Status.Sandbox.Name != managed.Sandbox.Name {
+			return retainResult{}, errors.New("saved SandboxClaim no longer owns the expected Sandbox")
+		}
+	}
+	connection, err := selectConnection(&target, options.Global.StateDir, managed.Sandbox.Name)
+	if err != nil {
+		return retainResult{}, err
+	}
+	if connection != nil && connection.Connection.Sandbox.UID != managed.Sandbox.UID {
+		return retainResult{}, errors.New("saved connection uses a different sandbox identity")
+	}
+	if sandbox != nil {
+		if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+			return retainResult{}, err
+		}
+		if err := disableMachine(ctx, valueOrZero(connection)); err != nil {
+			return retainResult{}, fmt.Errorf("detach Herdr connection: %w", err)
+		}
+		if err := client.setOperatingMode(ctx, target, sandbox, modeSuspended); err != nil {
+			return retainResult{}, err
+		}
+		if err := waitForOperatingMode(ctx, client, target, *managed.Sandbox, modeSuspended, options.Timeout, options.Poll); err != nil {
+			return retainResult{}, err
+		}
+	}
+	if claim != nil {
+		if err := client.orphanDeleteClaim(ctx, target, managed.Claim); err != nil {
+			return retainResult{}, fmt.Errorf("orphan Sandbox from claim: %w", err)
+		}
+		if err := waitForClaimDeletion(ctx, client, target, managed.Claim, options.Timeout, options.Poll); err != nil {
+			return retainResult{}, err
+		}
+		if sandbox, err = client.getSandboxIfExists(ctx, target, managed.Sandbox.Name, managed.Sandbox.UID); err != nil {
+			return retainResult{}, err
+		}
+		if sandbox == nil {
+			return retainResult{}, errors.New("sandbox disappeared while its claim was orphan-deleted; refusing to continue")
+		}
+	}
+	if sandbox != nil {
+		if err := client.preventHomeReAdoption(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+			return retainResult{}, fmt.Errorf("prevent controller re-adoption of home: %w", err)
+		}
+		if err := client.orphanDeleteSandbox(ctx, target, *managed.Sandbox); err != nil {
+			return retainResult{}, fmt.Errorf("orphan home from Sandbox: %w", err)
+		}
+		if err := waitForSandboxDeletion(ctx, client, target, *managed.Sandbox, options.Timeout, options.Poll); err != nil {
+			return retainResult{}, err
+		}
+	}
+	if err := client.verifyRetainedHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+		return retainResult{}, err
+	}
+	retained := RetainedHome{Version: 1, State: "available", Origin: *managed.Sandbox, Home: *managed.Home}
+	if err := saveJSON(retainedHomePath(options.Global.StateDir, managed.Home.UID), retained); err != nil {
+		return retainResult{}, err
+	}
+	if err := removeConnection(ctx, connection); err != nil {
+		return retainResult{}, fmt.Errorf("remove Herdr connection: %w", err)
+	}
+	if err := os.Remove(managedSandboxPath(options.Global.StateDir, managed.Claim.UID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return retainResult{}, err
+	}
+	return retainResult{Name: managed.Claim.Name, Home: *managed.Home}, nil
+}
+
+func valueOrZero(connection *savedConnection) Connection {
+	if connection == nil {
+		return Connection{}
+	}
+	return connection.Connection
+}
+
+func waitForClaimDeletion(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, timeout, poll time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, poll, timeout, true, func(ctx context.Context) (bool, error) {
+		claim, err := client.getClaim(ctx, target.Namespace, identity.Name)
+		if err != nil {
+			return false, err
+		}
+		if claim == nil {
+			return true, nil
+		}
+		if string(claim.Metadata.UID) != identity.UID {
+			return false, fmt.Errorf("SandboxClaim %s/%s was replaced during deletion", target.Namespace, identity.Name)
+		}
+		return false, nil
+	})
+}
+
+func waitForSandboxDeletion(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, timeout, poll time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, poll, timeout, true, func(ctx context.Context) (bool, error) {
+		sandbox, err := client.getSandboxIfExists(ctx, target, identity.Name, identity.UID)
+		return sandbox == nil, err
+	})
 }
 
 func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, mode sandboxOperatingMode, timeout, poll time.Duration) error {
