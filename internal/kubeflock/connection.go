@@ -29,14 +29,14 @@ type connectOptions struct {
 	Global                          globalOptions
 }
 
-func (a *App) runHerdr(ctx context.Context, args ...string) (string, error) {
+func runHerdr(ctx context.Context, args ...string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	return runCaptured(callCtx, cmp.Or(os.Getenv("KUBEFLOCK_HERDR"), os.Getenv("HERDR_BIN_PATH"), "herdr"), args, nil, nil)
 }
 
-func (a *App) listMachines(ctx context.Context) ([]herdrMachine, error) {
-	out, err := a.runHerdr(ctx, "machine", "list", "--json")
+func listMachines(ctx context.Context) ([]herdrMachine, error) {
+	out, err := runHerdr(ctx, "machine", "list", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -56,8 +56,8 @@ func owns(machine herdrMachine, connection Connection) bool {
 	return machine.Label == connection.Herdr.Label && machine.Target == connection.SSH.Alias && machine.Session == connection.Herdr.Session
 }
 
-func (a *App) ensureMachine(ctx context.Context, connection Connection) (string, error) {
-	machines, err := a.listMachines(ctx)
+func ensureMachine(ctx context.Context, connection Connection) (string, error) {
+	machines, err := listMachines(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -70,7 +70,7 @@ func (a *App) ensureMachine(ctx context.Context, connection Connection) (string,
 				return "", fmt.Errorf("saved Herdr profile %s is missing or no longer matches its identity", connection.ProfileID)
 			}
 			if !machine.Enabled {
-				_, err = a.runHerdr(ctx, "machine", "enable", machine.ID)
+				_, err = runHerdr(ctx, "machine", "enable", machine.ID)
 			}
 			return machine.ID, err
 		}
@@ -81,10 +81,10 @@ func (a *App) ensureMachine(ctx context.Context, connection Connection) (string,
 		return "", fmt.Errorf("multiple Herdr profiles match %s", connection.SSH.Alias)
 	}
 	if len(matches) == 0 {
-		if _, err := a.runHerdr(ctx, "machine", "add", connection.SSH.Alias, "--label", connection.Herdr.Label, "--remote-session", connection.Herdr.Session); err != nil {
+		if _, err := runHerdr(ctx, "machine", "add", connection.SSH.Alias, "--label", connection.Herdr.Label, "--remote-session", connection.Herdr.Session); err != nil {
 			return "", fmt.Errorf("herdr exited: %w", err)
 		}
-		machines, err = a.listMachines(ctx)
+		machines, err = listMachines(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -94,7 +94,7 @@ func (a *App) ensureMachine(ctx context.Context, connection Connection) (string,
 		return "", errors.New("machine add succeeded without saving the Kubeflock profile")
 	}
 	if !matches[0].Enabled {
-		_, err = a.runHerdr(ctx, "machine", "enable", matches[0].ID)
+		_, err = runHerdr(ctx, "machine", "enable", matches[0].ID)
 	}
 	return matches[0].ID, err
 }
@@ -109,11 +109,11 @@ func matchingMachines(machines []herdrMachine, connection Connection) []herdrMac
 	return matches
 }
 
-func (a *App) disableMachine(ctx context.Context, connection Connection) error {
+func disableMachine(ctx context.Context, connection Connection) error {
 	if connection.Phase != "connected" {
 		return nil
 	}
-	machines, err := a.listMachines(ctx)
+	machines, err := listMachines(ctx)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func (a *App) disableMachine(ctx context.Context, connection Connection) error {
 			return fmt.Errorf("refusing to disable non-Kubeflock profile %s", connection.ProfileID)
 		}
 		if machine.Enabled {
-			_, err = a.runHerdr(ctx, "machine", "disable", machine.ID)
+			_, err = runHerdr(ctx, "machine", "disable", machine.ID)
 		}
 		return err
 	}
@@ -157,7 +157,7 @@ func selectConnection(target *KubeTarget, stateDir, name string) (*savedConnecti
 	return &matches[0], nil
 }
 
-func (a *App) connect(ctx context.Context, target KubeTarget, options connectOptions) (Connection, error) {
+func connect(ctx context.Context, target KubeTarget, options connectOptions) (Connection, error) {
 	saved, err := selectConnection(&target, options.Global.StateDir, options.Name)
 	if err != nil {
 		return Connection{}, err
@@ -197,7 +197,7 @@ func (a *App) connect(ctx context.Context, target KubeTarget, options connectOpt
 	pinCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	pinArgs := []string{"--context", target.Context, "--namespace", target.Namespace, "exec", resolved.Pod, "-c", resolved.Container, "--", "cat", "/home/agent/.ssh/ssh_host_ed25519_key.pub"}
-	currentPinRaw, err := a.runKubectl(pinCtx, globalOptions{Kubeconfig: kubeconfig, Kubectl: kubectl}, pinArgs...)
+	currentPinRaw, err := runKubectl(pinCtx, globalOptions{Kubeconfig: kubeconfig, Kubectl: kubectl}, pinArgs...)
 	if err != nil {
 		return Connection{}, fmt.Errorf("kubectl exec failed: %s", commandDetail(err))
 	}
@@ -245,7 +245,7 @@ func (a *App) connect(ctx context.Context, target KubeTarget, options connectOpt
 	if err := ensureSSHFiles(connection, path); err != nil {
 		return Connection{}, err
 	}
-	profileID, err := a.ensureMachine(ctx, connection)
+	profileID, err := ensureMachine(ctx, connection)
 	if err != nil {
 		return Connection{}, err
 	}
@@ -259,7 +259,7 @@ func (a *App) connect(ctx context.Context, target KubeTarget, options connectOpt
 	return connection, nil
 }
 
-func (a *App) disconnect(ctx context.Context, name, stateDir string) (Connection, error) {
+func disconnect(ctx context.Context, name, stateDir string) (Connection, error) {
 	saved, err := selectConnection(nil, stateDir, name)
 	if err != nil {
 		return Connection{}, err
@@ -267,7 +267,7 @@ func (a *App) disconnect(ctx context.Context, name, stateDir string) (Connection
 	if saved == nil {
 		return Connection{}, errors.New("no saved Kubeflock connection matches this target")
 	}
-	if err := a.disableMachine(ctx, saved.Connection); err != nil {
+	if err := disableMachine(ctx, saved.Connection); err != nil {
 		return Connection{}, err
 	}
 	return saved.Connection, nil

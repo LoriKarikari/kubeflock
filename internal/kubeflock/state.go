@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/google/renameio/v2"
 )
@@ -89,7 +90,7 @@ func listConnections(dir string) ([]savedConnection, error) {
 		}
 		out = append(out, savedConnection{File: path, Connection: connection})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
+	slices.SortFunc(out, func(a, b savedConnection) int { return strings.Compare(a.File, b.File) })
 	return out, nil
 }
 
@@ -135,7 +136,7 @@ func listManagedSandboxes(stateDir string) ([]savedSandbox, error) {
 		}
 		out = append(out, savedSandbox{File: path, Sandbox: sandbox})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
+	slices.SortFunc(out, func(a, b savedSandbox) int { return strings.Compare(a.File, b.File) })
 	return out, nil
 }
 

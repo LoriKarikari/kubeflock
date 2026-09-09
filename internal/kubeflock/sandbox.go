@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -24,13 +26,7 @@ type claimProgress struct {
 }
 
 func progress(claim sandboxClaim) claimProgress {
-	var ready *condition
-	for i := range claim.Status.Conditions {
-		if claim.Status.Conditions[i].Type == "Ready" {
-			ready = &claim.Status.Conditions[i]
-			break
-		}
-	}
+	ready := meta.FindStatusCondition(claim.Status.Conditions, "Ready")
 	detail := "waiting for the Sandbox controller"
 	if ready != nil {
 		detail = ready.Reason
@@ -44,10 +40,10 @@ func progress(claim sandboxClaim) claimProgress {
 			detail = "waiting for the Sandbox controller"
 		}
 	}
-	if ready != nil && ready.Status == "True" && claim.Status.Sandbox.Name != "" {
+	if ready != nil && ready.Status == metav1.ConditionTrue && claim.Status.Sandbox.Name != "" {
 		return claimProgress{State: "ready", SandboxName: claim.Status.Sandbox.Name}
 	}
-	if ready != nil && ready.Status == "False" && failedReason.MatchString(detail) {
+	if ready != nil && ready.Status == metav1.ConditionFalse && failedReason.MatchString(detail) {
 		return claimProgress{State: "failed", Step: "readiness", Message: detail}
 	}
 	return claimProgress{State: "provisioning", Step: "readiness", Message: detail}
@@ -148,7 +144,7 @@ func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, cl
 	return latest.SandboxName, nil
 }
 
-func (a *App) createSandbox(ctx context.Context, target KubeTarget, name string, options createOptions) (createdSandbox, error) {
+func createSandbox(ctx context.Context, target KubeTarget, name string, options createOptions) (createdSandbox, error) {
 	if len(validation.IsDNS1123Label(name)) != 0 {
 		return createdSandbox{}, fmt.Errorf("invalid sandbox name %q", name)
 	}
@@ -242,14 +238,14 @@ func (a *App) createSandbox(ctx context.Context, target KubeTarget, name string,
 			return createdSandbox{}, err
 		}
 	}
-	connection, err := a.connect(ctx, target, connectOptions{Name: name, ExpectedUID: resolved.Identity.UID, IdentityFile: identity, Global: options.Global})
+	connection, err := connect(ctx, target, connectOptions{Name: name, ExpectedUID: resolved.Identity.UID, IdentityFile: identity, Global: options.Global})
 	if err != nil {
 		return createdSandbox{}, err
 	}
 	return createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}, nil
 }
 
-func (a *App) listSandboxStatus(ctx context.Context, target KubeTarget, options globalOptions) ([]SandboxStatus, error) {
+func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOptions) ([]SandboxStatus, error) {
 	managedFiles, err := listManagedSandboxes(options.StateDir)
 	if err != nil {
 		return nil, err
@@ -272,7 +268,7 @@ func (a *App) listSandboxStatus(ctx context.Context, target KubeTarget, options 
 	if err != nil {
 		return nil, err
 	}
-	machines, err := a.listMachines(ctx)
+	machines, err := listMachines(ctx)
 	if err != nil {
 		return nil, err
 	}

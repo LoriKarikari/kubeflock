@@ -25,7 +25,7 @@ type exitError struct {
 	code int
 }
 
-func (e exitError) Error() string { return "" }
+func (exitError) Error() string { return "" }
 
 func NewApp(in io.Reader, out, stderr io.Writer) *App {
 	return &App{In: in, Out: out, Err: stderr, Now: time.Now}
@@ -102,7 +102,7 @@ func (a *App) configCommand(options *globalOptions) *cobra.Command {
 			}
 			ctx, cancel := context.WithTimeout(command.Context(), 15*time.Second)
 			defer cancel()
-			out, err := a.runKubectl(ctx, *options, "config", "get-contexts", "-o", "name")
+			out, err := runKubectl(ctx, *options, "config", "get-contexts", "-o", "name")
 			if err != nil {
 				return fmt.Errorf("could not read kubeconfig contexts: %s", truncate(sanitizeLines(commandDetail(err)), 200))
 			}
@@ -195,7 +195,7 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.connectCommand("reconnect", options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
-		a.createActionCommand(),
+		createActionCommand(),
 		a.createWizardCommand(options),
 	)
 	return sandbox
@@ -215,7 +215,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createSandbox(command.Context(), target, args[0], createOptions{Template: template, IdentityFile: identity, Timeout: timeout, Poll: 2 * time.Second, Global: *options})
+			created, err := createSandbox(command.Context(), target, args[0], createOptions{Template: template, IdentityFile: identity, Timeout: timeout, Poll: 2 * time.Second, Global: *options})
 			if err != nil {
 				return err
 			}
@@ -242,7 +242,7 @@ func (a *App) listCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			statuses, err := a.listSandboxStatus(command.Context(), target, *options)
+			statuses, err := listSandboxStatus(command.Context(), target, *options)
 			if err != nil {
 				return err
 			}
@@ -281,7 +281,7 @@ func (a *App) connectCommand(name string, options *globalOptions) *cobra.Command
 			if err != nil {
 				return err
 			}
-			connection, err := a.connect(command.Context(), target, connectOptions{Name: sandboxName, IdentityFile: identity, Global: *options})
+			connection, err := connect(command.Context(), target, connectOptions{Name: sandboxName, IdentityFile: identity, Global: *options})
 			if err != nil {
 				return err
 			}
@@ -306,7 +306,7 @@ func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			connection, err := a.disconnect(command.Context(), name, options.StateDir)
+			connection, err := disconnect(command.Context(), name, options.StateDir)
 			if err != nil {
 				return err
 			}
@@ -340,7 +340,7 @@ func (a *App) proxyCommand() *cobra.Command {
 	return command
 }
 
-func (a *App) createActionCommand() *cobra.Command {
+func createActionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:    "create-action",
 		Hidden: true,
@@ -350,7 +350,7 @@ func (a *App) createActionCommand() *cobra.Command {
 			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
 				args = append(args, "--workspace", workspace)
 			}
-			_, err := a.runHerdr(command.Context(), args...)
+			_, err := runHerdr(command.Context(), args...)
 			return err
 		},
 	}
@@ -387,7 +387,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createSandbox(command.Context(), target, name, createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options})
+			created, err := createSandbox(command.Context(), target, name, createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options})
 			if err != nil {
 				return err
 			}

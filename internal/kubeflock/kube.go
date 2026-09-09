@@ -12,6 +12,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,33 +35,22 @@ type kubeClient struct {
 	core    coreclient.CoreV1Interface
 }
 
-type condition struct {
-	Type    string `json:"type"`
-	Status  string `json:"status"`
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
-}
-
 type sandboxClaim struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		WarmPoolRef struct {
-			Name string `json:"name"`
-		} `json:"warmPoolRef"`
+		WarmPoolRef corev1.LocalObjectReference `json:"warmPoolRef"`
 	} `json:"spec"`
 	Status struct {
-		Conditions []condition `json:"conditions"`
-		Sandbox    struct {
-			Name string `json:"name"`
-		} `json:"sandbox"`
+		Conditions []metav1.Condition          `json:"conditions"`
+		Sandbox    corev1.LocalObjectReference `json:"sandbox"`
 	} `json:"status"`
 }
 
 type sandboxObject struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Status   struct {
-		Selector   string      `json:"selector"`
-		Conditions []condition `json:"conditions"`
+		Selector   string             `json:"selector"`
+		Conditions []metav1.Condition `json:"conditions"`
 	} `json:"status"`
 }
 
@@ -76,10 +66,8 @@ type sandboxTemplate struct {
 type sandboxPool struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		Replicas           *int32 `json:"replicas"`
-		SandboxTemplateRef struct {
-			Name string `json:"name"`
-		} `json:"sandboxTemplateRef"`
+		Replicas           *int32                      `json:"replicas"`
+		SandboxTemplateRef corev1.LocalObjectReference `json:"sandboxTemplateRef"`
 	} `json:"spec"`
 }
 
@@ -345,13 +333,7 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 	if expectedUID != "" && string(sandbox.Metadata.UID) != expectedUID {
 		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, expectedUID, sandbox.Metadata.UID)
 	}
-	ready := false
-	for _, condition := range sandbox.Status.Conditions {
-		if condition.Type == "Ready" && condition.Status == "True" {
-			ready = true
-		}
-	}
-	if !ready {
+	if !meta.IsStatusConditionTrue(sandbox.Status.Conditions, "Ready") {
 		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s is not ready", target.Namespace, name)
 	}
 	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandbox.Status.Selector})

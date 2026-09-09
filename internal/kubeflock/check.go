@@ -56,7 +56,7 @@ var requiredAccess = []accessCheck{
 	{Name: "perm-get-namespaces", Verb: "get", Resource: "namespaces"},
 }
 
-func (a *App) runKubectl(ctx context.Context, options globalOptions, args ...string) (string, error) {
+func runKubectl(ctx context.Context, options globalOptions, args ...string) (string, error) {
 	env := []string{}
 	if options.Kubeconfig != "" {
 		env = append(env, "KUBECONFIG="+options.Kubeconfig)
@@ -96,7 +96,7 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 	attempt := func(name, action string, args []string) (string, *CheckResult) {
 		callCtx, cancel := context.WithTimeout(ctx, perCall)
 		defer cancel()
-		out, err := a.runKubectl(callCtx, options, args...)
+		out, err := runKubectl(callCtx, options, args...)
 		if err == nil {
 			return out, nil
 		}
@@ -145,7 +145,7 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		limits.Advisory = true
 	}
 	checks = append(checks, limits)
-	checks = append(checks, a.checkAccess(ctx, target, options, req, perCall)...)
+	checks = append(checks, checkAccess(ctx, target, options, req, perCall)...)
 	report := CheckReport{Context: target.Context, Namespace: target.Namespace, OK: true, Checks: checks, CheckedAt: a.now().UTC()}
 	for _, check := range checks {
 		if !check.OK && !check.Advisory {
@@ -227,13 +227,13 @@ func storageCheck(out string) CheckResult {
 	return okCheck("storage", fmt.Sprintf("%d StorageClass(es): %s%s", len(names), strings.Join(names, ", "), label))
 }
 
-func (a *App) checkAccess(ctx context.Context, target KubeTarget, options globalOptions, req string, perCall time.Duration) []CheckResult {
+func checkAccess(ctx context.Context, target KubeTarget, options globalOptions, req string, perCall time.Duration) []CheckResult {
 	permissions := make([]CheckResult, len(requiredAccess))
 	group := new(errgroup.Group)
 	group.SetLimit(6)
 	for i, access := range requiredAccess {
 		group.Go(func() error {
-			permissions[i] = a.permissionCheck(ctx, target, options, req, perCall, access)
+			permissions[i] = permissionCheck(ctx, target, options, req, perCall, access)
 			return nil
 		})
 	}
@@ -302,7 +302,7 @@ func limitsCheck(raw string) CheckResult {
 	return okCheck("budgets-limits", fmt.Sprintf("%d LimitRange(s) present", len(value.Items)))
 }
 
-func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options globalOptions, req string, timeout time.Duration, access accessCheck) CheckResult {
+func permissionCheck(ctx context.Context, target KubeTarget, options globalOptions, req string, timeout time.Duration, access accessCheck) CheckResult {
 	shown := access.qualified()
 	args := []string{"auth", "can-i", access.Verb, access.resourceArg()}
 	if access.Subresource != "" {
@@ -315,7 +315,7 @@ func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options gl
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, err := a.runKubectl(callCtx, options, args...)
+	out, err := runKubectl(callCtx, options, args...)
 	var command *commandError
 	if errors.As(err, &command) && strings.TrimSpace(command.Stdout) != "" {
 		out = command.Stdout

@@ -36,7 +36,7 @@ type fixtureClaim struct {
 		} `json:"warmPoolRef"`
 	} `json:"spec"`
 	Status struct {
-		Conditions []condition `json:"conditions"`
+		Conditions []metav1.Condition `json:"conditions"`
 		Sandbox    struct {
 			Name string `json:"name"`
 		} `json:"sandbox"`
@@ -112,7 +112,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		f.creates++
 		claim := claimFixture(name, pool)
 		if name != "delayed" && name != "waiting" {
-			claim.Status.Conditions = []condition{{Type: "Ready", Status: "True"}}
+			claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 			claim.Status.Sandbox.Name = name
 		}
 		f.claims[name] = claim
@@ -127,7 +127,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 			if claim, ok := f.claims[name]; ok {
 				f.reads[name]++
 				if name == "delayed" && f.reads[name] >= 2 {
-					claim.Status.Conditions = []condition{{Type: "Ready", Status: "True"}}
+					claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 					claim.Status.Sandbox.Name = name
 					f.claims[name] = claim
 				}
