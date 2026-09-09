@@ -55,8 +55,7 @@ func runCaptured(ctx context.Context, command string, args, env []string, stdin 
 		return stdout.String(), nil
 	}
 	code := -1
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		code = exit.ExitCode()
 	}
 	return "", &commandError{Stderr: stderr.String(), Stdout: stdout.String(), ExitCode: code, TimedOut: ctx.Err() != nil, Cause: err}
@@ -71,8 +70,7 @@ func relay(ctx context.Context, command string, args []string, stdin io.Reader, 
 	if err == nil {
 		return 0, nil
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exit.ExitCode(), nil
 	}
 	return 1, err

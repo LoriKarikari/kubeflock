@@ -41,14 +41,11 @@ func (a *App) now() time.Time {
 func (a *App) Run(ctx context.Context, args []string) int {
 	root := a.command()
 	root.SetArgs(args)
-	root.SetIn(a.In)
-	root.SetOut(a.Out)
-	root.SetErr(a.Err)
-	if err := root.ExecuteContext(ctx); err != nil {
-		var exit exitError
-		if errors.As(err, &exit) {
-			return exit.code
-		}
+	err := root.ExecuteContext(ctx)
+	if exit, ok := errors.AsType[exitError](err); ok {
+		return exit.code
+	}
+	if err != nil {
 		fmt.Fprintf(a.Err, "kubeflock: %s\n", sanitizeLines(err.Error()))
 		return 2
 	}
@@ -71,6 +68,9 @@ func (a *App) command() *cobra.Command {
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
 	root.SetVersionTemplate("kubeflock {{.Version}}\n")
+	root.SetIn(a.In)
+	root.SetOut(a.Out)
+	root.SetErr(a.Err)
 	flags := root.PersistentFlags()
 	flags.StringVar(&options.ConfigPath, "config", defaultConfigPath(), "config file")
 	flags.StringVar(&options.Kubeconfig, "kubeconfig", "", "kubeconfig file")

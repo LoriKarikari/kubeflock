@@ -324,8 +324,7 @@ func invoke(t *testing.T, binary string, args, env []string, input string) resul
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
 	status := 0
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		status = exit.ExitCode()
 	} else if err != nil {
 		t.Fatal(err)

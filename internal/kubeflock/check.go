@@ -82,8 +82,8 @@ func failedCheck(name, message, category string) CheckResult {
 }
 
 func commandFailure(err error, fallback string) (detail, category string) {
-	var command *commandError
-	if !errors.As(err, &command) {
+	command, ok := errors.AsType[*commandError](err)
+	if !ok {
 		return truncate(sanitizeLines(err.Error()), 500), classify(err.Error(), false)
 	}
 	detail = cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), fallback)
@@ -312,8 +312,7 @@ func permissionCheck(ctx context.Context, target KubeTarget, options globalOptio
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, err := runKubectl(callCtx, options, args...)
-	var command *commandError
-	if errors.As(err, &command) && strings.TrimSpace(command.Stdout) != "" {
+	if command, ok := errors.AsType[*commandError](err); ok && strings.TrimSpace(command.Stdout) != "" {
 		out = command.Stdout
 	}
 	answer := strings.ToLower(strings.TrimSpace(out))

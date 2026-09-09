@@ -392,8 +392,7 @@ func (k *kubeClient) resolveHome(ctx context.Context, target KubeTarget, sandbox
 }
 
 func commandDetail(err error) string {
-	var command *commandError
-	if errors.As(err, &command) {
+	if command, ok := errors.AsType[*commandError](err); ok {
 		return cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), err.Error())
 	}
 	return err.Error()
