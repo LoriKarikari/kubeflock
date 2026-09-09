@@ -120,29 +120,35 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		checks = append(checks, okCheck("api-connectivity", "API reachable with saved context"))
 		served.Insert(strings.Fields(versions)...)
 	}
+	probe := func(name, action string, args []string, classify func(string) CheckResult) CheckResult {
+		out, failure := attempt(name, action, args)
+		if failure != nil {
+			return *failure
+		}
+		return classify(out)
+	}
 	online := connectivity == nil
 	for _, expectation := range expectedAPIGroups {
 		if online && !served.Has(expectation.Group+"/v1beta1") {
 			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", "missing-infrastructure"))
 			continue
 		}
-		out, result := attempt(expectation.Check, "discover "+expectation.Label, baseArgs(target, req, "api-resources", "--api-group="+expectation.Group, "-o", "name"))
-		checks = append(checks, resultOr(out, result, expectation.check))
+		checks = append(checks, probe(expectation.Check, "discover "+expectation.Label, baseArgs(target, req, "api-resources", "--api-group="+expectation.Group, "-o", "name"), expectation.check))
 	}
 
-	out, result := attempt("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"))
-	checks = append(checks, resultOr(out, result, runtimeClassCheck))
-
-	out, result = attempt("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"))
-	checks = append(checks, resultOr(out, result, storageCheck))
-
-	_, result = attempt("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"))
-	checks = append(checks, okOr(result, okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))))
-
-	out, result = attempt("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"))
-	checks = append(checks, resultOr(out, result, quotaCheck))
-	out, result = attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, req, "get", "limitrange", "-o", "json"))
-	checks = append(checks, advisoryOr(out, result, limitsCheck))
+	checks = append(checks, probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck))
+	checks = append(checks, probe("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"), storageCheck))
+	checks = append(checks, probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
+		return okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))
+	}))
+	checks = append(checks, probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"), quotaCheck))
+	out, failure := attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, req, "get", "limitrange", "-o", "json"))
+	limits := limitsCheck(out)
+	if failure != nil {
+		limits = *failure
+		limits.Advisory = true
+	}
+	checks = append(checks, limits)
 	checks = append(checks, a.checkAccess(ctx, target, options, req, perCall)...)
 	report := CheckReport{Context: target.Context, Namespace: target.Namespace, OK: true, Checks: checks, CheckedAt: a.now().UTC()}
 	for _, check := range checks {
@@ -166,29 +172,6 @@ type apiGroupExpectation struct {
 var expectedAPIGroups = []apiGroupExpectation{
 	{"agents-api", "agents.x-k8s.io", "Sandbox API agents.x-k8s.io/v1beta1", []string{"sandboxes"}},
 	{"extensions-api", "extensions.agents.x-k8s.io", "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1", []string{"sandboxclaims", "sandboxtemplates", "sandboxwarmpools"}},
-}
-
-func resultOr(out string, failure *CheckResult, classify func(string) CheckResult) CheckResult {
-	if failure != nil {
-		return *failure
-	}
-	return classify(out)
-}
-
-func okOr(failure *CheckResult, ok CheckResult) CheckResult {
-	if failure != nil {
-		return *failure
-	}
-	return ok
-}
-
-func advisoryOr(out string, failure *CheckResult, classify func(string) CheckResult) CheckResult {
-	if failure != nil {
-		value := *failure
-		value.Advisory = true
-		return value
-	}
-	return classify(out)
 }
 
 func (expectation apiGroupExpectation) check(out string) CheckResult {
