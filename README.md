@@ -3,9 +3,7 @@
 Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Connections travel through the Kubernetes API, so Sandboxes need no public SSH service or direct workstation route.
 
 
-<p align="center">
-  <img src="docs/demo.gif" width="960" alt="Kubeflock creates a Sandbox, launches Pi in Herdr, and reconnects without stopping Pi">
-</p>
+![Kubeflock creates a Sandbox, launches Pi in Herdr, and reconnects without stopping Pi](docs/demo.gif)
 
 ## Requirements
 
