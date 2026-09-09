@@ -7,7 +7,8 @@ access:
       name: developer@example.com
 
 sandbox:
-  image: registry.example.com/kubeflock-sandbox@sha256:replace-me
+  # Required. Kubeflock does not currently publish a Sandbox image.
+  image: registry.example.com/replace-with-your-sandbox-image@sha256:replace-me
   sshPublicKey: ssh-ed25519 replace-me
   storage:
     className: standard
