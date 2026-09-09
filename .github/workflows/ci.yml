@@ -18,11 +18,9 @@ jobs:
           go-version: 1.26.0
           cache: true
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310
-      - run: test -z "$(gofmt -l cmd internal)"
-      - run: go vet ./...
-      - run: go test ./...
-      - run: go build -o bin/kubeflock ./cmd/kubeflock
-      - run: helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
-      - run: helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 > /dev/null
-      - run: docker build --tag kubeflock-sandbox:test sandbox-image
-      - run: sandbox-image/test.sh kubeflock-sandbox:test
+      - uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063
+        with:
+          tool: just@1.58.0,golangci-lint@2.12.2
+      - run: just verify
+      - run: just helm
+      - run: just image

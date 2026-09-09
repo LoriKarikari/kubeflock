@@ -86,3 +86,13 @@ kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
 ```
 
 Kubeflock does not copy private keys, repository credentials, model credentials, or SSH agents into a Sandbox. It provides no Sandbox or PVC deletion command.
+
+## Development
+
+Install [`just`](https://just.systems), then run the same gates CI runs:
+
+```bash
+just verify
+just helm
+just image
+```

@@ -1,0 +1,57 @@
+version: "2"
+run:
+  timeout: 5m
+formatters:
+  enable:
+    - gofumpt
+linters:
+  enable:
+    - errorlint
+    - forbidigo
+    - forcetypeassert
+    - gocritic
+    - modernize
+    - perfsprint
+    - revive
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - forbidigo
+      - text: "^(exported|package-comments|unused-parameter):"
+        linters:
+          - revive
+      - text: "^omitzero:"
+        linters:
+          - modernize
+linters-settings:
+  forbidigo:
+    exclude-gotest-files: true
+    exclude-paths:
+      - ^cmd/
+    forbid:
+      - pattern: ^exec\.Command$
+        msg: use commandContext so timeouts kill the whole process group
+      - pattern: ^os\.(WriteFile|Create)$
+        msg: persist state through atomicWrite or saveJSON so crashes never leave half a file
+      - pattern: ^time\.Sleep$
+        msg: poll with wait.PollUntilContextTimeout instead of time.Sleep
+      - pattern: ^context\.(Background|TODO)$
+        msg: thread the caller's context instead of starting a new root context
+      - pattern: ^os\.Exit$
+        msg: return an exitError so the caller owns the exit code
+  revive:
+    enable:
+      - early-return
+      - indent-error-flow
+      - error-naming
+      - error-return
+      - errorf
+      - empty-block
+      - superfluous-else
+      - unreachable-code
+      - useless-break
+      - bool-literal-in-expr
+      - constant-logical-expr
