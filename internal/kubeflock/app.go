@@ -456,12 +456,6 @@ func printCheckReport(out io.Writer, report CheckReport) {
 			mark = "warn"
 		}
 		fmt.Fprintf(out, "  [%s] %s: %s\n", mark, check.Name, check.Message)
-		if !check.OK && check.Remediation != "" {
-			fmt.Fprintf(out, "         fix: %s\n", check.Remediation)
-		}
-		if !check.OK && check.Category != "" {
-			fmt.Fprintf(out, "         category: %s\n", check.Category)
-		}
 	}
 	if report.OK {
 		fmt.Fprintf(out, "PASS: %d/%d checks passed\n", passed, len(report.Checks))

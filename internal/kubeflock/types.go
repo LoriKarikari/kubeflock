@@ -74,12 +74,10 @@ type ManagedSandbox struct {
 }
 
 type CheckResult struct {
-	Name        string `json:"name"`
-	OK          bool   `json:"ok"`
-	Advisory    bool   `json:"advisory,omitzero"`
-	Category    string `json:"category,omitzero"`
-	Message     string `json:"message"`
-	Remediation string `json:"remediation,omitzero"`
+	Name     string `json:"name"`
+	OK       bool   `json:"ok"`
+	Advisory bool   `json:"advisory,omitzero"`
+	Message  string `json:"message"`
 }
 
 type CheckReport struct {

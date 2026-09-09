@@ -39,12 +39,6 @@ esac
 	return script, log
 }
 
-func TestCommandCategoryWithoutError(t *testing.T) {
-	if got := commandCategory(nil); got != "unknown" {
-		t.Fatalf("commandCategory(nil) = %q; want unknown", got)
-	}
-}
-
 func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 	kubectl, log := fakeCheckKubectl(t)
 	t.Setenv("FAKE_CHECK_LOG", log)
@@ -76,16 +70,16 @@ func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 	}
 }
 
-func TestClusterCheckClassifiesFailuresAndRedactsCredentials(t *testing.T) {
+func TestClusterCheckReportsFailuresWithoutCommandOutput(t *testing.T) {
 	kubectl, _ := fakeCheckKubectl(t)
 	tests := []struct {
-		env      string
-		check    string
-		category string
+		env   string
+		check string
+		text  string
 	}{
-		{env: "DENY_ALL", check: "perm-get-sandboxes", category: "denied"},
-		{env: "ALPHA_ONLY", check: "agents-api", category: "missing-infrastructure"},
-		{env: "CONFIGMAP_ONLY", check: "budgets-quota", category: "missing-infrastructure"},
+		{env: "DENY_ALL", check: "perm-get-sandboxes", text: "cannot get sandboxes.agents.x-k8s.io"},
+		{env: "ALPHA_ONLY", check: "agents-api", text: "is not served"},
+		{env: "CONFIGMAP_ONLY", check: "budgets-quota", text: "sets no compute"},
 	}
 	for _, test := range tests {
 		t.Run(test.env, func(t *testing.T) {
@@ -97,7 +91,7 @@ func TestClusterCheckClassifiesFailuresAndRedactsCredentials(t *testing.T) {
 				time.Second,
 			)
 			result := findCheck(report.Checks, test.check)
-			if result == nil || result.OK || result.Category != test.category {
+			if result == nil || result.OK || !strings.Contains(result.Message, test.text) {
 				t.Fatalf("%s = %#v", test.check, result)
 			}
 		})

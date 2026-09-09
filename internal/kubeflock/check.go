@@ -16,11 +16,10 @@ import (
 )
 
 const (
-	extensionsAPIGroup            = "extensions.agents.x-k8s.io"
-	missingInfrastructureCategory = "missing-infrastructure"
-	runtimeClassCheckName         = "runtimeclass-gvisor"
-	quotaCheckName                = "budgets-quota"
-	limitsCheckName               = "budgets-limits"
+	extensionsAPIGroup    = "extensions.agents.x-k8s.io"
+	runtimeClassCheckName = "runtimeclass-gvisor"
+	quotaCheckName        = "budgets-quota"
+	limitsCheckName       = "budgets-limits"
 )
 
 type globalOptions struct {
@@ -91,18 +90,8 @@ func okCheck(name, message string) CheckResult {
 	return CheckResult{Name: name, OK: true, Message: message}
 }
 
-func failedCheck(name, message, category string) CheckResult {
-	return CheckResult{Name: name, Category: category, Message: message, Remediation: remediation(category)}
-}
-
-func commandCategory(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	if command, ok := errors.AsType[*commandError](err); ok {
-		return classify(command.Stderr+"\n"+command.Stdout, command.TimedOut)
-	}
-	return classify(err.Error(), false)
+func failedCheck(name, message string) CheckResult {
+	return CheckResult{Name: name, Message: message}
 }
 
 func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOptions, requestTimeout time.Duration) CheckReport {
@@ -116,7 +105,7 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		if err == nil {
 			return out, nil
 		}
-		result := failedCheck(name, "could not "+action, commandCategory(err))
+		result := failedCheck(name, "could not "+action)
 		return out, &result
 	}
 
@@ -133,17 +122,17 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		checks = append(checks, okCheck("api-connectivity", "API reachable with saved context"))
 		served.Insert(strings.Fields(versions)...)
 	}
-	probe := func(name, action string, args []string, classify func(string) CheckResult) CheckResult {
+	probe := func(name, action string, args []string, checkOutput func(string) CheckResult) CheckResult {
 		out, failure := attempt(name, action, args)
 		if failure != nil {
 			return *failure
 		}
-		return classify(out)
+		return checkOutput(out)
 	}
 	online := connectivity == nil
 	for _, expectation := range expectedAPIGroups {
 		if online && !served.Has(expectation.Group+"/v1beta1") {
-			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", missingInfrastructureCategory))
+			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served"))
 			continue
 		}
 		checks = append(checks, probe(
@@ -219,7 +208,7 @@ func (expectation apiGroupExpectation) check(out string) CheckResult {
 		}
 	}
 	if len(missing) != 0 {
-		return failedCheck(expectation.Check, expectation.Label+" served but missing: "+strings.Join(missing, ", "), missingInfrastructureCategory)
+		return failedCheck(expectation.Check, expectation.Label+" served but missing: "+strings.Join(missing, ", "))
 	}
 	return okCheck(expectation.Check, expectation.Label+" served")
 }
@@ -229,10 +218,10 @@ func runtimeClassCheck(out string) CheckResult {
 		Handler string `json:"handler"`
 	}
 	if json.Unmarshal([]byte(out), &value) != nil {
-		return failedCheck(runtimeClassCheckName, "RuntimeClass gvisor returned unreadable JSON", "unknown")
+		return failedCheck(runtimeClassCheckName, "RuntimeClass gvisor returned unreadable JSON")
 	}
 	if !strings.Contains(strings.ToLower(value.Handler), "runsc") {
-		return failedCheck(runtimeClassCheckName, fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler), missingInfrastructureCategory)
+		return failedCheck(runtimeClassCheckName, fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler))
 	}
 	return okCheck(runtimeClassCheckName, fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler))
 }
@@ -249,10 +238,10 @@ func storageCheck(out string) CheckResult {
 		Items []storageClass `json:"items"`
 	}
 	if json.Unmarshal([]byte(out), &value) != nil {
-		return failedCheck("storage", "StorageClass list returned unreadable JSON", "unknown")
+		return failedCheck("storage", "StorageClass list returned unreadable JSON")
 	}
 	if len(value.Items) == 0 {
-		return failedCheck("storage", "no StorageClasses available for sandbox homes", missingInfrastructureCategory)
+		return failedCheck("storage", "no StorageClasses available for sandbox homes")
 	}
 	names := make([]string, len(value.Items))
 	label := ""
@@ -293,10 +282,10 @@ func quotaCheck(raw string) CheckResult {
 		Items []resourceQuota `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
-		return failedCheck(quotaCheckName, "ResourceQuota list returned unreadable JSON", "unknown")
+		return failedCheck(quotaCheckName, "ResourceQuota list returned unreadable JSON")
 	}
 	if len(value.Items) == 0 {
-		return failedCheck(quotaCheckName, "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", missingInfrastructureCategory)
+		return failedCheck(quotaCheckName, "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart")
 	}
 	names := make([]string, len(value.Items))
 	seen := sets.New[string]()
@@ -322,7 +311,7 @@ func quotaCheck(raw string) CheckResult {
 	if hard == "" {
 		hard = "empty"
 	}
-	return failedCheck(quotaCheckName, fmt.Sprintf("ResourceQuota %s sets no %s budget (hard: %s)", strings.Join(names, ", "), strings.Join(missing, " and "), hard), missingInfrastructureCategory)
+	return failedCheck(quotaCheckName, fmt.Sprintf("ResourceQuota %s sets no %s budget (hard: %s)", strings.Join(names, ", "), strings.Join(missing, " and "), hard))
 }
 
 func limitsCheck(raw string) CheckResult {
@@ -330,12 +319,12 @@ func limitsCheck(raw string) CheckResult {
 		Items []jsontext.Value `json:"items"`
 	}
 	if json.Unmarshal([]byte(raw), &value) != nil {
-		result := failedCheck(limitsCheckName, "LimitRange list returned unreadable JSON", "unknown")
+		result := failedCheck(limitsCheckName, "LimitRange list returned unreadable JSON")
 		result.Advisory = true
 		return result
 	}
 	if len(value.Items) == 0 {
-		result := failedCheck(limitsCheckName, "no LimitRange in target namespace", missingInfrastructureCategory)
+		result := failedCheck(limitsCheckName, "no LimitRange in target namespace")
 		result.Advisory = true
 		return result
 	}
@@ -375,7 +364,7 @@ func permissionCheck(
 		if access.Namespaced {
 			scope = "namespace"
 		}
-		result := failedCheck(access.Name, fmt.Sprintf("cannot %s %s in %s", access.Verb, shown, scope), "denied")
+		result := failedCheck(access.Name, fmt.Sprintf("cannot %s %s in %s", access.Verb, shown, scope))
 		result.Advisory = access.Advisory
 		return result
 	}
@@ -383,7 +372,7 @@ func permissionCheck(
 	if err == nil {
 		message += ": kubectl returned an unexpected response"
 	}
-	result := failedCheck(access.Name, message, commandCategory(err))
+	result := failedCheck(access.Name, message)
 	result.Advisory = access.Advisory
 	return result
 }
