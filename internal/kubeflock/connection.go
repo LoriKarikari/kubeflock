@@ -290,33 +290,33 @@ func sshQuote(value string) string {
 func shellQuote(value string) string { return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'` }
 
 func ensureSSHFiles(connection Connection, stateFile string) error {
-	ssh := connection.SSH
-	main, err := os.ReadFile(ssh.ConfigFile)
+	state := connection.SSH
+	main, err := os.ReadFile(state.ConfigFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	mode := os.FileMode(0o600)
-	if info, statErr := os.Stat(ssh.ConfigFile); statErr == nil {
+	if info, statErr := os.Stat(state.ConfigFile); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	include := "Include " + sshQuote(ssh.EntryFile)
+	include := "Include " + sshQuote(state.EntryFile)
 	included := false
 	for line := range strings.SplitSeq(string(main), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == include || trimmed == "Include "+ssh.EntryFile {
+		if trimmed == include || trimmed == "Include "+state.EntryFile {
 			included = true
 		}
 	}
 	if !included {
-		if err := atomicWrite(ssh.ConfigFile, []byte(include+"\n"+string(main)), mode); err != nil {
+		if err := atomicWrite(state.ConfigFile, []byte(include+"\n"+string(main)), mode); err != nil {
 			return err
 		}
 	}
-	if err := atomicWrite(ssh.KnownHostsFile, []byte(ssh.Alias+" "+ssh.HostKey+"\n"), 0o600); err != nil {
+	if err := atomicWrite(state.KnownHostsFile, []byte(state.Alias+" "+state.HostKey+"\n"), 0o600); err != nil {
 		return err
 	}
-	entry := fmt.Sprintf("Host %s\n  HostName %s\n  User agent\n  IdentityFile %s\n  UserKnownHostsFile %s\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n  ProxyCommand %s\n", ssh.Alias, ssh.Alias, sshQuote(ssh.IdentityFile), sshQuote(ssh.KnownHostsFile), sshQuote(ssh.ProxyFile))
-	if err := atomicWrite(ssh.EntryFile, []byte(entry), 0o600); err != nil {
+	entry := fmt.Sprintf("Host %s\n  HostName %s\n  User agent\n  IdentityFile %s\n  UserKnownHostsFile %s\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n  ProxyCommand %s\n", state.Alias, state.Alias, sshQuote(state.IdentityFile), sshQuote(state.KnownHostsFile), sshQuote(state.ProxyFile))
+	if err := atomicWrite(state.EntryFile, []byte(entry), 0o600); err != nil {
 		return err
 	}
 	executable, err := os.Executable()
@@ -328,7 +328,7 @@ func ensureSSHFiles(connection Connection, stateFile string) error {
 		return err
 	}
 	proxy := "#!/bin/sh\nexec " + shellQuote(executable) + " sandbox proxy --state " + shellQuote(stateFile) + "\n"
-	return atomicWrite(ssh.ProxyFile, []byte(proxy), 0o700)
+	return atomicWrite(state.ProxyFile, []byte(proxy), 0o700)
 }
 
 func (a *App) runProxy(ctx context.Context, stateFile string) (int, error) {

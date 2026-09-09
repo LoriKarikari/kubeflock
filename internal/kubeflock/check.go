@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,12 +80,13 @@ func failedCheck(name, message, category string) CheckResult {
 	return CheckResult{Name: name, Category: category, Message: message, Remediation: remediation(category)}
 }
 
-func commandOutput(err error) (stderr, stdout string, timedOut bool) {
+func commandFailure(err error, fallback string) (detail, category string) {
 	var command *commandError
-	if errors.As(err, &command) {
-		return command.Stderr, command.Stdout, command.TimedOut
+	if !errors.As(err, &command) {
+		return truncate(sanitizeLines(err.Error()), 500), classify(err.Error(), false)
 	}
-	return err.Error(), "", false
+	detail = cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), fallback)
+	return truncate(sanitizeLines(detail), 500), classify(command.Stderr, command.TimedOut)
 }
 
 func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOptions, requestTimeout time.Duration) CheckReport {
@@ -98,16 +100,8 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		if err == nil {
 			return out, nil
 		}
-		stderr, stdout, timedOut := commandOutput(err)
-		detail := strings.TrimSpace(stderr)
-		if detail == "" {
-			detail = strings.TrimSpace(stdout)
-		}
-		if detail == "" {
-			detail = "kubectl failed"
-		}
-		category := classify(stderr, timedOut)
-		result := failedCheck(name, fmt.Sprintf("could not %s: %s", action, truncate(sanitizeLines(detail), 500)), category)
+		detail, category := commandFailure(err, "kubectl failed")
+		result := failedCheck(name, fmt.Sprintf("could not %s: %s", action, detail), category)
 		return out, &result
 	}
 
@@ -136,12 +130,14 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		checks = append(checks, probe(expectation.Check, "discover "+expectation.Label, baseArgs(target, req, "api-resources", "--api-group="+expectation.Group, "-o", "name"), expectation.check))
 	}
 
-	checks = append(checks, probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck))
-	checks = append(checks, probe("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"), storageCheck))
-	checks = append(checks, probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
-		return okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))
-	}))
-	checks = append(checks, probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"), quotaCheck))
+	checks = append(checks,
+		probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck),
+		probe("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"), storageCheck),
+		probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
+			return okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))
+		}),
+		probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"), quotaCheck),
+	)
 	out, failure := attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, req, "get", "limitrange", "-o", "json"))
 	limits := limitsCheck(out)
 	if failure != nil {
@@ -320,11 +316,9 @@ func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options gl
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, err := a.runKubectl(callCtx, options, args...)
-	if err != nil {
-		_, stdout, _ := commandOutput(err)
-		if strings.TrimSpace(stdout) != "" {
-			out = stdout
-		}
+	var command *commandError
+	if errors.As(err, &command) && strings.TrimSpace(command.Stdout) != "" {
+		out = command.Stdout
 	}
 	answer := strings.ToLower(strings.TrimSpace(out))
 	if answer == "yes" {
@@ -339,15 +333,8 @@ func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options gl
 		result.Advisory = access.Advisory
 		return result
 	}
-	stderr, stdout, timedOut := commandOutput(err)
-	detail := strings.TrimSpace(stderr)
-	if detail == "" {
-		detail = strings.TrimSpace(stdout)
-	}
-	if detail == "" {
-		detail = sanitizeLines(out)
-	}
-	result := failedCheck(access.Name, fmt.Sprintf("could not check permission %s %s: %s", access.Verb, shown, truncate(sanitizeLines(detail), 500)), classify(stderr, timedOut))
+	detail, category := commandFailure(err, sanitizeLines(out))
+	result := failedCheck(access.Name, fmt.Sprintf("could not check permission %s %s: %s", access.Verb, shown, detail), category)
 	result.Advisory = access.Advisory
 	return result
 }

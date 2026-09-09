@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -420,12 +421,7 @@ func (k *kubeClient) resolveHome(ctx context.Context, target KubeTarget, sandbox
 func commandDetail(err error) string {
 	var command *commandError
 	if errors.As(err, &command) {
-		if command.Stderr != "" {
-			return strings.TrimSpace(command.Stderr)
-		}
-		if command.Stdout != "" {
-			return strings.TrimSpace(command.Stdout)
-		}
+		return cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), err.Error())
 	}
 	return err.Error()
 }

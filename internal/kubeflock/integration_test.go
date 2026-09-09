@@ -315,7 +315,7 @@ type result struct {
 	stdout, stderr string
 }
 
-func invoke(t *testing.T, binary string, args []string, env []string, input string) result {
+func invoke(t *testing.T, binary string, args, env []string, input string) result {
 	t.Helper()
 	command := exec.Command(binary, args...)
 	command.Env = append(os.Environ(), env...)

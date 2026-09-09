@@ -379,7 +379,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
 				return err
 			}
-			if strings.ToLower(confirmed) != "y" && strings.ToLower(confirmed) != "yes" {
+			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil
 			}
