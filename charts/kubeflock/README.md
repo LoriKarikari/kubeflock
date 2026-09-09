@@ -16,9 +16,9 @@ cp charts/kubeflock/values.example.yaml values.yaml
 
 ## Sandbox image
 
-The chart does not include a Sandbox image. Set `sandbox.image` to an administrator-supplied image that runs inside each Sandbox.
+The chart does not publish or bundle a Sandbox image. Build the starter image from [`sandbox-image/`](../../sandbox-image/) or supply a compatible custom image. Push the image to a registry that the cluster can pull from, then set `sandbox.image` to its tag or digest.
 
-That image must contain the remote Herdr server at version 0.9.0 or newer, OpenSSH configured through `SSH_PORT`, `socat`, and a user with UID/GID 1000. `sandbox.sshPort` defaults to 2222.
+Compatible images must contain the remote Herdr server at version 0.9.0 or newer, OpenSSH configured through `SSH_PORT`, `socat`, and a user with UID/GID 1000. `sandbox.sshPort` defaults to 2222.
 
 The Herdr application installed on the workstation is separate from the remote Herdr server in the Sandbox image. The private SSH key also remains on the workstation. Only its public key belongs in values.
 
