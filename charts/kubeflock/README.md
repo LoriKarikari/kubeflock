@@ -73,7 +73,7 @@ kubeflock cluster check
 
 ## Access model
 
-`access.subjects` accepts Kubernetes `User`, `Group`, and `ServiceAccount` subjects. The chart grants sandbox lifecycle access only in the release namespace. Cluster-wide access is read-only and limited to the namespace, StorageClass, and `gvisor` RuntimeClass checks.
+`access.subjects` accepts Kubernetes `User`, `Group`, and `ServiceAccount` subjects. The chart grants sandbox lifecycle access only in the developer namespace. Cluster-wide access is read-only and limited to the namespace, StorageClass, and `gvisor` RuntimeClass checks.
 
 The Sandbox Pod receives no automatic service-account token. The chart does not create a service account for Sandboxes or place private keys, repository credentials, or model credentials in the cluster.
 
