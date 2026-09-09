@@ -53,8 +53,10 @@ func listMachines(ctx context.Context) ([]herdrMachine, error) {
 	return machines, nil
 }
 
-func owns(machine herdrMachine, connection Connection) bool {
-	return machine.Label == connection.Herdr.Label && machine.Target == connection.SSH.Alias && machine.Session == connection.Herdr.Session
+func (c Connection) owns(machine herdrMachine) bool {
+	return machine.Label == c.Herdr.Label &&
+		machine.Target == c.SSH.Alias &&
+		machine.Session == c.Herdr.Session
 }
 
 func ensureMachine(ctx context.Context, connection Connection) (string, error) {
@@ -67,7 +69,7 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 			if machine.ID != connection.ProfileID {
 				continue
 			}
-			if !owns(machine, connection) {
+			if !connection.owns(machine) {
 				return "", fmt.Errorf("saved Herdr profile %s is missing or no longer matches its identity", connection.ProfileID)
 			}
 			if !machine.Enabled {
@@ -101,7 +103,7 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 }
 
 func matchingMachines(machines []herdrMachine, connection Connection) []herdrMachine {
-	return lo.Filter(machines, func(machine herdrMachine, _ int) bool { return owns(machine, connection) })
+	return lo.Filter(machines, func(machine herdrMachine, _ int) bool { return connection.owns(machine) })
 }
 
 func disableMachine(ctx context.Context, connection Connection) error {
@@ -116,7 +118,7 @@ func disableMachine(ctx context.Context, connection Connection) error {
 		if machine.ID != connection.ProfileID {
 			continue
 		}
-		if !owns(machine, connection) {
+		if !connection.owns(machine) {
 			return fmt.Errorf("refusing to disable non-Kubeflock profile %s", connection.ProfileID)
 		}
 		if machine.Enabled {
