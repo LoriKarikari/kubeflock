@@ -9,14 +9,11 @@ The starter image runs a rootless SSH server and a headless Herdr server. It inc
 
 The image supports `linux/amd64` and `linux/arm64`. It enables Herdr's `child-groups` process-detection fallback because gVisor does not expose terminal foreground process groups.
 
-## Build and test
+## Build
 
 ```bash
 docker build --tag kubeflock-sandbox:test sandbox-image
-sandbox-image/test.sh kubeflock-sandbox:test
 ```
-
-The test runs the image as UID/GID 1000 with all capabilities dropped and no privilege escalation. It checks SSH on a non-default port, missing provider credentials, and failed startup.
 
 ## Configure
 

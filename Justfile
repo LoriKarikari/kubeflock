@@ -28,4 +28,3 @@ helm:
 
 image:
     docker build --tag kubeflock-sandbox:test sandbox-image
-    sandbox-image/test.sh kubeflock-sandbox:test
