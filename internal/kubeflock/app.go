@@ -206,6 +206,8 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.listCommand(options),
 		a.connectCommand("connect", options),
 		a.connectCommand("reconnect", options),
+		a.lifecycleCommand("stop", modeSuspended, options),
+		a.lifecycleCommand("resume", modeRunning, options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
 		createActionCommand(),
@@ -322,6 +324,41 @@ func (a *App) connectCommand(name string, options *globalOptions) *cobra.Command
 		},
 	}
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
+	return command
+}
+
+func (a *App) lifecycleCommand(verb string, mode sandboxOperatingMode, options *globalOptions) *cobra.Command {
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:  verb + " [NAME]",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Err, "requesting %s mode for sandbox %s\n", mode, cmp.Or(name, "in the configured target"))
+			result, err := changeSandboxMode(command.Context(), target, name, mode, lifecycleOptions{
+				Timeout: timeout,
+				Poll:    2 * time.Second,
+				Global:  *options,
+			})
+			if err != nil {
+				return err
+			}
+			if mode == modeSuspended {
+				fmt.Fprintf(a.Out, "stopped sandbox %s/%s; persistent home retained\n", target.Namespace, result.Name)
+			} else {
+				fmt.Fprintf(a.Out, "resumed sandbox %s/%s; connected as %s\n", target.Namespace, result.Name, result.SSHAlias)
+			}
+			return nil
+		},
+	}
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "lifecycle transition timeout")
 	return command
 }
 
