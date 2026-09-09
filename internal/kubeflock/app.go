@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,7 +74,7 @@ func (a *App) command() *cobra.Command {
 	flags := root.PersistentFlags()
 	flags.StringVar(&options.ConfigPath, "config", defaultConfigPath(), "config file")
 	flags.StringVar(&options.Kubeconfig, "kubeconfig", "", "kubeconfig file")
-	flags.StringVar(&options.Kubectl, "kubectl", envPath("KUBEFLOCK_KUBECTL", "kubectl"), "kubectl binary")
+	flags.StringVar(&options.Kubectl, "kubectl", cmp.Or(os.Getenv("KUBEFLOCK_KUBECTL"), "kubectl"), "kubectl binary")
 	flags.StringVar(&options.StateDir, "state-dir", defaultStateDir(), "connection state directory")
 	root.AddCommand(&cobra.Command{Use: "version", Args: cobra.NoArgs, Run: func(*cobra.Command, []string) { fmt.Fprintf(a.Out, "kubeflock %s\n", Version) }})
 	root.AddCommand(a.clusterCommand(&options), a.sandboxCommand(&options))
@@ -345,7 +346,7 @@ func (a *App) createActionCommand() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			args := []string{"plugin", "pane", "open", "--plugin", envPath("HERDR_PLUGIN_ID", "kubeflock"), "--entrypoint", "create", "--focus"}
+			args := []string{"plugin", "pane", "open", "--plugin", cmp.Or(os.Getenv("HERDR_PLUGIN_ID"), "kubeflock"), "--entrypoint", "create", "--focus"}
 			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
 				args = append(args, "--workspace", workspace)
 			}

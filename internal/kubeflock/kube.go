@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 )
 
 var (
@@ -164,10 +164,6 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	return &kubeClient{dynamic: dynamicClient, core: coreClient}, nil
 }
 
-func decodeObject(object map[string]any, out any) error {
-	return runtime.DefaultUnstructuredConverter.FromUnstructured(object, out)
-}
-
 func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*sandboxClaim, error) {
 	list, err := k.dynamic.Resource(claimResource).Namespace(namespace).List(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + name})
 	if err != nil {
@@ -180,7 +176,7 @@ func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*san
 		return nil, nil
 	}
 	var claim sandboxClaim
-	if err := decodeObject(list.Items[0].Object, &claim); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[0].Object, &claim); err != nil {
 		return nil, err
 	}
 	if claim.Metadata.Name == "" || claim.Metadata.UID == "" || claim.Spec.WarmPoolRef.Name == "" {
@@ -200,7 +196,7 @@ func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, w
 		return nil, err
 	}
 	var claim sandboxClaim
-	if err := decodeObject(created.Object, &claim); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(created.Object, &claim); err != nil {
 		return nil, err
 	}
 	return &claim, nil
@@ -213,7 +209,7 @@ func (k *kubeClient) listClaims(ctx context.Context, namespace string) ([]sandbo
 	}
 	claims := make([]sandboxClaim, len(list.Items))
 	for i := range list.Items {
-		if err := decodeObject(list.Items[i].Object, &claims[i]); err != nil {
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &claims[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -226,7 +222,7 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 		return approvedTemplate{}, err
 	}
 	var template sandboxTemplate
-	if err := decodeObject(object.Object, &template); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &template); err != nil {
 		return approvedTemplate{}, err
 	}
 	pools, err := k.dynamic.Resource(poolResource).Namespace(namespace).List(ctx, metav1.ListOptions{})
@@ -236,7 +232,7 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 	var matches []sandboxPool
 	for _, item := range pools.Items {
 		var pool sandboxPool
-		if err := decodeObject(item.Object, &pool); err != nil {
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, &pool); err != nil {
 			return approvedTemplate{}, err
 		}
 		if pool.Spec.SandboxTemplateRef.Name == name {
@@ -250,10 +246,6 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s must have zero warm standbys for cold creation", matches[0].Metadata.Name)
 	}
 	return validateTemplate(template, matches[0].Metadata.Name)
-}
-
-func derefIs[T comparable](value *T, expected T) bool {
-	return value != nil && *value == expected
 }
 
 func validateTemplate(template sandboxTemplate, warmPool string) (approvedTemplate, error) {
@@ -274,13 +266,13 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 
 func podHardened(pod corev1.PodSpec) bool {
 	security := pod.SecurityContext
-	return derefIs(pod.RuntimeClassName, "gvisor") &&
-		derefIs(pod.AutomountServiceAccountToken, false) &&
+	return ptr.Deref(pod.RuntimeClassName, "") == "gvisor" &&
+		!ptr.Deref(pod.AutomountServiceAccountToken, true) &&
 		security != nil &&
-		derefIs(security.RunAsNonRoot, true) &&
-		derefIs(security.RunAsUser, int64(1000)) &&
-		derefIs(security.RunAsGroup, int64(1000)) &&
-		derefIs(security.FSGroup, int64(1000)) &&
+		ptr.Deref(security.RunAsNonRoot, false) &&
+		ptr.Deref(security.RunAsUser, 0) == 1000 &&
+		ptr.Deref(security.RunAsGroup, 0) == 1000 &&
+		ptr.Deref(security.FSGroup, 0) == 1000 &&
 		security.SeccompProfile != nil &&
 		security.SeccompProfile.Type == corev1.SeccompProfileTypeRuntimeDefault
 }
@@ -288,9 +280,9 @@ func podHardened(pod corev1.PodSpec) bool {
 func containerHardened(container corev1.Container) bool {
 	security := container.SecurityContext
 	return security != nil &&
-		derefIs(security.AllowPrivilegeEscalation, false) &&
-		derefIs(security.RunAsNonRoot, true) &&
-		derefIs(security.RunAsUser, int64(1000)) &&
+		!ptr.Deref(security.AllowPrivilegeEscalation, true) &&
+		ptr.Deref(security.RunAsNonRoot, false) &&
+		ptr.Deref(security.RunAsUser, 0) == 1000 &&
 		security.SeccompProfile != nil &&
 		security.SeccompProfile.Type == corev1.SeccompProfileTypeRuntimeDefault &&
 		security.Capabilities != nil &&
@@ -346,7 +338,7 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 		return resolvedSandbox{}, err
 	}
 	var sandbox sandboxObject
-	if err := decodeObject(object.Object, &sandbox); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &sandbox); err != nil {
 		return resolvedSandbox{}, err
 	}
 	if expectedUID != "" && string(sandbox.Metadata.UID) != expectedUID {
@@ -436,11 +428,4 @@ func commandDetail(err error) string {
 		}
 	}
 	return err.Error()
-}
-
-func envPath(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
 }

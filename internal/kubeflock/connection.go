@@ -2,6 +2,7 @@ package kubeflock
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,7 +32,7 @@ type connectOptions struct {
 func (a *App) runHerdr(ctx context.Context, args ...string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	return runCaptured(callCtx, envPath("KUBEFLOCK_HERDR", envPath("HERDR_BIN_PATH", "herdr")), args, nil, nil)
+	return runCaptured(callCtx, cmp.Or(os.Getenv("KUBEFLOCK_HERDR"), os.Getenv("HERDR_BIN_PATH"), "herdr"), args, nil, nil)
 }
 
 func (a *App) listMachines(ctx context.Context) ([]herdrMachine, error) {
