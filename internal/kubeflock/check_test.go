@@ -52,7 +52,7 @@ func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(calls)), "\n") {
 		if !strings.Contains(line, "--context saved") {
 			t.Fatalf("call omitted saved context: %s", line)
 		}

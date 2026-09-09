@@ -40,8 +40,7 @@ func loadJSON(path string, value any) error {
 	return nil
 }
 
-func connectionPath(dir, uid string) string { return filepath.Join(dir, uid+".json") }
-func managedSandboxDir(dir string) string   { return filepath.Join(dir, "sandboxes") }
+func managedSandboxDir(dir string) string { return filepath.Join(dir, "sandboxes") }
 func managedSandboxPath(dir, uid string) string {
 	return filepath.Join(managedSandboxDir(dir), uid+".json")
 }

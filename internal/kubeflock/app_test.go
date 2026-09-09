@@ -85,7 +85,9 @@ func TestRunCapturedKillsProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := 0
-	fmt.Sscan(string(pidData), &pid)
+	if _, err := fmt.Sscan(string(pidData), &pid); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for processAlive(pid) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

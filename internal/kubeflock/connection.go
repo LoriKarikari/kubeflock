@@ -233,7 +233,7 @@ func (a *App) connect(ctx context.Context, target KubeTarget, options connectOpt
 			kubeconfigValue = &value
 		}
 		connection = Connection{Version: 1, Phase: "prepared", Sandbox: resolved.Identity, SSH: SSHState{Alias: "kubeflock-" + uid, IdentityFile: identity, KnownHostsFile: filepath.Join(sshDir, uid+".known_hosts"), EntryFile: filepath.Join(sshDir, uid+".conf"), ProxyFile: filepath.Join(sshDir, uid+"-proxy"), ConfigFile: configFile, HostKey: currentPin}, Herdr: HerdrState{Label: fmt.Sprintf("Kubeflock: %s [%s]", name, prefix(uid, 8)), Session: "agent"}, Kubeconfig: kubeconfigValue, Kubectl: kubectl}
-		path = connectionPath(options.Global.StateDir, uid)
+		path = filepath.Join(options.Global.StateDir, uid+".json")
 		if err := saveJSON(path, connection); err != nil {
 			return Connection{}, err
 		}
@@ -300,7 +300,7 @@ func ensureSSHFiles(connection Connection, stateFile string) error {
 	}
 	include := "Include " + sshQuote(ssh.EntryFile)
 	included := false
-	for _, line := range strings.Split(string(main), "\n") {
+	for line := range strings.SplitSeq(string(main), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == include || trimmed == "Include "+ssh.EntryFile {
 			included = true

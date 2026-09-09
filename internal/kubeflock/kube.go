@@ -252,21 +252,55 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 	return validateTemplate(template, matches[0].Metadata.Name)
 }
 
-func boolIs(value *bool, expected bool) bool  { return value != nil && *value == expected }
-func intIs(value *int64, expected int64) bool { return value != nil && *value == expected }
+func derefIs[T comparable](value *T, expected T) bool {
+	return value != nil && *value == expected
+}
 
 func validateTemplate(template sandboxTemplate, warmPool string) (approvedTemplate, error) {
-	pod := template.Spec.PodTemplate.Spec
-	security := pod.SecurityContext
-	if template.Metadata.Name == "" || pod.RuntimeClassName == nil || *pod.RuntimeClassName != "gvisor" || !boolIs(pod.AutomountServiceAccountToken, false) || security == nil || !boolIs(security.RunAsNonRoot, true) || !intIs(security.RunAsUser, 1000) || !intIs(security.RunAsGroup, 1000) || !intIs(security.FSGroup, 1000) || security.SeccompProfile == nil || security.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault || template.Spec.NetworkPolicyManagement == "Unmanaged" {
-		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s does not meet Kubeflock pod hardening requirements", template.Metadata.Name)
+	name := template.Metadata.Name
+	if name == "" || template.Spec.NetworkPolicyManagement == "Unmanaged" || !podHardened(template.Spec.PodTemplate.Spec) {
+		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s does not meet Kubeflock pod hardening requirements", name)
 	}
-	for _, container := range pod.Containers {
-		security := container.SecurityContext
-		if security == nil || !boolIs(security.AllowPrivilegeEscalation, false) || !boolIs(security.RunAsNonRoot, true) || !intIs(security.RunAsUser, 1000) || security.SeccompProfile == nil || security.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault || security.Capabilities == nil || !slices.Contains(security.Capabilities.Drop, corev1.Capability("ALL")) || len(container.Resources.Requests) == 0 || len(container.Resources.Limits) == 0 {
-			return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s contains an unhardened or unbudgeted container", template.Metadata.Name)
+	for _, container := range template.Spec.PodTemplate.Spec.Containers {
+		if !containerHardened(container) {
+			return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s contains an unhardened or unbudgeted container", name)
 		}
 	}
+	if home, ok := homeClaimTemplate(template); ok {
+		return approvedTemplate{Name: name, WarmPool: warmPool, HomeTemplate: home.Name}, nil
+	}
+	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", name)
+}
+
+func podHardened(pod corev1.PodSpec) bool {
+	security := pod.SecurityContext
+	return derefIs(pod.RuntimeClassName, "gvisor") &&
+		derefIs(pod.AutomountServiceAccountToken, false) &&
+		security != nil &&
+		derefIs(security.RunAsNonRoot, true) &&
+		derefIs(security.RunAsUser, int64(1000)) &&
+		derefIs(security.RunAsGroup, int64(1000)) &&
+		derefIs(security.FSGroup, int64(1000)) &&
+		security.SeccompProfile != nil &&
+		security.SeccompProfile.Type == corev1.SeccompProfileTypeRuntimeDefault
+}
+
+func containerHardened(container corev1.Container) bool {
+	security := container.SecurityContext
+	return security != nil &&
+		derefIs(security.AllowPrivilegeEscalation, false) &&
+		derefIs(security.RunAsNonRoot, true) &&
+		derefIs(security.RunAsUser, int64(1000)) &&
+		security.SeccompProfile != nil &&
+		security.SeccompProfile.Type == corev1.SeccompProfileTypeRuntimeDefault &&
+		security.Capabilities != nil &&
+		slices.Contains(security.Capabilities.Drop, corev1.Capability("ALL")) &&
+		len(container.Resources.Requests) != 0 &&
+		len(container.Resources.Limits) != 0
+}
+
+func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, bool) {
+	pod := template.Spec.PodTemplate.Spec
 	for _, container := range pod.Containers {
 		if findSSHPort(container.Ports) == 0 {
 			continue
@@ -284,12 +318,12 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 			for _, home := range template.Spec.VolumeClaimTemplates {
 				capacity := home.Spec.Resources.Requests.Storage()
 				if home.Name == claimName && home.Spec.StorageClassName != nil && capacity != nil {
-					return approvedTemplate{Name: template.Metadata.Name, WarmPool: warmPool, HomeTemplate: home.Name}, nil
+					return home, true
 				}
 			}
 		}
 	}
-	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", template.Metadata.Name)
+	return corev1.PersistentVolumeClaim{}, false
 }
 
 func findSSHPort(ports []corev1.ContainerPort) int32 {
@@ -355,20 +389,7 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 			continue
 		}
 		found = true
-		for _, candidatePort := range candidate.Ports {
-			if candidatePort.Name == "ssh" {
-				port = candidatePort.ContainerPort
-				break
-			}
-		}
-		if port == 0 {
-			for _, candidatePort := range candidate.Ports {
-				if candidatePort.ContainerPort == 2222 {
-					port = 2222
-					break
-				}
-			}
-		}
+		port = findSSHPort(candidate.Ports)
 	}
 	if !found {
 		return resolvedSandbox{}, fmt.Errorf("pod %s/%s has no unambiguous default container", target.Namespace, pod.Name)

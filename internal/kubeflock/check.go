@@ -5,37 +5,54 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 type globalOptions struct {
 	ConfigPath, Kubeconfig, Kubectl, StateDir string
 }
 
-type permission struct {
-	Verb, Resource, Subresource string
-	Namespaced, Advisory        bool
+type accessCheck struct {
+	Name                               string
+	Verb, Group, Resource, Subresource string
+	Namespaced, Advisory               bool
 }
 
-var requiredPermissions = []permission{
-	{Verb: "get", Resource: "sandboxes.agents.x-k8s.io", Namespaced: true},
-	{Verb: "list", Resource: "sandboxclaims.extensions.agents.x-k8s.io", Namespaced: true},
-	{Verb: "create", Resource: "sandboxclaims.extensions.agents.x-k8s.io", Namespaced: true},
-	{Verb: "get", Resource: "sandboxtemplates.extensions.agents.x-k8s.io", Namespaced: true},
-	{Verb: "list", Resource: "sandboxwarmpools.extensions.agents.x-k8s.io", Namespaced: true},
-	{Verb: "list", Resource: "pods", Namespaced: true},
-	{Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
-	{Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
-	{Verb: "list", Resource: "resourcequotas", Namespaced: true},
-	{Verb: "list", Resource: "limitranges", Namespaced: true},
-	{Verb: "list", Resource: "storageclasses.storage.k8s.io"},
-	{Verb: "get", Resource: "runtimeclasses.node.k8s.io"},
-	{Verb: "get", Resource: "namespaces"},
+func (c accessCheck) resourceArg() string {
+	if c.Group == "" {
+		return c.Resource
+	}
+	return c.Resource + "." + c.Group
+}
+
+func (c accessCheck) qualified() string {
+	name := c.resourceArg()
+	if c.Subresource != "" {
+		name += "/" + c.Subresource
+	}
+	return name
+}
+
+var requiredAccess = []accessCheck{
+	{Name: "perm-get-sandboxes", Verb: "get", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
+	{Name: "perm-list-sandboxclaims", Verb: "list", Group: "extensions.agents.x-k8s.io", Resource: "sandboxclaims", Namespaced: true},
+	{Name: "perm-create-sandboxclaims", Verb: "create", Group: "extensions.agents.x-k8s.io", Resource: "sandboxclaims", Namespaced: true},
+	{Name: "perm-get-sandboxtemplates", Verb: "get", Group: "extensions.agents.x-k8s.io", Resource: "sandboxtemplates", Namespaced: true},
+	{Name: "perm-list-sandboxwarmpools", Verb: "list", Group: "extensions.agents.x-k8s.io", Resource: "sandboxwarmpools", Namespaced: true},
+	{Name: "perm-list-pods", Verb: "list", Resource: "pods", Namespaced: true},
+	{Name: "perm-create-pods-exec", Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
+	{Name: "perm-get-persistentvolumeclaims", Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
+	{Name: "perm-list-resourcequotas", Verb: "list", Resource: "resourcequotas", Namespaced: true},
+	{Name: "perm-list-limitranges", Verb: "list", Resource: "limitranges", Namespaced: true},
+	{Name: "perm-list-storageclasses", Verb: "list", Group: "storage.k8s.io", Resource: "storageclasses"},
+	{Name: "perm-get-runtimeclasses", Verb: "get", Group: "node.k8s.io", Resource: "runtimeclasses"},
+	{Name: "perm-get-namespaces", Verb: "get", Resource: "namespaces"},
 }
 
 func (a *App) runKubectl(ctx context.Context, options globalOptions, args ...string) (string, error) {
@@ -57,6 +74,7 @@ func namespacedArgs(target KubeTarget, requestTimeout string, args ...string) []
 func okCheck(name, message string) CheckResult {
 	return CheckResult{Name: name, OK: true, Message: message}
 }
+
 func failedCheck(name, message, category string) CheckResult {
 	return CheckResult{Name: name, Category: category, Message: message, Remediation: remediation(category)}
 }
@@ -72,9 +90,7 @@ func commandOutput(err error) (stderr, stdout string, timedOut bool) {
 func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOptions, requestTimeout time.Duration) CheckReport {
 	req := fmt.Sprintf("%gs", requestTimeout.Seconds())
 	perCall := requestTimeout + 5*time.Second
-	if perCall < 15*time.Second {
-		perCall = 15 * time.Second
-	}
+	perCall = max(perCall, 15*time.Second)
 	attempt := func(name, action string, args []string) (string, *CheckResult) {
 		callCtx, cancel := context.WithTimeout(ctx, perCall)
 		defer cancel()
@@ -102,122 +118,34 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		checks = append(checks, *connectivity)
 	} else {
 		checks = append(checks, okCheck("api-connectivity", "API reachable with saved context"))
-		for _, line := range strings.Fields(versions) {
+		for line := range strings.FieldsSeq(versions) {
 			served[line] = true
 		}
 	}
-	groups := []struct {
-		name, group, display string
-		want                 []string
-	}{
-		{"agents-api", "agents.x-k8s.io", "Sandbox API agents.x-k8s.io/v1beta1", []string{"sandboxes"}},
-		{"extensions-api", "extensions.agents.x-k8s.io", "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1", []string{"sandboxclaims", "sandboxtemplates", "sandboxwarmpools"}},
-	}
-	for _, group := range groups {
-		if connectivity == nil && !served[group.group+"/v1beta1"] {
-			checks = append(checks, failedCheck(group.name, group.display+" is not served", "missing-infrastructure"))
+	online := connectivity == nil
+	for _, expectation := range expectedAPIGroups {
+		if online && !served[expectation.Group+"/v1beta1"] {
+			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", "missing-infrastructure"))
 			continue
 		}
-		out, result := attempt(group.name, "discover "+group.display, baseArgs(target, req, "api-resources", "--api-group="+group.group, "-o", "name"))
-		if result != nil {
-			checks = append(checks, *result)
-			continue
-		}
-		missing := []string{}
-		for _, resource := range group.want {
-			if !strings.Contains(strings.ToLower(out), resource) {
-				missing = append(missing, resource)
-			}
-		}
-		if len(missing) > 0 {
-			checks = append(checks, failedCheck(group.name, group.display+" served but missing: "+strings.Join(missing, ", "), "missing-infrastructure"))
-		} else {
-			checks = append(checks, okCheck(group.name, group.display+" served"))
-		}
+		out, result := attempt(expectation.Check, "discover "+expectation.Label, baseArgs(target, req, "api-resources", "--api-group="+expectation.Group, "-o", "name"))
+		checks = append(checks, resultOr(out, result, expectation.check))
 	}
 
 	out, result := attempt("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"))
-	if result != nil {
-		checks = append(checks, *result)
-	} else {
-		var value struct {
-			Handler string `json:"handler"`
-		}
-		if json.Unmarshal([]byte(out), &value) != nil {
-			checks = append(checks, failedCheck("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown"))
-		} else if !strings.Contains(strings.ToLower(value.Handler), "runsc") {
-			checks = append(checks, failedCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler), "missing-infrastructure"))
-		} else {
-			checks = append(checks, okCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler)))
-		}
-	}
+	checks = append(checks, resultOr(out, result, runtimeClassCheck))
 
 	out, result = attempt("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"))
-	if result != nil {
-		checks = append(checks, *result)
-	} else {
-		var value struct {
-			Items []struct {
-				Metadata struct {
-					Name        string            `json:"name"`
-					Annotations map[string]string `json:"annotations"`
-				} `json:"metadata"`
-			} `json:"items"`
-		}
-		if json.Unmarshal([]byte(out), &value) != nil {
-			checks = append(checks, failedCheck("storage", "StorageClass list returned unreadable JSON", "unknown"))
-		} else if len(value.Items) == 0 {
-			checks = append(checks, failedCheck("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure"))
-		} else {
-			names := make([]string, len(value.Items))
-			defaultName := ""
-			for i, item := range value.Items {
-				names[i] = item.Metadata.Name
-				if item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
-					defaultName = item.Metadata.Name
-				}
-			}
-			label := ""
-			if defaultName != "" {
-				label = " (default " + defaultName + ")"
-			}
-			checks = append(checks, okCheck("storage", fmt.Sprintf("%d StorageClass(es): %s%s", len(names), strings.Join(names, ", "), label)))
-		}
-	}
+	checks = append(checks, resultOr(out, result, storageCheck))
 
 	_, result = attempt("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"))
-	if result != nil {
-		checks = append(checks, *result)
-	} else {
-		checks = append(checks, okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace)))
-	}
+	checks = append(checks, okOr(result, okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))))
 
 	out, result = attempt("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"))
-	if result != nil {
-		checks = append(checks, *result)
-	} else {
-		checks = append(checks, quotaCheck(out))
-	}
+	checks = append(checks, resultOr(out, result, quotaCheck))
 	out, result = attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, req, "get", "limitrange", "-o", "json"))
-	if result != nil {
-		value := *result
-		value.Advisory = true
-		checks = append(checks, value)
-	} else {
-		checks = append(checks, limitsCheck(out))
-	}
-
-	permissions := make([]CheckResult, len(requiredPermissions))
-	group := new(errgroup.Group)
-	group.SetLimit(6)
-	for i, permission := range requiredPermissions {
-		group.Go(func() error {
-			permissions[i] = a.permissionCheck(ctx, target, options, req, perCall, permission)
-			return nil
-		})
-	}
-	_ = group.Wait()
-	checks = append(checks, permissions...)
+	checks = append(checks, advisoryOr(out, result, limitsCheck))
+	checks = append(checks, a.checkAccess(ctx, target, options, req, perCall)...)
 	report := CheckReport{Context: target.Context, Namespace: target.Namespace, OK: true, Checks: checks, CheckedAt: a.now().UTC()}
 	for _, check := range checks {
 		if !check.OK && !check.Advisory {
@@ -227,8 +155,114 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 	return report
 }
 
-var computeQuota = regexp.MustCompile(`^(pods|cpu|memory|requests\.cpu|requests\.memory|limits\.cpu|limits\.memory|requests\.ephemeral-storage|limits\.ephemeral-storage)$`)
-var storageQuota = regexp.MustCompile(`^(persistentvolumeclaims|requests\.storage)$`)
+var (
+	computeQuotaKeys = sets.New("pods", "cpu", "memory", "requests.cpu", "requests.memory", "limits.cpu", "limits.memory", "requests.ephemeral-storage", "limits.ephemeral-storage")
+	storageQuotaKeys = sets.New("persistentvolumeclaims", "requests.storage")
+)
+
+type apiGroupExpectation struct {
+	Check, Group, Label string
+	Resources           []string
+}
+
+var expectedAPIGroups = []apiGroupExpectation{
+	{"agents-api", "agents.x-k8s.io", "Sandbox API agents.x-k8s.io/v1beta1", []string{"sandboxes"}},
+	{"extensions-api", "extensions.agents.x-k8s.io", "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1", []string{"sandboxclaims", "sandboxtemplates", "sandboxwarmpools"}},
+}
+
+func resultOr(out string, failure *CheckResult, classify func(string) CheckResult) CheckResult {
+	if failure != nil {
+		return *failure
+	}
+	return classify(out)
+}
+
+func okOr(failure *CheckResult, ok CheckResult) CheckResult {
+	if failure != nil {
+		return *failure
+	}
+	return ok
+}
+
+func advisoryOr(out string, failure *CheckResult, classify func(string) CheckResult) CheckResult {
+	if failure != nil {
+		value := *failure
+		value.Advisory = true
+		return value
+	}
+	return classify(out)
+}
+
+func (expectation apiGroupExpectation) check(out string) CheckResult {
+	missing := []string{}
+	lowered := strings.ToLower(out)
+	for _, resource := range expectation.Resources {
+		if !strings.Contains(lowered, resource) {
+			missing = append(missing, resource)
+		}
+	}
+	if len(missing) != 0 {
+		return failedCheck(expectation.Check, expectation.Label+" served but missing: "+strings.Join(missing, ", "), "missing-infrastructure")
+	}
+	return okCheck(expectation.Check, expectation.Label+" served")
+}
+
+func runtimeClassCheck(out string) CheckResult {
+	var value struct {
+		Handler string `json:"handler"`
+	}
+	if json.Unmarshal([]byte(out), &value) != nil {
+		return failedCheck("runtimeclass-gvisor", "RuntimeClass gvisor returned unreadable JSON", "unknown")
+	}
+	if !strings.Contains(strings.ToLower(value.Handler), "runsc") {
+		return failedCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor handler is %q, want runsc", value.Handler), "missing-infrastructure")
+	}
+	return okCheck("runtimeclass-gvisor", fmt.Sprintf("RuntimeClass gvisor present (handler %s)", value.Handler))
+}
+
+func storageCheck(out string) CheckResult {
+	var value struct {
+		Items []struct {
+			Metadata struct {
+				Name        string            `json:"name"`
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if json.Unmarshal([]byte(out), &value) != nil {
+		return failedCheck("storage", "StorageClass list returned unreadable JSON", "unknown")
+	}
+	if len(value.Items) == 0 {
+		return failedCheck("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure")
+	}
+	names := make([]string, len(value.Items))
+	defaultName := ""
+	for i, item := range value.Items {
+		names[i] = item.Metadata.Name
+		if item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+			defaultName = item.Metadata.Name
+		}
+	}
+	label := ""
+	if defaultName != "" {
+		label = " (default " + defaultName + ")"
+	}
+	return okCheck("storage", fmt.Sprintf("%d StorageClass(es): %s%s", len(names), strings.Join(names, ", "), label))
+}
+
+func (a *App) checkAccess(ctx context.Context, target KubeTarget, options globalOptions, req string, perCall time.Duration) []CheckResult {
+	permissions := make([]CheckResult, len(requiredAccess))
+	group := new(errgroup.Group)
+	group.SetLimit(6)
+	for i, access := range requiredAccess {
+		group.Go(func() error {
+			permissions[i] = a.permissionCheck(ctx, target, options, req, perCall, access)
+			return nil
+		})
+	}
+	_ = group.Wait()
+	return permissions
+}
 
 func quotaCheck(raw string) CheckResult {
 	var value struct {
@@ -248,16 +282,15 @@ func quotaCheck(raw string) CheckResult {
 		return failedCheck("budgets-quota", "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", "missing-infrastructure")
 	}
 	names := []string{}
-	keys := map[string]bool{}
-	hasCompute, hasStorage := false, false
+	seen := sets.New[string]()
 	for _, item := range value.Items {
 		names = append(names, item.Metadata.Name)
 		for key := range item.Spec.Hard {
-			keys[key] = true
-			hasCompute = hasCompute || computeQuota.MatchString(key)
-			hasStorage = hasStorage || storageQuota.MatchString(key)
+			seen.Insert(key)
 		}
 	}
+	hasCompute := seen.Intersection(computeQuotaKeys).Len() != 0
+	hasStorage := seen.Intersection(storageQuotaKeys).Len() != 0
 	if hasCompute && hasStorage {
 		return okCheck("budgets-quota", "ResourceQuota present: "+strings.Join(names, ", "))
 	}
@@ -268,12 +301,7 @@ func quotaCheck(raw string) CheckResult {
 	if !hasStorage {
 		missing = append(missing, "storage")
 	}
-	keyList := make([]string, 0, len(keys))
-	for key := range keys {
-		keyList = append(keyList, key)
-	}
-	sort.Strings(keyList)
-	hard := strings.Join(keyList, ", ")
+	hard := strings.Join(slices.Sorted(maps.Keys(seen)), ", ")
 	if hard == "" {
 		hard = "empty"
 	}
@@ -297,17 +325,13 @@ func limitsCheck(raw string) CheckResult {
 	return okCheck("budgets-limits", fmt.Sprintf("%d LimitRange(s) present", len(value.Items)))
 }
 
-func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options globalOptions, req string, timeout time.Duration, permission permission) CheckResult {
-	shown := permission.Resource
-	if permission.Subresource != "" {
-		shown += "/" + permission.Subresource
+func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options globalOptions, req string, timeout time.Duration, access accessCheck) CheckResult {
+	shown := access.qualified()
+	args := []string{"auth", "can-i", access.Verb, access.resourceArg()}
+	if access.Subresource != "" {
+		args = append(args, "--subresource="+access.Subresource)
 	}
-	name := "perm-" + permission.Verb + "-" + shortResource(shown)
-	args := []string{"auth", "can-i", permission.Verb, permission.Resource}
-	if permission.Subresource != "" {
-		args = append(args, "--subresource="+permission.Subresource)
-	}
-	if permission.Namespaced {
+	if access.Namespaced {
 		args = namespacedArgs(target, req, args...)
 	} else {
 		args = baseArgs(target, req, args...)
@@ -323,15 +347,15 @@ func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options gl
 	}
 	answer := strings.ToLower(strings.TrimSpace(out))
 	if answer == "yes" {
-		return okCheck(name, fmt.Sprintf("can %s %s", permission.Verb, shown))
+		return okCheck(access.Name, fmt.Sprintf("can %s %s", access.Verb, shown))
 	}
 	if answer == "no" || strings.HasPrefix(answer, "no ") {
 		scope := "cluster scope"
-		if permission.Namespaced {
+		if access.Namespaced {
 			scope = "namespace"
 		}
-		result := failedCheck(name, fmt.Sprintf("cannot %s %s in %s", permission.Verb, shown, scope), "denied")
-		result.Advisory = permission.Advisory
+		result := failedCheck(access.Name, fmt.Sprintf("cannot %s %s in %s", access.Verb, shown, scope), "denied")
+		result.Advisory = access.Advisory
 		return result
 	}
 	stderr, stdout, timedOut := commandOutput(err)
@@ -342,17 +366,11 @@ func (a *App) permissionCheck(ctx context.Context, target KubeTarget, options gl
 	if detail == "" {
 		detail = sanitizeLines(out)
 	}
-	result := failedCheck(name, fmt.Sprintf("could not check permission %s %s: %s", permission.Verb, shown, truncate(sanitizeLines(detail), 500)), classify(stderr, timedOut))
-	result.Advisory = permission.Advisory
+	result := failedCheck(access.Name, fmt.Sprintf("could not check permission %s %s: %s", access.Verb, shown, truncate(sanitizeLines(detail), 500)), classify(stderr, timedOut))
+	result.Advisory = access.Advisory
 	return result
 }
 
-func shortResource(value string) string {
-	for _, suffix := range []string{".agents.x-k8s.io", ".extensions", ".storage.k8s.io", ".node.k8s.io"} {
-		value = strings.ReplaceAll(value, suffix, "")
-	}
-	return strings.ReplaceAll(value, "/", "-")
-}
 func truncate(value string, size int) string {
 	if len(value) <= size {
 		return value

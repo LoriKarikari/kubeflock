@@ -375,7 +375,9 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(a.Out, "Create %s from %s with persistent home storage? [y/N] ", name, template)
-			fmt.Fscanln(a.In, &confirmed)
+			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
+				return err
+			}
 			if strings.ToLower(confirmed) != "y" && strings.ToLower(confirmed) != "yes" {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil

@@ -3,6 +3,7 @@ package kubeflock
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -169,7 +170,7 @@ func (a *App) createSandbox(ctx context.Context, target KubeTarget, name string,
 		return createdSandbox{}, err
 	}
 	key := sha256.Sum256([]byte(target.Context + "\x00" + target.Namespace + "\x00" + name))
-	lock := filepath.Join(locks, fmt.Sprintf("%x", key))
+	lock := filepath.Join(locks, hex.EncodeToString(key[:]))
 	creationLock := flock.New(lock)
 	locked, err := creationLock.TryLock()
 	if err != nil {
@@ -178,7 +179,7 @@ func (a *App) createSandbox(ctx context.Context, target KubeTarget, name string,
 	if !locked {
 		return createdSandbox{}, fmt.Errorf("sandbox %s/%s is already being created", target.Namespace, name)
 	}
-	defer creationLock.Unlock()
+	defer func() { _ = creationLock.Unlock() }()
 	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
 	if err != nil {
 		return createdSandbox{}, err
@@ -327,11 +328,12 @@ func (a *App) listSandboxStatus(ctx context.Context, target KubeTarget, options 
 				break
 			}
 		}
-		if machine == nil {
+		switch {
+		case machine == nil:
 			status.State, status.Step, status.Message = "failed", "connection", "saved Herdr machine is missing"
-		} else if machine.Enabled {
+		case machine.Enabled:
 			status.State = "ready"
-		} else {
+		default:
 			status.State = "disconnected"
 		}
 		statuses = append(statuses, status)

@@ -1,13 +1,14 @@
 package kubeflock
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/util/validation"
-	"sigs.k8s.io/yaml"
 )
 
 func defaultConfigPath() string {
@@ -52,20 +53,38 @@ func loadConfig(path string) (KubeTarget, error) {
 	if err != nil {
 		return KubeTarget{}, fmt.Errorf("read kubeflock config %q: %w", path, err)
 	}
-	var values map[string]any
-	if err := yaml.UnmarshalStrict(data, &values); err != nil {
+	var doc yaml.Node
+	if err := yaml.NewDecoder(bytes.NewReader(data)).Decode(&doc); err != nil {
 		return KubeTarget{}, fmt.Errorf("parse kubeflock config %q: %w", path, err)
 	}
-	contextName, contextOK := values["context"].(string)
-	namespace, namespaceOK := values["namespace"].(string)
-	if !contextOK || !namespaceOK || len(values) != 2 {
-		return KubeTarget{}, fmt.Errorf("invalid kubeflock config %q: config must contain string context and namespace", path)
-	}
-	target := KubeTarget{Context: contextName, Namespace: namespace}
-	if err := validateTarget(target); err != nil {
+	target, err := configTarget(&doc)
+	if err != nil {
 		return KubeTarget{}, fmt.Errorf("invalid kubeflock config %q: %w", path, err)
 	}
 	return target, nil
+}
+
+func configTarget(doc *yaml.Node) (KubeTarget, error) {
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) == 1 {
+		doc = doc.Content[0]
+	}
+	invalid := errors.New("config must contain string context and namespace")
+	if doc.Kind != yaml.MappingNode {
+		return KubeTarget{}, invalid
+	}
+	fields := make(map[string]string, 2)
+	for i := 0; i+1 < len(doc.Content); i += 2 {
+		key, value := doc.Content[i], doc.Content[i+1]
+		if key.Tag != "!!str" || value.Tag != "!!str" {
+			return KubeTarget{}, invalid
+		}
+		fields[key.Value] = value.Value
+	}
+	target := KubeTarget{Context: fields["context"], Namespace: fields["namespace"]}
+	if len(fields) != 2 || target.Context == "" || target.Namespace == "" {
+		return KubeTarget{}, invalid
+	}
+	return target, validateTarget(target)
 }
 
 func saveConfig(path string, target KubeTarget) error {

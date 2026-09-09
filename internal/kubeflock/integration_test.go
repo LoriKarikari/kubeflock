@@ -3,6 +3,7 @@ package kubeflock
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -20,8 +21,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-const keyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-const keyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+const (
+	keyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	keyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+)
 
 type fixtureClaim struct {
 	APIVersion string            `json:"apiVersion"`
@@ -76,8 +79,31 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 			response.WriteHeader(400)
 			return
 		}
-		name := body["metadata"].(map[string]any)["name"].(string)
-		pool := body["spec"].(map[string]any)["warmPoolRef"].(map[string]any)["name"].(string)
+		metadata, ok := body["metadata"].(map[string]any)
+		if !ok {
+			response.WriteHeader(400)
+			return
+		}
+		spec, ok := body["spec"].(map[string]any)
+		if !ok {
+			response.WriteHeader(400)
+			return
+		}
+		ref, ok := spec["warmPoolRef"].(map[string]any)
+		if !ok {
+			response.WriteHeader(400)
+			return
+		}
+		name, ok := metadata["name"].(string)
+		if !ok {
+			response.WriteHeader(400)
+			return
+		}
+		pool, ok := ref["name"].(string)
+		if !ok {
+			response.WriteHeader(400)
+			return
+		}
 		if _, exists := f.claims[name]; exists {
 			response.WriteHeader(http.StatusConflict)
 			writeFixture(response, map[string]string{"message": "already exists"})
@@ -143,14 +169,17 @@ func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Enc
 func metadataFixture(name, uid string) map[string]any {
 	return map[string]any{"name": name, "namespace": "dev", "uid": uid}
 }
+
 func poolFixture(template string) map[string]any {
 	return map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxWarmPool", "metadata": metadataFixture(template+"-pool", template+"-pool-uid"), "spec": map[string]any{"replicas": 0, "sandboxTemplateRef": map[string]string{"name": template}}}
 }
+
 func claimFixture(name, pool string) fixtureClaim {
 	claim := fixtureClaim{APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaim", Metadata: metav1.ObjectMeta{Name: name, Namespace: "dev", UID: types.UID("claim-" + name), Labels: map[string]string{managedByLabel: managedByValue}}}
 	claim.Spec.WarmPoolRef.Name = pool
 	return claim
 }
+
 func templateFixture(name string, secure bool) map[string]any {
 	runtime := "gvisor"
 	if !secure {
@@ -246,6 +275,7 @@ func helperHerdr(args []string) {
 	}
 	os.Exit(2)
 }
+
 func valueAfter(args []string, name string) string {
 	index := slices.Index(args, name)
 	if index >= 0 && index+1 < len(args) {
@@ -294,7 +324,8 @@ func invoke(t *testing.T, binary string, args []string, env []string, input stri
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
 	status := 0
-	if exit, ok := err.(*exec.ExitError); ok {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
 		status = exit.ExitCode()
 	} else if err != nil {
 		t.Fatal(err)
@@ -407,6 +438,7 @@ func mustWrite(t *testing.T, path, data string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 }
+
 func assertJSONField(t *testing.T, path, key, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
