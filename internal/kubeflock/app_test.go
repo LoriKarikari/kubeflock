@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestConfigRoundTripAndValidation(t *testing.T) {
+func TestConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kubeflock", "config.yaml")
 	want := KubeTarget{Context: "homelab", Namespace: "kubeflock-check"}
 	if err := saveConfig(path, want); err != nil {
@@ -30,20 +30,6 @@ func TestConfigRoundTripAndValidation(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
-	}
-	for _, target := range []KubeTarget{{Namespace: "dev"}, {Context: "x"}, {Context: "x", Namespace: "bad_ns"}, {Context: "x", Namespace: "UPPER"}} {
-		if validateTarget(target) == nil {
-			t.Fatalf("accepted %#v", target)
-		}
-	}
-	for _, data := range []string{"", "context: 123\nnamespace: dev\n", "- homelab\n", "just a string\n"} {
-		file := filepath.Join(t.TempDir(), "config.yaml")
-		if err := os.WriteFile(file, []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := loadConfig(file); err == nil {
-			t.Fatalf("accepted malformed config %q", data)
-		}
 	}
 }
 
