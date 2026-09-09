@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -33,23 +32,31 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSanitizeAndClassify(t *testing.T) {
-	input := "Bearer abc.def.ghi\naccess_token=secret123\nhttps://example.test/authorize?code=supersecret&state=x\neyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature-part-here"
-	got := sanitizeLines(input)
-	for _, secret := range []string{"abc.def.ghi", "secret123", "supersecret", "eyJhbGci"} {
-		if strings.Contains(got, secret) {
-			t.Fatalf("sanitizeLines leaked %q", secret)
-		}
-	}
+func TestClassify(t *testing.T) {
 	cases := []struct {
 		message string
 		timeout bool
 		want    string
-	}{{"Error from server (Forbidden): sandboxes is forbidden", false, "denied"}, {"Unauthorized: ID token expired", false, "expired-authentication"}, {"Unable to connect: dial tcp: connection refused", false, "connectivity"}, {`context "x" not found`, false, "configuration"}, {`runtimeclass "gvisor" not found`, false, "missing-infrastructure"}, {"", true, "timeout"}, {"strange", false, "unknown"}}
+	}{
+		{message: "Error from server (Forbidden): sandboxes is forbidden", want: "denied"},
+		{message: "Unauthorized: ID token expired", want: "expired-authentication"},
+		{message: "Unable to connect: dial tcp: connection refused", want: "connectivity"},
+		{message: `context "x" not found`, want: "configuration"},
+		{message: `runtimeclass "gvisor" not found`, want: "missing-infrastructure"},
+		{timeout: true, want: "timeout"},
+		{message: "strange", want: "unknown"},
+	}
 	for _, test := range cases {
 		if got := classify(test.message, test.timeout); got != test.want {
 			t.Errorf("classify(%q) = %q; want %q", test.message, got, test.want)
 		}
+	}
+}
+
+func TestCommandErrorHidesOutput(t *testing.T) {
+	err := &commandError{Stderr: "access_token=secret", Stdout: "secret", ExitCode: 1}
+	if got := err.Error(); got != "command exited with status 1" {
+		t.Fatalf("Error() = %q", got)
 	}
 }
 

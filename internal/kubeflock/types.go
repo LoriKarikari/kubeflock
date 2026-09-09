@@ -21,6 +21,10 @@ type SandboxIdentity struct {
 	UID       string `json:"uid"`
 }
 
+func (s SandboxIdentity) complete() bool {
+	return s.Context != "" && s.Namespace != "" && s.Name != "" && s.UID != ""
+}
+
 type SSHState struct {
 	Alias          string `json:"alias"`
 	IdentityFile   string `json:"identityFile"`
@@ -29,6 +33,10 @@ type SSHState struct {
 	ProxyFile      string `json:"proxyFile"`
 	ConfigFile     string `json:"configFile"`
 	HostKey        string `json:"hostKey"`
+}
+
+func (s SSHState) complete() bool {
+	return s.Alias != "" && s.IdentityFile != "" && s.KnownHostsFile != "" && s.EntryFile != "" && s.ProxyFile != "" && s.ConfigFile != "" && s.HostKey != ""
 }
 
 type HerdrState struct {

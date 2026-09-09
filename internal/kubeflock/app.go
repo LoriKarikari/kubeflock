@@ -17,16 +17,17 @@ import (
 )
 
 type App struct {
-	In       io.Reader
-	Out, Err io.Writer
-	Now      func() time.Time
+	In  io.Reader
+	Out io.Writer
+	Err io.Writer
+	Now func() time.Time
 }
 
 type exitError struct {
 	code int
 }
 
-func (exitError) Error() string { return "" }
+func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 func NewApp(in io.Reader, out, stderr io.Writer) *App {
 	return &App{In: in, Out: out, Err: stderr, Now: time.Now}
@@ -43,43 +44,54 @@ func (a *App) Run(ctx context.Context, args []string) int {
 	root := a.command()
 	root.SetArgs(args)
 	err := root.ExecuteContext(ctx)
+	if err == nil {
+		return 0
+	}
 	if exit, ok := errors.AsType[exitError](err); ok {
 		return exit.code
 	}
-	if err != nil {
-		fmt.Fprintf(a.Err, "kubeflock: %s\n", sanitizeLines(err.Error()))
-		return 2
-	}
-	return 0
+	fmt.Fprintf(a.Err, "kubeflock: %s\n", err)
+	return 2
 }
 
 func (a *App) command() *cobra.Command {
 	options := globalOptions{}
 	root := &cobra.Command{
-		Use:           "kubeflock",
-		Short:         "Herdr agent environments on Kubernetes",
-		Version:       Version,
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		Args:          cobra.NoArgs,
+		Use:               "kubeflock",
+		Short:             "Herdr agent environments on Kubernetes",
+		Version:           Version,
+		Args:              cobra.NoArgs,
+		SilenceErrors:     true,
+		SilenceUsage:      true,
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		RunE: func(command *cobra.Command, _ []string) error {
-			_ = command.Help()
+			if err := command.Help(); err != nil {
+				return err
+			}
 			return exitError{code: 2}
 		},
-		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
 	root.SetVersionTemplate("kubeflock {{.Version}}\n")
 	root.SetIn(a.In)
 	root.SetOut(a.Out)
 	root.SetErr(a.Err)
+
 	flags := root.PersistentFlags()
 	flags.StringVar(&options.ConfigPath, "config", defaultConfigPath(), "config file")
 	flags.StringVar(&options.Kubeconfig, "kubeconfig", "", "kubeconfig file")
 	flags.StringVar(&options.Kubectl, "kubectl", cmp.Or(os.Getenv("KUBEFLOCK_KUBECTL"), "kubectl"), "kubectl binary")
 	flags.StringVar(&options.StateDir, "state-dir", defaultStateDir(), "connection state directory")
-	root.AddCommand(&cobra.Command{Use: "version", Args: cobra.NoArgs, Run: func(*cobra.Command, []string) { fmt.Fprintf(a.Out, "kubeflock %s\n", Version) }})
-	root.AddCommand(a.clusterCommand(&options), a.sandboxCommand(&options))
+
+	root.AddCommand(a.versionCommand(), a.clusterCommand(&options), a.sandboxCommand(&options))
 	return root
+}
+
+func (a *App) versionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:  "version",
+		Args: cobra.NoArgs,
+		Run:  func(*cobra.Command, []string) { fmt.Fprintf(a.Out, "kubeflock %s\n", Version) },
+	}
 }
 
 func (a *App) clusterCommand(options *globalOptions) *cobra.Command {
@@ -89,37 +101,45 @@ func (a *App) clusterCommand(options *globalOptions) *cobra.Command {
 }
 
 func (a *App) configCommand(options *globalOptions) *cobra.Command {
-	var contextName, namespace string
+	var target KubeTarget
 	config := &cobra.Command{
 		Use:  "config",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if contextName == "" || namespace == "" {
-				return errors.New("--context and --namespace are required")
-			}
-			target := KubeTarget{Context: contextName, Namespace: namespace}
-			if err := validateTarget(target); err != nil {
-				return err
-			}
-			ctx, cancel := context.WithTimeout(command.Context(), 15*time.Second)
-			defer cancel()
-			out, err := runKubectl(ctx, *options, "config", "get-contexts", "-o", "name")
-			if err != nil {
-				return fmt.Errorf("could not read kubeconfig contexts: %s", truncate(sanitizeLines(commandDetail(err)), 200))
-			}
-			if !slices.Contains(strings.Fields(out), target.Context) {
-				return fmt.Errorf("context %q not found in kubeconfig; list with: kubectl config get-contexts", target.Context)
-			}
-			if err := saveConfig(options.ConfigPath, target); err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "saved target context=%q namespace=%q to %s\n", target.Context, target.Namespace, options.ConfigPath)
-			return nil
+			return a.saveTarget(command.Context(), *options, target)
 		},
 	}
-	config.Flags().StringVar(&contextName, "context", "", "Kubernetes context")
-	config.Flags().StringVar(&namespace, "namespace", "", "Kubernetes namespace")
-	var output string
+	config.Flags().StringVar(&target.Context, "context", "", "Kubernetes context")
+	config.Flags().StringVar(&target.Namespace, "namespace", "", "Kubernetes namespace")
+	config.AddCommand(a.configShowCommand(options))
+	return config
+}
+
+func (a *App) saveTarget(ctx context.Context, options globalOptions, target KubeTarget) error {
+	if target.Context == "" || target.Namespace == "" {
+		return errors.New("--context and --namespace are required")
+	}
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := runKubectl(ctx, options, "config", "get-contexts", "-o", "name")
+	if err != nil {
+		return fmt.Errorf("read kubeconfig contexts: %w", err)
+	}
+	if !slices.Contains(strings.Fields(out), target.Context) {
+		return fmt.Errorf("context %q not found in kubeconfig; list with: kubectl config get-contexts", target.Context)
+	}
+	if err := saveConfig(options.ConfigPath, target); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Out, "saved target context=%q namespace=%q to %s\n", target.Context, target.Namespace, options.ConfigPath)
+	return nil
+}
+
+func (a *App) configShowCommand(options *globalOptions) *cobra.Command {
+	output := outputText
 	show := &cobra.Command{
 		Use:  "show",
 		Args: cobra.NoArgs,
@@ -128,32 +148,24 @@ func (a *App) configCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			switch output {
-			case "json":
-				return writeJSON(a.Out, map[string]string{"context": target.Context, "namespace": target.Namespace, "config": options.ConfigPath})
-			case "text":
-				fmt.Fprintf(a.Out, "context:   %s\nnamespace: %s\nconfig:    %s\n", target.Context, target.Namespace, options.ConfigPath)
-				return nil
-			default:
-				return fmt.Errorf("unknown --output %q", output)
+			if output == outputJSON {
+				return writeJSON(a.Out, savedConfig{Context: target.Context, Namespace: target.Namespace, Config: options.ConfigPath})
 			}
+			fmt.Fprintf(a.Out, "context:   %s\nnamespace: %s\nconfig:    %s\n", target.Context, target.Namespace, options.ConfigPath)
+			return nil
 		},
 	}
-	show.Flags().StringVar(&output, "output", "text", "output format")
-	config.AddCommand(show)
-	return config
+	output.declare(show)
+	return show
 }
 
 func (a *App) checkCommand(options *globalOptions) *cobra.Command {
-	var output string
+	output := outputText
 	var timeout, requestTimeout time.Duration
 	check := &cobra.Command{
 		Use:  "check",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if output != "text" && output != "json" {
-				return fmt.Errorf("unknown --output %q", output)
-			}
 			if requestTimeout < time.Second {
 				requestTimeout = time.Second
 			}
@@ -168,7 +180,7 @@ func (a *App) checkCommand(options *globalOptions) *cobra.Command {
 				fmt.Fprintln(a.Err, "kubeflock: check timed out. Clear any stuck login helper, then rerun with a longer --timeout.")
 				return exitError{code: 1}
 			}
-			if output == "json" {
+			if output == outputJSON {
 				if err := writeJSON(a.Out, report); err != nil {
 					return err
 				}
@@ -181,7 +193,7 @@ func (a *App) checkCommand(options *globalOptions) *cobra.Command {
 			return nil
 		},
 	}
-	check.Flags().StringVar(&output, "output", "text", "output format")
+	output.declare(check)
 	check.Flags().DurationVar(&timeout, "timeout", time.Minute, "overall timeout")
 	check.Flags().DurationVar(&requestTimeout, "request-timeout", 10*time.Second, "Kubernetes request timeout")
 	return check
@@ -216,11 +228,25 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := createSandbox(command.Context(), target, args[0], createOptions{Template: template, IdentityFile: identity, Timeout: timeout, Poll: 2 * time.Second, Global: *options})
+			created, err := createSandbox(command.Context(), target, args[0], createOptions{
+				Template:     template,
+				IdentityFile: identity,
+				Timeout:      timeout,
+				Poll:         2 * time.Second,
+				Global:       *options,
+			})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "ready sandbox %s from %s; home %s (%s); connected as %s\n", created.Name, created.Template, created.Home.Name, created.Home.Capacity, created.SSHAlias)
+			fmt.Fprintf(
+				a.Out,
+				"ready sandbox %s from %s; home %s (%s); connected as %s\n",
+				created.Name,
+				created.Template,
+				created.Home.Name,
+				created.Home.Capacity,
+				created.SSHAlias,
+			)
 			return nil
 		},
 	}
@@ -231,14 +257,11 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 }
 
 func (a *App) listCommand(options *globalOptions) *cobra.Command {
-	var output string
+	output := outputText
 	command := &cobra.Command{
 		Use:  "list",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			if output != "text" && output != "json" {
-				return fmt.Errorf("unknown --output %q", output)
-			}
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
 				return err
@@ -247,7 +270,7 @@ func (a *App) listCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if output == "json" {
+			if output == outputJSON {
 				return writeJSON(a.Out, statuses)
 			}
 			if len(statuses) == 0 {
@@ -264,7 +287,7 @@ func (a *App) listCommand(options *globalOptions) *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVar(&output, "output", "text", "output format")
+	output.declare(command)
 	return command
 }
 
@@ -347,7 +370,12 @@ func createActionCommand() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			args := []string{"plugin", "pane", "open", "--plugin", cmp.Or(os.Getenv("HERDR_PLUGIN_ID"), "kubeflock"), "--entrypoint", "create", "--focus"}
+			args := []string{
+				"plugin", "pane", "open",
+				"--plugin", cmp.Or(os.Getenv("HERDR_PLUGIN_ID"), "kubeflock"),
+				"--entrypoint", "create",
+				"--focus",
+			}
 			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
 				args = append(args, "--workspace", workspace)
 			}
@@ -388,11 +416,25 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := createSandbox(command.Context(), target, name, createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options})
+			created, err := createSandbox(command.Context(), target, name, createOptions{
+				Template:     template,
+				IdentityFile: identity,
+				Timeout:      5 * time.Minute,
+				Poll:         2 * time.Second,
+				Global:       *options,
+			})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "ready sandbox %s from %s; home %s (%s); connected as %s\n", created.Name, created.Template, created.Home.Name, created.Home.Capacity, created.SSHAlias)
+			fmt.Fprintf(
+				a.Out,
+				"ready sandbox %s from %s; home %s (%s); connected as %s\n",
+				created.Name,
+				created.Template,
+				created.Home.Name,
+				created.Home.Capacity,
+				created.SSHAlias,
+			)
 			return nil
 		},
 	}
@@ -431,4 +473,33 @@ func writeJSON(out io.Writer, value any) error {
 	}
 	_, err = out.Write(append(data, '\n'))
 	return err
+}
+
+type outputFormat string
+
+const (
+	outputText outputFormat = "text"
+	outputJSON outputFormat = "json"
+)
+
+func (f *outputFormat) String() string { return string(*f) }
+func (f *outputFormat) Type() string   { return "format" }
+
+func (f *outputFormat) Set(value string) error {
+	switch outputFormat(value) {
+	case outputText, outputJSON:
+		*f = outputFormat(value)
+		return nil
+	}
+	return errors.New("must be text or json")
+}
+
+func (f *outputFormat) declare(command *cobra.Command) {
+	command.Flags().Var(f, "output", "output format")
+}
+
+type savedConfig struct {
+	Context   string `json:"context"`
+	Namespace string `json:"namespace"`
+	Config    string `json:"config"`
 }

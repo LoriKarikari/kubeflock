@@ -5,41 +5,6 @@ import (
 	"strings"
 )
 
-var redactions = []struct {
-	re          *regexp.Regexp
-	replacement string
-}{
-	{regexp.MustCompile(`(?i)bearer\s+[a-z0-9._~+/=-]+`), "bearer [redacted]"},
-	{regexp.MustCompile(`(?i)((?:id|access|refresh)[_-]?token\s*[:=]\s*"?)[^"\s;,}]+`), "$1[redacted]"},
-	{regexp.MustCompile(`(?i)(client[_-]?secret\s*[:=]\s*"?)[^"\s;,}]+`), "$1[redacted]"},
-	{regexp.MustCompile(`(?i)((?:authorization|auth)[_-]?code\s*[:=]\s*"?)[^"\s;,}]+`), "$1[redacted]"},
-	{regexp.MustCompile(`(?i)([?&](?:code|token|id_token|access_token|refresh_token)="?)[^"&\s;,}]+`), "$1[redacted]"},
-	{regexp.MustCompile(`\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}`), "[redacted-jwt]"},
-}
-
-var jsonCredential = regexp.MustCompile(`(?i)("[^"]*(?:code|token|secret)[^"]*"\s*:\s*"?)[^"\s\],}]+`)
-
-func sanitizeLines(value string) string {
-	lines := strings.Split(value, "\n")
-	out := lines[:0]
-	for _, line := range lines {
-		for _, redaction := range redactions {
-			line = redaction.re.ReplaceAllString(line, redaction.replacement)
-		}
-		line = jsonCredential.ReplaceAllString(line, "$1[redacted]")
-		low := strings.ToLower(line)
-		if strings.Contains(low, "verification_url") && strings.Contains(low, "user_code") {
-			continue
-		}
-		if strings.Contains(low, "authorize") && strings.Contains(low, "code=") && strings.Contains(low, "[redacted]") {
-			out = append(out, "authorization URL omitted; complete login in a terminal")
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.TrimSpace(strings.Join(out, "\n"))
-}
-
 var categories = []struct {
 	name string
 	re   *regexp.Regexp

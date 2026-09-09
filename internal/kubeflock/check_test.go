@@ -39,12 +39,23 @@ esac
 	return script, log
 }
 
+func TestCommandCategoryWithoutError(t *testing.T) {
+	if got := commandCategory(nil); got != "unknown" {
+		t.Fatalf("commandCategory(nil) = %q; want unknown", got)
+	}
+}
+
 func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 	kubectl, log := fakeCheckKubectl(t)
 	t.Setenv("FAKE_CHECK_LOG", log)
 	app := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
 	app.Now = func() time.Time { return time.Date(2026, 9, 8, 0, 0, 0, 0, time.UTC) }
-	report := app.runCheck(context.Background(), KubeTarget{Context: "saved", Namespace: "dev"}, globalOptions{Kubectl: kubectl}, 2*time.Second)
+	report := app.runCheck(
+		context.Background(),
+		KubeTarget{Context: "saved", Namespace: "dev"},
+		globalOptions{Kubectl: kubectl},
+		2*time.Second,
+	)
 	if !report.OK {
 		t.Fatalf("report = %#v", report.Checks)
 	}
@@ -67,23 +78,39 @@ func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 
 func TestClusterCheckClassifiesFailuresAndRedactsCredentials(t *testing.T) {
 	kubectl, _ := fakeCheckKubectl(t)
-	for _, test := range []struct {
+	tests := []struct {
 		env      string
 		check    string
 		category string
-	}{{"DENY_ALL", "perm-get-sandboxes", "denied"}, {"ALPHA_ONLY", "agents-api", "missing-infrastructure"}, {"CONFIGMAP_ONLY", "budgets-quota", "missing-infrastructure"}} {
+	}{
+		{env: "DENY_ALL", check: "perm-get-sandboxes", category: "denied"},
+		{env: "ALPHA_ONLY", check: "agents-api", category: "missing-infrastructure"},
+		{env: "CONFIGMAP_ONLY", check: "budgets-quota", category: "missing-infrastructure"},
+	}
+	for _, test := range tests {
 		t.Run(test.env, func(t *testing.T) {
 			t.Setenv(test.env, "1")
-			report := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{}).runCheck(context.Background(), KubeTarget{Context: "saved", Namespace: "dev"}, globalOptions{Kubectl: kubectl}, time.Second)
+			report := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{}).runCheck(
+				context.Background(),
+				KubeTarget{Context: "saved", Namespace: "dev"},
+				globalOptions{Kubectl: kubectl},
+				time.Second,
+			)
 			result := findCheck(report.Checks, test.check)
 			if result == nil || result.OK || result.Category != test.category {
 				t.Fatalf("%s = %#v", test.check, result)
 			}
 		})
 	}
-	t.Run("redaction", func(t *testing.T) {
+
+	t.Run("secret output", func(t *testing.T) {
 		t.Setenv("TOKEN_LEAK", "1")
-		report := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{}).runCheck(context.Background(), KubeTarget{Context: "saved", Namespace: "dev"}, globalOptions{Kubectl: kubectl}, time.Second)
+		report := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{}).runCheck(
+			context.Background(),
+			KubeTarget{Context: "saved", Namespace: "dev"},
+			globalOptions{Kubectl: kubectl},
+			time.Second,
+		)
 		for _, check := range report.Checks {
 			if strings.Contains(check.Message, "REPORT_TOKEN_XYZ") {
 				t.Fatal("credential leaked into report")

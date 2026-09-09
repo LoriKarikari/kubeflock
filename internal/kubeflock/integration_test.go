@@ -44,11 +44,12 @@ type fixtureClaim struct {
 }
 
 type fixtureAPI struct {
-	mu            sync.Mutex
-	claims        map[string]fixtureClaim
-	creates       int
-	reads         map[string]int
-	methods, auth []string
+	mu      sync.Mutex
+	claims  map[string]fixtureClaim
+	creates int
+	reads   map[string]int
+	methods []string
+	auth    []string
 }
 
 func (f *fixtureAPI) snapshot() (int, map[string]int, map[string]fixtureClaim, []string, []string) {
@@ -70,38 +71,45 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 		return
 	}
 	if strings.HasSuffix(path, "/sandboxwarmpools") {
-		writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxWarmPoolList", "items": []any{poolFixture("dev-small"), poolFixture("insecure")}})
+		writeFixture(response, map[string]any{
+			"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+			"kind":       "SandboxWarmPoolList",
+			"items": []any{
+				poolFixture("dev-small"),
+				poolFixture("insecure"),
+			},
+		})
 		return
 	}
 	if strings.HasSuffix(path, "/sandboxclaims") && request.Method == http.MethodPost {
 		var body map[string]any
 		if json.NewDecoder(request.Body).Decode(&body) != nil {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		metadata, ok := body["metadata"].(map[string]any)
 		if !ok {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		spec, ok := body["spec"].(map[string]any)
 		if !ok {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		ref, ok := spec["warmPoolRef"].(map[string]any)
 		if !ok {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		name, ok := metadata["name"].(string)
 		if !ok {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		pool, ok := ref["name"].(string)
 		if !ok {
-			response.WriteHeader(400)
+			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		if _, exists := f.claims[name]; exists {
@@ -145,20 +153,69 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	}
 	if strings.Contains(path, "/sandboxes/") {
 		_, name, _ := strings.CutLast(path, "/")
-		writeFixture(response, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "metadata": map[string]any{"name": name, "namespace": "dev", "uid": "sandbox-" + name}, "status": map[string]any{"selector": "agents.x-k8s.io/sandbox=" + name, "conditions": []any{map[string]string{"type": "Ready", "status": "True"}}}})
+		writeFixture(response, map[string]any{
+			"apiVersion": "agents.x-k8s.io/v1beta1",
+			"kind":       "Sandbox",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": "dev",
+				"uid":       "sandbox-" + name,
+			},
+			"status": map[string]any{
+				"selector": "agents.x-k8s.io/sandbox=" + name,
+				"conditions": []any{map[string]string{
+					"type": "Ready", "status": "True",
+				}},
+			},
+		})
 		return
 	}
 	if strings.HasSuffix(path, "/pods") {
 		name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
 		controller := true
-		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": name, "namespace": "dev", "ownerReferences": []any{map[string]any{"uid": "sandbox-" + name, "controller": controller}}}, "spec": map[string]any{"containers": []any{map[string]any{"name": "sandbox", "ports": []any{map[string]any{"name": "ssh", "containerPort": 2200}}}}}}}})
+		writeFixture(response, map[string]any{
+			"apiVersion": "v1",
+			"kind":       "PodList",
+			"items": []any{map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata": map[string]any{
+					"name":      name,
+					"namespace": "dev",
+					"ownerReferences": []any{map[string]any{
+						"uid": "sandbox-" + name, "controller": controller,
+					}},
+				},
+				"spec": map[string]any{
+					"containers": []any{map[string]any{
+						"name": "sandbox",
+						"ports": []any{map[string]any{
+							"name": "ssh", "containerPort": 2200,
+						}},
+					}},
+				},
+			}},
+		})
 		return
 	}
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
 		_, name, _ := strings.CutLast(path, "/")
 		sandbox := strings.TrimPrefix(name, "home-")
 		controller := true
-		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": name, "namespace": "dev", "uid": name + "-uid", "ownerReferences": []any{map[string]any{"uid": "sandbox-" + sandbox, "controller": controller}}}, "spec": map[string]any{"storageClassName": "longhorn"}, "status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}}})
+		writeFixture(response, map[string]any{
+			"apiVersion": "v1",
+			"kind":       "PersistentVolumeClaim",
+			"metadata": map[string]any{
+				"name":      name,
+				"namespace": "dev",
+				"uid":       name + "-uid",
+				"ownerReferences": []any{map[string]any{
+					"uid": "sandbox-" + sandbox, "controller": controller,
+				}},
+			},
+			"spec":   map[string]any{"storageClassName": "longhorn"},
+			"status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}},
+		})
 		return
 	}
 	response.WriteHeader(http.StatusNotFound)
@@ -171,21 +228,92 @@ func metadataFixture(name, uid string) map[string]any {
 }
 
 func poolFixture(template string) map[string]any {
-	return map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxWarmPool", "metadata": metadataFixture(template+"-pool", template+"-pool-uid"), "spec": map[string]any{"replicas": 0, "sandboxTemplateRef": map[string]string{"name": template}}}
+	return map[string]any{
+		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+		"kind":       "SandboxWarmPool",
+		"metadata":   metadataFixture(template+"-pool", template+"-pool-uid"),
+		"spec": map[string]any{
+			"replicas":           0,
+			"sandboxTemplateRef": map[string]string{"name": template},
+		},
+	}
 }
 
 func claimFixture(name, pool string) fixtureClaim {
-	claim := fixtureClaim{APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaim", Metadata: metav1.ObjectMeta{Name: name, Namespace: "dev", UID: types.UID("claim-" + name), Labels: map[string]string{managedByLabel: managedByValue}}}
+	claim := fixtureClaim{
+		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
+		Kind:       "SandboxClaim",
+		Metadata: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "dev",
+			UID:       types.UID("claim-" + name),
+			Labels:    map[string]string{managedByLabel: managedByValue},
+		},
+	}
 	claim.Spec.WarmPoolRef.Name = pool
 	return claim
 }
 
 func templateFixture(name string, secure bool) map[string]any {
-	runtime := "gvisor"
+	runtimeClass := "gvisor"
 	if !secure {
-		runtime = "runc"
+		runtimeClass = "runc"
 	}
-	return map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxTemplate", "metadata": metadataFixture(name, name+"-uid"), "spec": map[string]any{"networkPolicyManagement": "Managed", "podTemplate": map[string]any{"spec": map[string]any{"runtimeClassName": runtime, "automountServiceAccountToken": false, "securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": map[string]string{"type": "RuntimeDefault"}}, "containers": []any{map[string]any{"securityContext": map[string]any{"allowPrivilegeEscalation": false, "runAsNonRoot": true, "runAsUser": 1000, "capabilities": map[string]any{"drop": []string{"ALL"}}, "seccompProfile": map[string]string{"type": "RuntimeDefault"}}, "ports": []any{map[string]any{"name": "ssh", "containerPort": 2200}}, "resources": map[string]any{"requests": map[string]string{"cpu": "500m", "memory": "1Gi"}, "limits": map[string]string{"cpu": "2", "memory": "4Gi"}}, "volumeMounts": []any{map[string]string{"name": "home", "mountPath": "/home/agent"}}}}, "volumes": []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]string{"claimName": "home"}}}}}, "volumeClaimTemplates": []any{map[string]any{"metadata": map[string]string{"name": "home"}, "spec": map[string]any{"storageClassName": "longhorn", "resources": map[string]any{"requests": map[string]string{"storage": "10Gi"}}}}}}}
+
+	podSecurity := map[string]any{
+		"runAsNonRoot": true,
+		"runAsUser":    1000,
+		"runAsGroup":   1000,
+		"fsGroup":      1000,
+		"seccompProfile": map[string]string{
+			"type": "RuntimeDefault",
+		},
+	}
+	containerSecurity := map[string]any{
+		"allowPrivilegeEscalation": false,
+		"runAsNonRoot":             true,
+		"runAsUser":                1000,
+		"capabilities":             map[string]any{"drop": []string{"ALL"}},
+		"seccompProfile":           map[string]string{"type": "RuntimeDefault"},
+	}
+	container := map[string]any{
+		"securityContext": containerSecurity,
+		"ports":           []any{map[string]any{"name": "ssh", "containerPort": 2200}},
+		"resources": map[string]any{
+			"requests": map[string]string{"cpu": "500m", "memory": "1Gi"},
+			"limits":   map[string]string{"cpu": "2", "memory": "4Gi"},
+		},
+		"volumeMounts": []any{map[string]string{"name": "home", "mountPath": "/home/agent"}},
+	}
+	podSpec := map[string]any{
+		"runtimeClassName":             runtimeClass,
+		"automountServiceAccountToken": false,
+		"securityContext":              podSecurity,
+		"containers":                   []any{container},
+		"volumes": []any{map[string]any{
+			"name":                  "home",
+			"persistentVolumeClaim": map[string]string{"claimName": "home"},
+		}},
+	}
+
+	return map[string]any{
+		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+		"kind":       "SandboxTemplate",
+		"metadata":   metadataFixture(name, name+"-uid"),
+		"spec": map[string]any{
+			"networkPolicyManagement": "Managed",
+			"podTemplate":             map[string]any{"spec": podSpec},
+			"volumeClaimTemplates": []any{map[string]any{
+				"metadata": map[string]string{"name": "home"},
+				"spec": map[string]any{
+					"storageClassName": "longhorn",
+					"resources": map[string]any{
+						"requests": map[string]string{"storage": "10Gi"},
+					},
+				},
+			}},
+		},
+	}
 }
 
 func TestHelperProcess(t *testing.T) {
@@ -311,8 +439,9 @@ func buildCLI(t *testing.T, dir string) string {
 }
 
 type result struct {
-	status         int
-	stdout, stderr string
+	status int
+	stdout string
+	stderr string
 }
 
 func invoke(t *testing.T, binary string, args, env []string, input string) result {

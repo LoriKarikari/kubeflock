@@ -22,13 +22,13 @@ type commandError struct {
 }
 
 func (e *commandError) Error() string {
-	if e.Stderr != "" {
-		return e.Stderr
+	if e.TimedOut {
+		return "command timed out"
 	}
-	if e.Cause != nil {
-		return e.Cause.Error()
+	if e.ExitCode >= 0 {
+		return fmt.Sprintf("command exited with status %d", e.ExitCode)
 	}
-	return fmt.Sprintf("command exited with status %d", e.ExitCode)
+	return fmt.Sprintf("start command: %v", e.Cause)
 }
 
 func commandContext(ctx context.Context, command string, args ...string) *exec.Cmd {

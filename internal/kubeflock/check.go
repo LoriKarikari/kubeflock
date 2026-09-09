@@ -1,7 +1,6 @@
 package kubeflock
 
 import (
-	"cmp"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -12,19 +11,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 type globalOptions struct {
-	ConfigPath, Kubeconfig, Kubectl, StateDir string
+	ConfigPath string
+	Kubeconfig string
+	Kubectl    string
+	StateDir   string
 }
 
 type accessCheck struct {
-	Name                               string
-	Verb, Group, Resource, Subresource string
-	Namespaced, Advisory               bool
+	Name        string
+	Verb        string
+	Group       string
+	Resource    string
+	Subresource string
+	Namespaced  bool
+	Advisory    bool
 }
 
 func (c accessCheck) resourceArg() string {
@@ -82,17 +87,18 @@ func failedCheck(name, message, category string) CheckResult {
 	return CheckResult{Name: name, Category: category, Message: message, Remediation: remediation(category)}
 }
 
-func commandFailure(err error, fallback string) (detail, category string) {
-	command, ok := errors.AsType[*commandError](err)
-	if !ok {
-		return truncate(sanitizeLines(err.Error()), 500), classify(err.Error(), false)
+func commandCategory(err error) string {
+	if err == nil {
+		return "unknown"
 	}
-	detail = cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), fallback)
-	return truncate(sanitizeLines(detail), 500), classify(command.Stderr, command.TimedOut)
+	if command, ok := errors.AsType[*commandError](err); ok {
+		return classify(command.Stderr+"\n"+command.Stdout, command.TimedOut)
+	}
+	return classify(err.Error(), false)
 }
 
 func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOptions, requestTimeout time.Duration) CheckReport {
-	req := fmt.Sprintf("%gs", requestTimeout.Seconds())
+	requestTimeoutArg := requestTimeout.String()
 	perCall := requestTimeout + 5*time.Second
 	perCall = max(perCall, 15*time.Second)
 	attempt := func(name, action string, args []string) (string, *CheckResult) {
@@ -102,13 +108,16 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 		if err == nil {
 			return out, nil
 		}
-		detail, category := commandFailure(err, "kubectl failed")
-		result := failedCheck(name, fmt.Sprintf("could not %s: %s", action, detail), category)
+		result := failedCheck(name, "could not "+action, commandCategory(err))
 		return out, &result
 	}
 
 	checks := []CheckResult{}
-	versions, connectivity := attempt("api-connectivity", "reach the Kubernetes API with the saved context", baseArgs(target, req, "api-versions"))
+	versions, connectivity := attempt(
+		"api-connectivity",
+		"reach the Kubernetes API with the saved context",
+		baseArgs(target, requestTimeoutArg, "api-versions"),
+	)
 	served := sets.New[string]()
 	if connectivity != nil {
 		checks = append(checks, *connectivity)
@@ -129,25 +138,30 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 			checks = append(checks, failedCheck(expectation.Check, expectation.Label+" is not served", "missing-infrastructure"))
 			continue
 		}
-		checks = append(checks, probe(expectation.Check, "discover "+expectation.Label, baseArgs(target, req, "api-resources", "--api-group="+expectation.Group, "-o", "name"), expectation.check))
+		checks = append(checks, probe(
+			expectation.Check,
+			"discover "+expectation.Label,
+			baseArgs(target, requestTimeoutArg, "api-resources", "--api-group="+expectation.Group, "-o", "name"),
+			expectation.check,
+		))
 	}
 
 	checks = append(checks,
-		probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, req, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck),
-		probe("storage", "list StorageClasses", baseArgs(target, req, "get", "storageclass", "-o", "json"), storageCheck),
-		probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, req, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
+		probe("runtimeclass-gvisor", "read RuntimeClass gvisor", baseArgs(target, requestTimeoutArg, "get", "runtimeclass", "gvisor", "-o", "json"), runtimeClassCheck),
+		probe("storage", "list StorageClasses", baseArgs(target, requestTimeoutArg, "get", "storageclass", "-o", "json"), storageCheck),
+		probe("namespace", fmt.Sprintf("read namespace %q", target.Namespace), baseArgs(target, requestTimeoutArg, "get", "namespace", target.Namespace, "-o", "json"), func(string) CheckResult {
 			return okCheck("namespace", fmt.Sprintf("namespace %q exists", target.Namespace))
 		}),
-		probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, req, "get", "resourcequota", "-o", "json"), quotaCheck),
+		probe("budgets-quota", "read ResourceQuotas in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "resourcequota", "-o", "json"), quotaCheck),
 	)
-	out, failure := attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, req, "get", "limitrange", "-o", "json"))
+	out, failure := attempt("budgets-limits", "read LimitRanges in target namespace", namespacedArgs(target, requestTimeoutArg, "get", "limitrange", "-o", "json"))
 	limits := limitsCheck(out)
 	if failure != nil {
 		limits = *failure
 		limits.Advisory = true
 	}
 	checks = append(checks, limits)
-	checks = append(checks, checkAccess(ctx, target, options, req, perCall)...)
+	checks = append(checks, checkAccess(ctx, target, options, requestTimeoutArg, perCall)...)
 	report := CheckReport{Context: target.Context, Namespace: target.Namespace, OK: true, Checks: checks, CheckedAt: a.now().UTC()}
 	for _, check := range checks {
 		if !check.OK && !check.Advisory {
@@ -163,13 +177,29 @@ var (
 )
 
 type apiGroupExpectation struct {
-	Check, Group, Label string
-	Resources           []string
+	Check     string
+	Group     string
+	Label     string
+	Resources []string
 }
 
 var expectedAPIGroups = []apiGroupExpectation{
-	{"agents-api", "agents.x-k8s.io", "Sandbox API agents.x-k8s.io/v1beta1", []string{"sandboxes"}},
-	{"extensions-api", "extensions.agents.x-k8s.io", "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1", []string{"sandboxclaims", "sandboxtemplates", "sandboxwarmpools"}},
+	{
+		Check:     "agents-api",
+		Group:     "agents.x-k8s.io",
+		Label:     "Sandbox API agents.x-k8s.io/v1beta1",
+		Resources: []string{"sandboxes"},
+	},
+	{
+		Check: "extensions-api",
+		Group: "extensions.agents.x-k8s.io",
+		Label: "Sandbox extensions API extensions.agents.x-k8s.io/v1beta1",
+		Resources: []string{
+			"sandboxclaims",
+			"sandboxtemplates",
+			"sandboxwarmpools",
+		},
+	},
 }
 
 func (expectation apiGroupExpectation) check(out string) CheckResult {
@@ -216,12 +246,13 @@ func storageCheck(out string) CheckResult {
 	if len(value.Items) == 0 {
 		return failedCheck("storage", "no StorageClasses available for sandbox homes", "missing-infrastructure")
 	}
-	names := lo.Map(value.Items, func(item storageClass, _ int) string { return item.Metadata.Name })
+	names := make([]string, len(value.Items))
 	label := ""
-	if fallback, found := lo.Find(value.Items, func(item storageClass) bool {
-		return item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true"
-	}); found {
-		label = " (default " + fallback.Metadata.Name + ")"
+	for i, item := range value.Items {
+		names[i] = item.Metadata.Name
+		if label == "" && item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+			label = " (default " + item.Metadata.Name + ")"
+		}
 	}
 	return okCheck("storage", fmt.Sprintf("%d StorageClass(es): %s%s", len(names), strings.Join(names, ", "), label))
 }
@@ -259,10 +290,14 @@ func quotaCheck(raw string) CheckResult {
 	if len(value.Items) == 0 {
 		return failedCheck("budgets-quota", "no ResourceQuota in target namespace; set explicit compute/storage budgets via the Helm chart", "missing-infrastructure")
 	}
-	names := lo.Map(value.Items, func(item resourceQuota, _ int) string { return item.Metadata.Name })
-	seen := sets.New(lo.FlatMap(value.Items, func(item resourceQuota, _ int) []string {
-		return slices.Sorted(maps.Keys(item.Spec.Hard))
-	})...)
+	names := make([]string, len(value.Items))
+	seen := sets.New[string]()
+	for i, item := range value.Items {
+		names[i] = item.Metadata.Name
+		for key := range item.Spec.Hard {
+			seen.Insert(key)
+		}
+	}
 	hasCompute := seen.Intersection(computeQuotaKeys).Len() != 0
 	hasStorage := seen.Intersection(storageQuotaKeys).Len() != 0
 	if hasCompute && hasStorage {
@@ -299,16 +334,23 @@ func limitsCheck(raw string) CheckResult {
 	return okCheck("budgets-limits", fmt.Sprintf("%d LimitRange(s) present", len(value.Items)))
 }
 
-func permissionCheck(ctx context.Context, target KubeTarget, options globalOptions, req string, timeout time.Duration, access accessCheck) CheckResult {
+func permissionCheck(
+	ctx context.Context,
+	target KubeTarget,
+	options globalOptions,
+	requestTimeout string,
+	timeout time.Duration,
+	access accessCheck,
+) CheckResult {
 	shown := access.qualified()
 	args := []string{"auth", "can-i", access.Verb, access.resourceArg()}
 	if access.Subresource != "" {
 		args = append(args, "--subresource="+access.Subresource)
 	}
 	if access.Namespaced {
-		args = namespacedArgs(target, req, args...)
+		args = namespacedArgs(target, requestTimeout, args...)
 	} else {
-		args = baseArgs(target, req, args...)
+		args = baseArgs(target, requestTimeout, args...)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -329,8 +371,11 @@ func permissionCheck(ctx context.Context, target KubeTarget, options globalOptio
 		result.Advisory = access.Advisory
 		return result
 	}
-	detail, category := commandFailure(err, sanitizeLines(out))
-	result := failedCheck(access.Name, fmt.Sprintf("could not check permission %s %s: %s", access.Verb, shown, detail), category)
+	message := fmt.Sprintf("could not check permission %s %s", access.Verb, shown)
+	if err == nil {
+		message += ": kubectl returned an unexpected response"
+	}
+	result := failedCheck(access.Name, message, commandCategory(err))
 	result.Advisory = access.Advisory
 	return result
 }

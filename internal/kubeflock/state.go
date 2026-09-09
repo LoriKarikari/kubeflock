@@ -51,10 +51,10 @@ func validateConnection(connection Connection) error {
 	if connection.Phase == "connected" && connection.ProfileID == "" {
 		return errors.New("connected state requires profileId")
 	}
-	if connection.Sandbox.Context == "" || connection.Sandbox.Namespace == "" || connection.Sandbox.Name == "" || connection.Sandbox.UID == "" {
+	if !connection.Sandbox.complete() {
 		return errors.New("connection contains an incomplete sandbox identity")
 	}
-	if connection.SSH.Alias == "" || connection.SSH.IdentityFile == "" || connection.SSH.KnownHostsFile == "" || connection.SSH.EntryFile == "" || connection.SSH.ProxyFile == "" || connection.SSH.ConfigFile == "" || connection.SSH.HostKey == "" {
+	if !connection.SSH.complete() {
 		return errors.New("connection contains incomplete SSH state")
 	}
 	return nil
@@ -101,7 +101,7 @@ func validateManaged(sandbox ManagedSandbox) error {
 	if sandbox.Version != 1 || (sandbox.Phase != "claimed" && sandbox.Phase != "bound") {
 		return errors.New("invalid managed sandbox version or phase")
 	}
-	if sandbox.Claim.Context == "" || sandbox.Claim.Namespace == "" || sandbox.Claim.Name == "" || sandbox.Claim.UID == "" || sandbox.Template == "" || sandbox.WarmPool == "" || sandbox.IdentityFile == "" {
+	if !sandbox.Claim.complete() || sandbox.Template == "" || sandbox.WarmPool == "" || sandbox.IdentityFile == "" {
 		return errors.New("managed sandbox contains incomplete identity")
 	}
 	if sandbox.Phase == "bound" && (sandbox.Sandbox == nil || sandbox.Home == nil) {

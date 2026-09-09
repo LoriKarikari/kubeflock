@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/samber/lo"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -24,7 +23,10 @@ import (
 var failedReason = regexp.MustCompile(`(?i)error|fail|invalid|forbidden|quota|unschedulable|conflict|not.?found|multiple`)
 
 type claimProgress struct {
-	State, Step, Message, SandboxName string
+	State       string
+	Step        string
+	Message     string
+	SandboxName string
 }
 
 func progress(claim sandboxClaim) claimProgress {
@@ -52,14 +54,19 @@ func progress(claim sandboxClaim) claimProgress {
 }
 
 type createOptions struct {
-	Template, IdentityFile string
-	Timeout, Poll          time.Duration
-	Global                 globalOptions
+	Template     string
+	IdentityFile string
+	Timeout      time.Duration
+	Poll         time.Duration
+	Global       globalOptions
 }
 
 type createdSandbox struct {
-	Name, Template, WarmPool, SSHAlias string
-	Home                               PersistentHome
+	Name     string
+	Template string
+	WarmPool string
+	SSHAlias string
+	Home     PersistentHome
 }
 
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
@@ -67,17 +74,18 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	if err != nil {
 		return nil, err
 	}
-	matches := lo.FilterMap(saved, func(item savedSandbox, _ int) (ManagedSandbox, bool) {
-		claim := item.Sandbox.Claim
-		return item.Sandbox, claim.Context == target.Context && claim.Namespace == target.Namespace && claim.Name == name
-	})
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("multiple saved sandboxes match %s/%s", target.Namespace, name)
+	var match *ManagedSandbox
+	for i := range saved {
+		claim := saved[i].Sandbox.Claim
+		if claim.Context != target.Context || claim.Namespace != target.Namespace || claim.Name != name {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("multiple saved sandboxes match %s/%s", target.Namespace, name)
+		}
+		match = &saved[i].Sandbox
 	}
-	if len(matches) == 0 {
-		return nil, nil
-	}
-	return &matches[0], nil
+	return match, nil
 }
 
 func verifyClaim(claim *sandboxClaim, target KubeTarget, name, warmPool string, saved *ManagedSandbox) error {
@@ -204,7 +212,19 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, options 
 	}
 	managed := saved
 	if managed == nil {
-		managed = &ManagedSandbox{Version: 1, Phase: "claimed", Claim: SandboxIdentity{Context: target.Context, Namespace: target.Namespace, Name: name, UID: string(claim.Metadata.UID)}, Template: approved.Name, WarmPool: approved.WarmPool, IdentityFile: identity}
+		managed = &ManagedSandbox{
+			Version: 1,
+			Phase:   "claimed",
+			Claim: SandboxIdentity{
+				Context:   target.Context,
+				Namespace: target.Namespace,
+				Name:      name,
+				UID:       string(claim.Metadata.UID),
+			},
+			Template:     approved.Name,
+			WarmPool:     approved.WarmPool,
+			IdentityFile: identity,
+		}
 		if err := saveJSON(managedSandboxPath(options.Global.StateDir, string(claim.Metadata.UID)), managed); err != nil {
 			return createdSandbox{}, err
 		}
@@ -238,7 +258,12 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, options 
 			return createdSandbox{}, err
 		}
 	}
-	connection, err := connect(ctx, target, connectOptions{Name: name, ExpectedUID: resolved.Identity.UID, IdentityFile: identity, Global: options.Global})
+	connection, err := connect(ctx, target, connectOptions{
+		Name:         name,
+		ExpectedUID:  resolved.Identity.UID,
+		IdentityFile: identity,
+		Global:       options.Global,
+	})
 	if err != nil {
 		return createdSandbox{}, err
 	}
@@ -250,10 +275,13 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	if err != nil {
 		return nil, err
 	}
-	managed := lo.FilterMap(managedFiles, func(item savedSandbox, _ int) (ManagedSandbox, bool) {
+	managed := make([]ManagedSandbox, 0, len(managedFiles))
+	for _, item := range managedFiles {
 		claim := item.Sandbox.Claim
-		return item.Sandbox, claim.Context == target.Context && claim.Namespace == target.Namespace
-	})
+		if claim.Context == target.Context && claim.Namespace == target.Namespace {
+			managed = append(managed, item.Sandbox)
+		}
+	}
 	client, err := newKubeClient(ctx, target, options.Kubeconfig)
 	if err != nil {
 		return nil, err
@@ -272,7 +300,14 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	}
 	statuses := make([]SandboxStatus, 0, len(managed))
 	for _, saved := range managed {
-		status := SandboxStatus{Name: saved.Claim.Name, Namespace: saved.Claim.Namespace, ClaimUID: saved.Claim.UID, Template: saved.Template, WarmPool: saved.WarmPool, Home: saved.Home}
+		status := SandboxStatus{
+			Name:      saved.Claim.Name,
+			Namespace: saved.Claim.Namespace,
+			ClaimUID:  saved.Claim.UID,
+			Template:  saved.Template,
+			WarmPool:  saved.WarmPool,
+			Home:      saved.Home,
+		}
 		if saved.Sandbox != nil {
 			status.SandboxUID = saved.Sandbox.UID
 		}

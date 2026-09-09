@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samber/lo"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -26,8 +25,10 @@ type herdrMachine struct {
 }
 
 type connectOptions struct {
-	Name, ExpectedUID, IdentityFile string
-	Global                          globalOptions
+	Name         string
+	ExpectedUID  string
+	IdentityFile string
+	Global       globalOptions
 }
 
 func runHerdr(ctx context.Context, args ...string) (string, error) {
@@ -84,7 +85,12 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 		return "", fmt.Errorf("multiple Herdr profiles match %s", connection.SSH.Alias)
 	}
 	if len(matches) == 0 {
-		if _, err := runHerdr(ctx, "machine", "add", connection.SSH.Alias, "--label", connection.Herdr.Label, "--remote-session", connection.Herdr.Session); err != nil {
+		if _, err := runHerdr(
+			ctx,
+			"machine", "add", connection.SSH.Alias,
+			"--label", connection.Herdr.Label,
+			"--remote-session", connection.Herdr.Session,
+		); err != nil {
 			return "", fmt.Errorf("herdr exited: %w", err)
 		}
 		machines, err = listMachines(ctx)
@@ -103,7 +109,13 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 }
 
 func matchingMachines(machines []herdrMachine, connection Connection) []herdrMachine {
-	return lo.Filter(machines, func(machine herdrMachine, _ int) bool { return connection.owns(machine) })
+	matches := make([]herdrMachine, 0, 1)
+	for _, machine := range machines {
+		if connection.owns(machine) {
+			matches = append(matches, machine)
+		}
+	}
+	return matches
 }
 
 func disableMachine(ctx context.Context, connection Connection) error {
@@ -134,20 +146,21 @@ func selectConnection(target *KubeTarget, stateDir, name string) (*savedConnecti
 	if err != nil {
 		return nil, err
 	}
-	matches := lo.Filter(connections, func(saved savedConnection, _ int) bool {
-		sandbox := saved.Connection.Sandbox
+	var match *savedConnection
+	for i := range connections {
+		sandbox := connections[i].Connection.Sandbox
 		if target != nil && (sandbox.Context != target.Context || sandbox.Namespace != target.Namespace) {
-			return false
+			continue
 		}
-		return name == "" || sandbox.Name == name
-	})
-	if len(matches) > 1 {
-		return nil, errors.New("multiple saved sandboxes match; specify a sandbox name")
+		if name != "" && sandbox.Name != name {
+			continue
+		}
+		if match != nil {
+			return nil, errors.New("multiple saved sandboxes match; specify a sandbox name")
+		}
+		match = &connections[i]
 	}
-	if len(matches) == 0 {
-		return nil, nil
-	}
-	return &matches[0], nil
+	return match, nil
 }
 
 func connect(ctx context.Context, target KubeTarget, options connectOptions) (Connection, error) {
@@ -189,10 +202,16 @@ func connect(ctx context.Context, target KubeTarget, options connectOptions) (Co
 	}
 	pinCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	pinArgs := []string{"--context", target.Context, "--namespace", target.Namespace, "exec", resolved.Pod, "-c", resolved.Container, "--", "cat", "/home/agent/.ssh/ssh_host_ed25519_key.pub"}
+	pinArgs := []string{
+		"--context", target.Context,
+		"--namespace", target.Namespace,
+		"exec", resolved.Pod,
+		"-c", resolved.Container,
+		"--", "cat", "/home/agent/.ssh/ssh_host_ed25519_key.pub",
+	}
 	currentPinRaw, err := runKubectl(pinCtx, globalOptions{Kubeconfig: kubeconfig, Kubectl: kubectl}, pinArgs...)
 	if err != nil {
-		return Connection{}, fmt.Errorf("kubectl exec failed: %s", commandDetail(err))
+		return Connection{}, fmt.Errorf("kubectl exec: %w", err)
 	}
 	currentPin, err := normalizeHostKey(currentPinRaw)
 	if err != nil {
@@ -327,7 +346,14 @@ func ensureSSHFiles(connection Connection, stateFile string) error {
 	if err := atomicWrite(state.KnownHostsFile, []byte(state.Alias+" "+state.HostKey+"\n"), 0o600); err != nil {
 		return err
 	}
-	entry := fmt.Sprintf("Host %s\n  HostName %s\n  User agent\n  IdentityFile %s\n  UserKnownHostsFile %s\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n  ProxyCommand %s\n", state.Alias, state.Alias, sshQuote(state.IdentityFile), sshQuote(state.KnownHostsFile), sshQuote(state.ProxyFile))
+	entry := fmt.Sprintf(
+		"Host %s\n  HostName %s\n  User agent\n  IdentityFile %s\n  UserKnownHostsFile %s\n  StrictHostKeyChecking yes\n  IdentitiesOnly yes\n  ProxyCommand %s\n",
+		state.Alias,
+		state.Alias,
+		sshQuote(state.IdentityFile),
+		sshQuote(state.KnownHostsFile),
+		sshQuote(state.ProxyFile),
+	)
 	if err := atomicWrite(state.EntryFile, []byte(entry), 0o600); err != nil {
 		return err
 	}
@@ -361,7 +387,13 @@ func (a *App) runProxy(ctx context.Context, stateFile string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	args := []string{"--context", target.Context, "--namespace", target.Namespace, "exec", "-i", resolved.Pod, "-c", resolved.Container, "--", "socat", "STDIO", fmt.Sprintf("TCP:127.0.0.1:%d", resolved.SSHPort)}
+	args := []string{
+		"--context", target.Context,
+		"--namespace", target.Namespace,
+		"exec", "-i", resolved.Pod,
+		"-c", resolved.Container,
+		"--", "socat", "STDIO", fmt.Sprintf("TCP:127.0.0.1:%d", resolved.SSHPort),
+	}
 	if kubeconfig != "" {
 		args = append([]string{"--kubeconfig", kubeconfig}, args...)
 	}

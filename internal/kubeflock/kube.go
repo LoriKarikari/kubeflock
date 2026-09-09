@@ -1,14 +1,12 @@
 package kubeflock
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,13 +71,16 @@ type sandboxPool struct {
 }
 
 type approvedTemplate struct {
-	Name, WarmPool, HomeTemplate string
+	Name         string
+	WarmPool     string
+	HomeTemplate string
 }
 
 type resolvedSandbox struct {
-	Identity       SandboxIdentity
-	Pod, Container string
-	SSHPort        int32
+	Identity  SandboxIdentity
+	Pod       string
+	Container string
+	SSHPort   int32
 }
 
 func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*kubeClient, error) {
@@ -106,7 +107,7 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 		}
 		output, err := runCaptured(timeoutCtx, auth.Exec.Command, auth.Exec.Args, env, nil)
 		if err != nil {
-			return nil, fmt.Errorf("kubeconfig credential helper failed: %s", commandDetail(err))
+			return nil, fmt.Errorf("kubeconfig credential helper: %w", err)
 		}
 		var credential struct {
 			Status struct {
@@ -183,7 +184,11 @@ func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, w
 		"metadata": map[string]any{"name": name, "namespace": target.Namespace, "labels": map[string]any{managedByLabel: managedByValue}},
 		"spec":     map[string]any{"warmPoolRef": map[string]any{"name": warmPool}},
 	}}
-	created, err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Create(ctx, object, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
+	created, err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Create(
+		ctx,
+		object,
+		metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"},
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +376,17 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 	if port < 1 || port > 65535 {
 		return resolvedSandbox{}, fmt.Errorf("pod %s/%s has no valid SSH port", target.Namespace, pod.Name)
 	}
-	return resolvedSandbox{Identity: SandboxIdentity{Context: target.Context, Namespace: sandbox.Metadata.Namespace, Name: sandbox.Metadata.Name, UID: string(sandbox.Metadata.UID)}, Pod: pod.Name, Container: container, SSHPort: port}, nil
+	return resolvedSandbox{
+		Identity: SandboxIdentity{
+			Context:   target.Context,
+			Namespace: sandbox.Metadata.Namespace,
+			Name:      sandbox.Metadata.Name,
+			UID:       string(sandbox.Metadata.UID),
+		},
+		Pod:       pod.Name,
+		Container: container,
+		SSHPort:   port,
+	}, nil
 }
 
 func (k *kubeClient) resolveHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, homeTemplate string) (PersistentHome, error) {
@@ -391,11 +406,4 @@ func (k *kubeClient) resolveHome(ctx context.Context, target KubeTarget, sandbox
 		storageClass = *pvc.Spec.StorageClassName
 	}
 	return PersistentHome{Name: pvc.Name, UID: string(pvc.UID), Capacity: capacity, StorageClass: storageClass}, nil
-}
-
-func commandDetail(err error) string {
-	if command, ok := errors.AsType[*commandError](err); ok {
-		return cmp.Or(strings.TrimSpace(command.Stderr), strings.TrimSpace(command.Stdout), err.Error())
-	}
-	return err.Error()
 }
