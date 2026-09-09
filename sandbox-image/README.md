@@ -16,7 +16,7 @@ docker build --tag kubeflock-sandbox:test sandbox-image
 sandbox-image/test.sh kubeflock-sandbox:test
 ```
 
-The test runs the image as UID/GID 1000 with all capabilities dropped and no privilege escalation. It checks SSH on a non-default port, missing provider credentials, failed startup, and Pi lifecycle events reported to Herdr.
+The test runs the image as UID/GID 1000 with all capabilities dropped and no privilege escalation. It checks SSH on a non-default port, missing provider credentials, and failed startup.
 
 ## Configure
 

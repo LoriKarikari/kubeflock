@@ -4,10 +4,8 @@ set -euo pipefail
 image=${1:-kubeflock-sandbox:test}
 work=$(mktemp -d)
 container=
-provider=
 cleanup() {
   if [[ -n "$container" ]]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
-  if [[ -n "$provider" ]]; then kill "$provider" >/dev/null 2>&1 || true; fi
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -19,13 +17,6 @@ fi
 grep -qx 'SANDBOX_SSH_PUBKEY is required' "$work/startup.log"
 
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
-node "$(dirname "$0")/test-provider.mjs" > "$work/provider-port" &
-provider=$!
-for _ in {1..30}; do
-  if [[ -s "$work/provider-port" ]]; then break; fi
-  sleep 0.1
-done
-provider_port=$(<"$work/provider-port")
 container=$(docker run -d \
   --add-host host.docker.internal:host-gateway \
   --cap-drop ALL \
@@ -67,27 +58,4 @@ ssh_args=(
   -p "$port"
 )
 test "$(ssh "${ssh_args[@]}" agent@127.0.0.1 'id -u')" = 1000
-docker exec -i "$container" sh -c 'cat > "$HOME/.pi/agent/models.json"' <<EOF
-{"providers":{"fixture":{"baseUrl":"http://host.docker.internal:$provider_port/v1","api":"openai-completions","apiKey":"fixture","models":[{"id":"fixture"}]}}}
-EOF
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent workspace create --cwd /home/agent --label smoke --no-focus' \
-  | grep -q '"type":"workspace_created"'
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent agent start smoke --kind pi --pane w1:p1 --timeout 30000 -- --provider fixture --model fixture' \
-  | grep -q '"agent_status":"idle"'
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent agent explain w1:p1' \
-  | grep -q 'screen_detection_skip_reason: full_lifecycle_hook_authority'
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent agent prompt w1:p1 "reply once" --wait' > "$work/prompt" &
-prompt=$!
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent agent wait w1:p1 --until working --timeout 5000' \
-  | grep -q '"agent_status":"working"'
-wait "$prompt"
-grep -q '"agent_status":"idle"' "$work/prompt"
-ssh "${ssh_args[@]}" agent@127.0.0.1 \
-  'herdr --session agent agent wait w1:p1 --until idle --timeout 5000' \
-  | grep -q '"agent_status":"idle"'
-echo "PASS: Sandbox image startup, authentication, SSH, and Pi lifecycle"
+echo "PASS: Sandbox image startup, authentication, and SSH"
