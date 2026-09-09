@@ -45,6 +45,20 @@ contexts = ["workspace", "pane"]
 command = ["bin/kubeflock", "sandbox", "reconnect"]
 
 [[actions]]
+id = "sandbox-stop"
+title = "Kubeflock: Stop sandbox"
+description = "Stop sandbox compute while retaining its persistent home."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "stop"]
+
+[[actions]]
+id = "sandbox-resume"
+title = "Kubeflock: Resume sandbox"
+description = "Resume a stopped sandbox and restore its saved connection."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "resume"]
+
+[[actions]]
 id = "sandbox-disconnect"
 title = "Kubeflock: Disconnect sandbox"
 description = "Disconnect the saved sandbox while leaving its remote processes running."

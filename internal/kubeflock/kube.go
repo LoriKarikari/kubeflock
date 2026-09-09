@@ -48,7 +48,10 @@ type sandboxClaim struct {
 
 type sandboxObject struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
-	Status   struct {
+	Spec     struct {
+		OperatingMode sandboxOperatingMode `json:"operatingMode"`
+	} `json:"spec"`
+	Status struct {
 		Selector   string             `json:"selector"`
 		Conditions []metav1.Condition `json:"conditions"`
 	} `json:"status"`
@@ -354,30 +357,82 @@ func findSSHPort(ports []corev1.ContainerPort) int32 {
 	return 0
 }
 
-func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (resolvedSandbox, error) {
+func (k *kubeClient) getSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxObject, error) {
 	object, err := k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return resolvedSandbox{}, err
+		return nil, err
 	}
 	var sandbox sandboxObject
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &sandbox); err != nil {
-		return resolvedSandbox{}, err
+		return nil, err
 	}
 	if expectedUID != "" && string(sandbox.Metadata.UID) != expectedUID {
-		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, expectedUID, sandbox.Metadata.UID)
+		return nil, fmt.Errorf("sandbox %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, expectedUID, sandbox.Metadata.UID)
 	}
-	if !meta.IsStatusConditionTrue(sandbox.Status.Conditions, "Ready") {
-		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s is not ready", target.Namespace, name)
+	return &sandbox, nil
+}
+
+func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sandbox *sandboxObject, mode sandboxOperatingMode) error {
+	if sandbox.Spec.OperatingMode.normalized() == mode {
+		return nil
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": sandbox.Metadata.UID},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": sandbox.Metadata.ResourceVersion},
+		{"op": "add", "path": "/spec/operatingMode", "value": mode},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Patch(
+		ctx,
+		sandbox.Metadata.Name,
+		types.JSONPatchType,
+		patch,
+		metav1.PatchOptions{FieldManager: "kubeflock", FieldValidation: "Strict"},
+	)
+	return err
+}
+
+func (k *kubeClient) ownedPods(ctx context.Context, target KubeTarget, sandbox *sandboxObject) ([]corev1.Pod, error) {
+	if sandbox.Status.Selector == "" {
+		return nil, fmt.Errorf("sandbox %s/%s returned no pod selector", target.Namespace, sandbox.Metadata.Name)
 	}
 	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandbox.Status.Selector})
 	if err != nil {
-		return resolvedSandbox{}, err
+		return nil, err
 	}
 	owned := []corev1.Pod{}
 	for _, pod := range pods.Items {
 		if controlledBy(pod.OwnerReferences, sandbox.Metadata.UID) {
 			owned = append(owned, pod)
 		}
+	}
+	return owned, nil
+}
+
+func (k *kubeClient) verifyHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if string(pvc.UID) != expected.UID || !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
+		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
+	}
+	return nil
+}
+
+func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (resolvedSandbox, error) {
+	sandbox, err := k.getSandbox(ctx, target, name, expectedUID)
+	if err != nil {
+		return resolvedSandbox{}, err
+	}
+	if !meta.IsStatusConditionTrue(sandbox.Status.Conditions, "Ready") {
+		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s is not ready", target.Namespace, name)
+	}
+	owned, err := k.ownedPods(ctx, target, sandbox)
+	if err != nil {
+		return resolvedSandbox{}, err
 	}
 	if len(owned) != 1 {
 		return resolvedSandbox{}, fmt.Errorf("sandbox %s/%s owns %d matching pods; expected exactly one", target.Namespace, name, len(owned))

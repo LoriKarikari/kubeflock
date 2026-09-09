@@ -65,12 +65,14 @@ Manage Sandboxes:
 kubeflock sandbox list [--output text|json]
 kubeflock sandbox connect NAME --identity PATH
 kubeflock sandbox reconnect [NAME]
+kubeflock sandbox stop [NAME] [--timeout 5m]
+kubeflock sandbox resume [NAME] [--timeout 5m]
 kubeflock sandbox disconnect [NAME]
 ```
 
-Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Disconnecting leaves the Sandbox and its remote processes running.
+Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Disconnecting leaves the Sandbox and its remote processes running.
 
-Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Herdr provides matching actions for cluster checks, target display, creation, listing, reconnection, and disconnection.
+Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Herdr provides matching actions for cluster checks, target display, creation, listing, stopping, resuming, reconnection, and disconnection.
 
 ## Options
 
@@ -78,6 +80,8 @@ Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycl
 kubeflock cluster config show [--output text|json]
 kubeflock cluster check [--timeout 60s] [--output text|json]
 kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
+kubeflock sandbox stop [NAME] [--timeout 5m]
+kubeflock sandbox resume [NAME] [--timeout 5m]
 
 --config PATH
 --kubeconfig PATH

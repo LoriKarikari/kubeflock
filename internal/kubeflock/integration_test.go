@@ -44,18 +44,37 @@ type fixtureClaim struct {
 }
 
 type fixtureAPI struct {
-	mu      sync.Mutex
-	claims  map[string]fixtureClaim
-	creates int
-	reads   map[string]int
-	methods []string
-	auth    []string
+	mu          sync.Mutex
+	claims      map[string]fixtureClaim
+	modes       map[string]sandboxOperatingMode
+	generations map[string]int
+	holdMode    bool
+	creates     int
+	reads       map[string]int
+	methods     []string
+	auth        []string
 }
 
 func (f *fixtureAPI) snapshot() (int, map[string]int, map[string]fixtureClaim, []string, []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.creates, maps.Clone(f.reads), maps.Clone(f.claims), slices.Clone(f.methods), slices.Clone(f.auth)
+}
+
+func (f *fixtureAPI) holdLifecycle(hold bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holdMode = hold
+}
+
+func (f *fixtureAPI) lifecycleSnapshot(name string) (sandboxOperatingMode, string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	podUID := ""
+	if !f.holdMode && f.modes[name] == modeRunning || f.holdMode && f.modes[name] == modeSuspended {
+		podUID = fmt.Sprintf("pod-%s-%d", name, f.generations[name])
+	}
+	return f.modes[name], podUID, "home-" + name + "-uid:sha256:fixture-home"
 }
 
 func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -91,35 +110,45 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	}
 	if strings.Contains(path, "/sandboxes/") {
 		_, name, _ := strings.CutLast(path, "/")
-		writeFixture(response, map[string]any{
-			"apiVersion": "agents.x-k8s.io/v1beta1",
-			"kind":       "Sandbox",
-			"metadata": map[string]any{
-				"name":      name,
-				"namespace": "dev",
-				"uid":       "sandbox-" + name,
-			},
-			"status": map[string]any{
-				"selector": "agents.x-k8s.io/sandbox=" + name,
-				"conditions": []any{map[string]string{
-					"type": "Ready", "status": "True",
-				}},
-			},
-		})
+		if request.Method == http.MethodPatch {
+			var operations []struct {
+				Path  string               `json:"path"`
+				Value sandboxOperatingMode `json:"value"`
+			}
+			if json.NewDecoder(request.Body).Decode(&operations) != nil {
+				response.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			mode := sandboxOperatingMode("")
+			for _, operation := range operations {
+				if operation.Path == "/spec/operatingMode" {
+					mode = operation.Value
+				}
+			}
+			if mode != modeRunning && mode != modeSuspended {
+				response.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			if f.modes[name] == modeSuspended && mode == modeRunning {
+				f.generations[name]++
+			}
+			f.modes[name] = mode
+		}
+		writeFixture(response, f.sandboxFixture(name))
 		return
 	}
 	if strings.HasSuffix(path, "/pods") {
 		name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
-		controller := true
-		writeFixture(response, map[string]any{
-			"apiVersion": "v1",
-			"kind":       "PodList",
-			"items": []any{map[string]any{
+		items := []any{}
+		running := !f.holdMode && f.modes[name] == modeRunning || f.holdMode && f.modes[name] == modeSuspended
+		if running {
+			controller := true
+			items = append(items, map[string]any{
 				"apiVersion": "v1",
 				"kind":       "Pod",
 				"metadata": map[string]any{
-					"name":      name,
-					"namespace": "dev",
+					"name": "sandbox-" + name,
+					"uid":  fmt.Sprintf("pod-%s-%d", name, f.generations[name]),
 					"ownerReferences": []any{map[string]any{
 						"uid": "sandbox-" + name, "controller": controller,
 					}},
@@ -132,8 +161,9 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 						}},
 					}},
 				},
-			}},
-		})
+			})
+		}
+		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
 		return
 	}
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
@@ -195,6 +225,8 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		claim.Status.Sandbox.Name = name
 	}
 	f.claims[name] = claim
+	f.modes[name] = modeRunning
+	f.generations[name] = 1
 	response.WriteHeader(http.StatusCreated)
 	writeFixture(response, claim)
 }
@@ -223,6 +255,37 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 		items = append(items, claim)
 	}
 	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
+}
+
+func (f *fixtureAPI) sandboxFixture(name string) map[string]any {
+	mode := f.modes[name]
+	observed := mode
+	if f.holdMode {
+		if mode == modeRunning {
+			observed = modeSuspended
+		} else {
+			observed = modeRunning
+		}
+	}
+	condition := map[string]string{"type": "Ready", "status": "True", "reason": "Ready"}
+	if observed == modeSuspended {
+		condition = map[string]string{"type": "Suspended", "status": "True", "reason": "Suspended"}
+	}
+	return map[string]any{
+		"apiVersion": "agents.x-k8s.io/v1beta1",
+		"kind":       "Sandbox",
+		"metadata": map[string]any{
+			"name":            name,
+			"namespace":       "dev",
+			"uid":             "sandbox-" + name,
+			"resourceVersion": "1",
+		},
+		"spec": map[string]any{"operatingMode": mode},
+		"status": map[string]any{
+			"selector":   "agents.x-k8s.io/sandbox=" + name,
+			"conditions": []any{condition},
+		},
+	}
 }
 
 func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Encode(value) }
@@ -390,6 +453,9 @@ func helperHerdr(args []string) {
 		return
 	}
 	if len(args) == 3 && args[0] == "machine" && (args[1] == "enable" || args[1] == "disable") {
+		if os.Getenv("FAKE_HERDR_FAIL_"+strings.ToUpper(args[1])) == "1" {
+			os.Exit(1)
+		}
 		for i := range state.Machines {
 			if state.Machines[i].ID == args[2] {
 				state.Machines[i].Enabled = args[1] == "enable"
@@ -466,7 +532,7 @@ func invoke(t *testing.T, binary string, args, env []string, input string) resul
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	api := &fixtureAPI{claims: map[string]fixtureClaim{}, reads: map[string]int{}}
+	api := &fixtureAPI{claims: map[string]fixtureClaim{}, modes: map[string]sandboxOperatingMode{}, generations: map[string]int{}, reads: map[string]int{}}
 	server := httptest.NewServer(api)
 	defer server.Close()
 	binary := buildCLI(t, dir)
@@ -526,6 +592,46 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("Herdr add count = %d", herdrData.AddCount)
 	}
 
+	_, originalPod, originalHome := api.lifecycleSnapshot("delayed")
+	failedDetach := invoke(t, binary, []string{"sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_DISABLE=1"), "")
+	assertCLI(t, "failed detach", failedDetach, 2, "", "detach Herdr connection")
+	mode, pod, home := api.lifecycleSnapshot("delayed")
+	if mode != modeRunning || pod != originalPod || home != originalHome {
+		t.Fatalf("failed detach changed lifecycle: mode=%s pod=%s home=%s", mode, pod, home)
+	}
+
+	api.holdLifecycle(true)
+	cancelledStop := invoke(t, binary, []string{"sandbox", "stop", "delayed", "--timeout", "10ms", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "cancelled stop", cancelledStop, 2, "", "timed out while entering Suspended mode")
+	api.holdLifecycle(false)
+	stopped := invoke(t, binary, []string{"sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "stop", stopped, 0, "persistent home retained", "requesting Suspended mode")
+	mode, pod, home = api.lifecycleSnapshot("delayed")
+	if mode != modeSuspended || pod != "" || home != originalHome {
+		t.Fatalf("stopped lifecycle: mode=%s pod=%s home=%s", mode, pod, home)
+	}
+	repeatedStop := invoke(t, binary, []string{"sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "repeated stop", repeatedStop, 0, "stopped sandbox", "")
+
+	api.holdLifecycle(true)
+	cancelledResume := invoke(t, binary, []string{"sandbox", "resume", "delayed", "--timeout", "10ms", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "cancelled resume", cancelledResume, 2, "", "timed out while entering Running mode")
+	api.holdLifecycle(false)
+	failedAttach := invoke(t, binary, []string{"sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_ENABLE=1"), "")
+	assertCLI(t, "failed attach", failedAttach, 2, "", "attach Herdr connection")
+	resumed := invoke(t, binary, []string{"sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "resume", resumed, 0, "connected as kubeflock-sandbox-delayed", "requesting Running mode")
+	mode, resumedPod, home := api.lifecycleSnapshot("delayed")
+	if mode != modeRunning || resumedPod == "" || resumedPod == originalPod || home != originalHome {
+		t.Fatalf("resumed lifecycle: mode=%s pod=%s home=%s", mode, resumedPod, home)
+	}
+	repeatedResume := invoke(t, binary, []string{"sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "repeated resume", repeatedResume, 0, "resumed sandbox", "")
+	_, stablePod, stableHome := api.lifecycleSnapshot("delayed")
+	if stablePod != resumedPod || stableHome != originalHome {
+		t.Fatalf("repeated resume replaced state: pod=%s home=%s", stablePod, stableHome)
+	}
+
 	mismatch := invoke(t, binary, []string{"sandbox", "reconnect", "delayed", "--kubeconfig", kubeconfig}, append(env, "FAKE_HOST_KEY="+keyB), "")
 	assertCLI(t, "mismatch", mismatch, -1, "", "host key mismatch")
 	insecure := invoke(t, binary, []string{"sandbox", "create", "unsafe", "--template", "insecure", "--identity", identity, "--kubeconfig", kubeconfig}, env, "")
@@ -540,7 +646,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 func assertAPITrace(t *testing.T, methods, auths []string) {
 	t.Helper()
 	for _, method := range methods {
-		if method != http.MethodGet && method != http.MethodPost {
+		if method != http.MethodGet && method != http.MethodPost && method != http.MethodPatch {
 			t.Fatalf("unexpected API method %s", method)
 		}
 	}

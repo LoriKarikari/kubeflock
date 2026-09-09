@@ -53,12 +53,37 @@ func progress(claim sandboxClaim) claimProgress {
 	return claimProgress{State: "provisioning", Step: "readiness", Message: detail}
 }
 
+type sandboxOperatingMode string
+
+const (
+	modeRunning   sandboxOperatingMode = "Running"
+	modeSuspended sandboxOperatingMode = "Suspended"
+)
+
+func (m sandboxOperatingMode) normalized() sandboxOperatingMode {
+	if m == "" {
+		return modeRunning
+	}
+	return m
+}
+
 type createOptions struct {
 	Template     string
 	IdentityFile string
 	Timeout      time.Duration
 	Poll         time.Duration
 	Global       globalOptions
+}
+
+type lifecycleOptions struct {
+	Timeout time.Duration
+	Poll    time.Duration
+	Global  globalOptions
+}
+
+type lifecycleResult struct {
+	Name     string
+	SSHAlias string
 }
 
 type createdSandbox struct {
@@ -77,7 +102,7 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	var match *ManagedSandbox
 	for i := range saved {
 		claim := saved[i].Sandbox.Claim
-		if claim.Context != target.Context || claim.Namespace != target.Namespace || claim.Name != name {
+		if claim.Context != target.Context || claim.Namespace != target.Namespace || (name != "" && claim.Name != name) {
 			continue
 		}
 		if match != nil {
@@ -287,6 +312,132 @@ func prepareCreation(target KubeTarget, name string, options createOptions) (str
 		return "", nil, fmt.Errorf("sandbox %s/%s is already being created", target.Namespace, name)
 	}
 	return identity, creationLock, nil
+}
+
+func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode sandboxOperatingMode, options lifecycleOptions) (lifecycleResult, error) {
+	managed, err := selectManaged(target, name, options.Global.StateDir)
+	if err != nil {
+		return lifecycleResult{}, err
+	}
+	if managed == nil {
+		return lifecycleResult{}, errors.New("no saved Kubeflock sandbox matches this target")
+	}
+	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
+		return lifecycleResult{}, fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return lifecycleResult{}, err
+	}
+	claim, err := client.getClaim(ctx, target.Namespace, managed.Claim.Name)
+	if err != nil {
+		return lifecycleResult{}, err
+	}
+	if claim == nil {
+		return lifecycleResult{}, fmt.Errorf("saved SandboxClaim %s/%s is missing", target.Namespace, managed.Claim.Name)
+	}
+	if err := verifyClaim(claim, target, managed.Claim.Name, managed.WarmPool, managed); err != nil {
+		return lifecycleResult{}, err
+	}
+	if claim.Status.Sandbox.Name != managed.Sandbox.Name {
+		return lifecycleResult{}, fmt.Errorf("SandboxClaim %s/%s is bound to unexpected Sandbox %s", target.Namespace, managed.Claim.Name, claim.Status.Sandbox.Name)
+	}
+	sandbox, err := client.getSandbox(ctx, target, managed.Sandbox.Name, managed.Sandbox.UID)
+	if err != nil {
+		return lifecycleResult{}, err
+	}
+	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+		return lifecycleResult{}, err
+	}
+	connection, err := selectConnection(&target, options.Global.StateDir, managed.Sandbox.Name)
+	if err != nil {
+		return lifecycleResult{}, err
+	}
+	if connection != nil && connection.Connection.Sandbox.UID != managed.Sandbox.UID {
+		return lifecycleResult{}, errors.New("saved connection uses a different sandbox identity")
+	}
+	if mode == modeSuspended && connection != nil {
+		if err := disableMachine(ctx, connection.Connection); err != nil {
+			return lifecycleResult{}, fmt.Errorf("detach Herdr connection: %w", err)
+		}
+	}
+	if err := client.setOperatingMode(ctx, target, sandbox, mode); err != nil {
+		return lifecycleResult{}, err
+	}
+	if err := waitForOperatingMode(ctx, client, target, *managed.Sandbox, mode, options.Timeout, options.Poll); err != nil {
+		return lifecycleResult{}, err
+	}
+	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+		return lifecycleResult{}, err
+	}
+	result := lifecycleResult{Name: managed.Claim.Name}
+	if mode == modeRunning {
+		connection, err := connect(ctx, target, connectOptions{
+			Name:         managed.Sandbox.Name,
+			ExpectedUID:  managed.Sandbox.UID,
+			IdentityFile: managed.IdentityFile,
+			Global:       options.Global,
+		})
+		if err != nil {
+			return lifecycleResult{}, fmt.Errorf("attach Herdr connection: %w", err)
+		}
+		result.SSHAlias = connection.SSH.Alias
+	}
+	return result, nil
+}
+
+func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, mode sandboxOperatingMode, timeout, poll time.Duration) error {
+	conditionType := "Ready"
+	if mode == modeSuspended {
+		conditionType = "Suspended"
+	}
+	latest := "waiting for the Sandbox controller"
+	err := wait.PollUntilContextTimeout(ctx, poll, timeout, true, func(ctx context.Context) (bool, error) {
+		sandbox, err := client.getSandbox(ctx, target, identity.Name, identity.UID)
+		if err != nil {
+			return false, err
+		}
+		if sandbox.Spec.OperatingMode.normalized() != mode {
+			return false, fmt.Errorf("sandbox %s/%s operating mode changed to %s", target.Namespace, identity.Name, sandbox.Spec.OperatingMode.normalized())
+		}
+		condition := meta.FindStatusCondition(sandbox.Status.Conditions, conditionType)
+		latest = conditionDetail(condition)
+		if condition != nil && condition.Status == metav1.ConditionFalse && failedReason.MatchString(latest) {
+			return false, fmt.Errorf("sandbox failed while entering %s mode: %s", mode, latest)
+		}
+		pods, err := client.ownedPods(ctx, target, sandbox)
+		if err != nil {
+			return false, err
+		}
+		if mode == modeSuspended {
+			return condition != nil && condition.Status == metav1.ConditionTrue && len(pods) == 0, nil
+		}
+		return condition != nil && condition.Status == metav1.ConditionTrue && len(pods) == 1, nil
+	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("sandbox %s timed out while entering %s mode: %s", identity.Name, mode, latest)
+	}
+	return err
+}
+
+func conditionDetail(condition *metav1.Condition) string {
+	if condition == nil {
+		return "waiting for the Sandbox controller"
+	}
+	detail := condition.Reason
+	if condition.Message != "" {
+		if detail != "" {
+			detail += ": "
+		}
+		detail += condition.Message
+	}
+	if detail == "" {
+		return "waiting for the Sandbox controller"
+	}
+	return detail
 }
 
 func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOptions) ([]SandboxStatus, error) {
