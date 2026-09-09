@@ -1,0 +1,5 @@
+unit	hypothesis	predicate	verdict	evidence
+foundation	A Go 1.26 CLI can preserve the existing command and state interfaces without Node.	The Go packages compile and unit tests pass with Go 1.26.0.	VERIFIED	GOTOOLCHAIN=go1.26.0 go test ./...
+parity	The Go implementation can preserve connection, creation, retry, security, and proxy behavior.	The integration test passes against fake Kubernetes, kubectl, credential, and Herdr boundaries.	VERIFIED	TestCLIConnectionAndSandboxLifecycle
+libraries	Established Go packages can replace custom infrastructure without weakening Kubeflock policy.	CLI parsing, atomic writes, host-key parsing, file locking, Kubernetes access, and polling use maintained packages.	VERIFIED	Cobra, renameio, x/crypto/ssh, gofrs/flock, client-go, and apimachinery wait
+cutover	The repository can remove its Node toolchain and retain the same product interface.	The Go binary builds, the Herdr manifest targets it, and no workstation TypeScript remains.	VERIFIED	go build and repository search
