@@ -1,8 +1,8 @@
-Kubeflock resources are installed in {{ .Release.Namespace }}.
+Kubeflock resources are installed in {{ .Values.namespace.name }}.
 
 Configure and check the CLI target:
 
-  kubeflock cluster config --context <context> --namespace {{ .Release.Namespace }}
+  kubeflock cluster config --context <context> --namespace {{ .Values.namespace.name }}
   kubeflock cluster check
 
 Create a sandbox:

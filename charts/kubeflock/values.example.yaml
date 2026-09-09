@@ -1,3 +1,6 @@
+namespace:
+  name: developer-sandboxes
+
 access:
   subjects:
     - kind: User

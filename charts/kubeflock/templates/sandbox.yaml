@@ -2,7 +2,7 @@ apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: {{ .Values.sandbox.templateName }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 spec:
@@ -30,11 +30,11 @@ spec:
               containerPort: 2222
           resources:
             requests:
-              cpu: {{ printf "%dm" .Values.sandbox.resources.cpuRequestMillicores | quote }}
-              memory: {{ printf "%dMi" .Values.sandbox.resources.memoryRequestMi | quote }}
+              cpu: {{ printf "%dm" (int .Values.sandbox.resources.cpuRequestMillicores) | quote }}
+              memory: {{ printf "%dMi" (int .Values.sandbox.resources.memoryRequestMi) | quote }}
             limits:
-              cpu: {{ printf "%dm" .Values.sandbox.resources.cpuLimitMillicores | quote }}
-              memory: {{ printf "%dMi" .Values.sandbox.resources.memoryLimitMi | quote }}
+              cpu: {{ printf "%dm" (int .Values.sandbox.resources.cpuLimitMillicores) | quote }}
+              memory: {{ printf "%dMi" (int .Values.sandbox.resources.memoryLimitMi) | quote }}
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
@@ -58,13 +58,13 @@ spec:
         storageClassName: {{ .Values.sandbox.storage.className | quote }}
         resources:
           requests:
-            storage: {{ printf "%dGi" .Values.sandbox.storage.sizeGi | quote }}
+            storage: {{ printf "%dGi" (int .Values.sandbox.storage.sizeGi) | quote }}
 ---
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxWarmPool
 metadata:
   name: {{ .Values.sandbox.templateName }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 spec:
@@ -76,7 +76,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-default-deny-ingress
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.name }}
   annotations:
     helm.sh/resource-policy: keep
   labels:

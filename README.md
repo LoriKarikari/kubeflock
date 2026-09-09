@@ -56,10 +56,10 @@ The Kubeflock Helm chart creates a developer namespace, least-privilege access, 
 ```bash
 cp charts/kubeflock/values.example.yaml values.yaml
 helm template kubeflock charts/kubeflock \
-  --namespace agent-sandboxes \
+  --namespace kubeflock-system \
   --values values.yaml
 helm upgrade --install kubeflock charts/kubeflock \
-  --namespace agent-sandboxes \
+  --namespace kubeflock-system \
   --create-namespace \
   --values values.yaml \
   --wait

@@ -12,6 +12,8 @@ Copy the example and replace every placeholder:
 cp charts/kubeflock/values.example.yaml values.yaml
 ```
 
+`namespace.name` is the developer namespace managed by the chart. The Helm release itself lives separately in `kubeflock-system`.
+
 The image must provide Herdr 0.9.0 or newer, OpenSSH on port 2222, `socat`, and UID/GID 1000. The private SSH key remains on the workstation. Only its public key belongs in values.
 
 Capacity is explicit. `maxActiveSandboxes` determines namespace Pod, CPU, and memory quotas. `maxRetainedHomes` determines PVC and storage quotas. A retained home consumes storage after its Sandbox stops using compute.
@@ -44,7 +46,7 @@ Helm validates the values before rendering:
 ```bash
 helm lint charts/kubeflock -f values.yaml
 helm template kubeflock charts/kubeflock \
-  --namespace my-sandboxes \
+  --namespace kubeflock-system \
   --values values.yaml > kubeflock.yaml
 ```
 
@@ -54,7 +56,7 @@ Review `kubeflock.yaml` before applying it directly or committing it to Flux or 
 
 ```bash
 helm upgrade --install kubeflock charts/kubeflock \
-  --namespace my-sandboxes \
+  --namespace kubeflock-system \
   --create-namespace \
   --values values.yaml \
   --wait
@@ -65,7 +67,7 @@ The installer needs permission to create a Namespace, ClusterRole, ClusterRoleBi
 Configure Kubeflock after installation:
 
 ```bash
-kubeflock cluster config --context my-context --namespace my-sandboxes
+kubeflock cluster config --context my-context --namespace developer-sandboxes
 kubeflock cluster check
 ```
 

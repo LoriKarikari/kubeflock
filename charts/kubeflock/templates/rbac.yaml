@@ -2,7 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ .Release.Name }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 rules:
@@ -35,7 +35,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ .Release.Name }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ .Values.namespace.name }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 subjects:
@@ -56,7 +56,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ printf "%s-%s" .Release.Name .Release.Namespace | trunc 63 | trimSuffix "-" }}
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 rules:
@@ -69,13 +69,13 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["namespaces"]
-    resourceNames: [{{ .Release.Namespace | quote }}]
+    resourceNames: [{{ .Values.namespace.name | quote }}]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ printf "%s-%s" .Release.Name .Release.Namespace | trunc 63 | trimSuffix "-" }}
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "kubeflock.labels" . | nindent 4 }}
 subjects:
@@ -91,4 +91,4 @@ subjects:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ printf "%s-%s" .Release.Name .Release.Namespace | trunc 63 | trimSuffix "-" }}
+  name: {{ printf "%s-%s" .Release.Name .Values.namespace.name | trunc 63 | trimSuffix "-" }}
