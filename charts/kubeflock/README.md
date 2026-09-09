@@ -30,7 +30,7 @@ kubectl api-resources --api-group=extensions.agents.x-k8s.io
 To install the controller, inspect and apply a pinned upstream release. The combined manifest enables the Claim, Template, and WarmPool extensions required by Kubeflock:
 
 ```bash
-VERSION=v0.5.6
+VERSION=v1.0.1
 curl -fL -o agent-sandbox.yaml \
   "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${VERSION}/sandbox-with-extensions.yaml"
 kubectl diff -f agent-sandbox.yaml
