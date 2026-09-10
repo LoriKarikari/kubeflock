@@ -118,6 +118,24 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	return match, nil
 }
 
+func applyOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, sandbox *sandboxObject, connection *savedConnection, mode sandboxOperatingMode, options lifecycleOptions) error {
+	if mode == modeSuspended {
+		if err := disableMachine(ctx, valueOrZero(connection)); err != nil {
+			return fmt.Errorf("detach Herdr connection: %w", err)
+		}
+	}
+	if err := client.setOperatingMode(ctx, target, sandbox, mode); err != nil {
+		return err
+	}
+	identity := SandboxIdentity{
+		Context:   target.Context,
+		Namespace: sandbox.Metadata.Namespace,
+		Name:      sandbox.Metadata.Name,
+		UID:       string(sandbox.Metadata.UID),
+	}
+	return waitForOperatingMode(ctx, client, target, identity, mode, options.Timeout, options.Poll)
+}
+
 func verifyBound(target KubeTarget, managed *ManagedSandbox) error {
 	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
 		return fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
@@ -376,15 +394,7 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if err != nil {
 		return lifecycleResult{}, err
 	}
-	if mode == modeSuspended && connection != nil {
-		if err := disableMachine(ctx, connection.Connection); err != nil {
-			return lifecycleResult{}, fmt.Errorf("detach Herdr connection: %w", err)
-		}
-	}
-	if err := client.setOperatingMode(ctx, target, sandbox, mode); err != nil {
-		return lifecycleResult{}, err
-	}
-	if err := waitForOperatingMode(ctx, client, target, *managed.Sandbox, mode, options.Timeout, options.Poll); err != nil {
+	if err := applyOperatingMode(ctx, client, target, sandbox, connection, mode, options); err != nil {
 		return lifecycleResult{}, err
 	}
 	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
@@ -445,13 +455,7 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 			return retainResult{}, err
 		}
-		if err := disableMachine(ctx, valueOrZero(connection)); err != nil {
-			return retainResult{}, fmt.Errorf("detach Herdr connection: %w", err)
-		}
-		if err := client.setOperatingMode(ctx, target, sandbox, modeSuspended); err != nil {
-			return retainResult{}, err
-		}
-		if err := waitForOperatingMode(ctx, client, target, *managed.Sandbox, modeSuspended, options.Timeout, options.Poll); err != nil {
+		if err := applyOperatingMode(ctx, client, target, sandbox, connection, modeSuspended, options); err != nil {
 			return retainResult{}, err
 		}
 	}
