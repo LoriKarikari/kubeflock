@@ -91,8 +91,12 @@ func TestCheckoutProjectRetriesFailuresAndUsesRemoteCredentials(t *testing.T) {
 
 	missing := filepath.Join(root, "missing.git")
 	request := projectRequest{Repository: missing}
-	if err := checkoutProject(context.Background(), target, sandbox, request, options); err == nil {
+	err := checkoutProject(context.Background(), target, sandbox, request, options)
+	if err == nil {
 		t.Fatal("missing repository checkout succeeded")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("checkout failure hid the git diagnostic: %v", err)
 	}
 	runGit(t, "clone", "--bare", work, missing)
 	if err := checkoutProject(context.Background(), target, sandbox, request, options); err != nil {
@@ -132,7 +136,7 @@ func TestCheckoutProjectRetriesFailuresAndUsesRemoteCredentials(t *testing.T) {
 	}
 }
 
-func TestValidateCreationRejectsCredentialURLsAndBranchWithoutRepository(t *testing.T) {
+func TestValidateCreationRepositoryRules(t *testing.T) {
 	identity := filepath.Join(t.TempDir(), "id")
 	mustWrite(t, identity, "key\n", 0o600)
 	for _, test := range []struct {
@@ -140,8 +144,8 @@ func TestValidateCreationRejectsCredentialURLsAndBranchWithoutRepository(t *test
 		project projectRequest
 		want    string
 	}{
-		{name: "credentials", project: projectRequest{Repository: "https://agent:secret@example.test/repo.git"}, want: "must not contain credentials"},
-		{name: "query", project: projectRequest{Repository: "https://example.test/repo.git?token=secret"}, want: "must not contain credentials"},
+		{name: "password", project: projectRequest{Repository: "https://agent:secret@example.test/repo.git"}, want: "must not contain a password"},
+		{name: "query", project: projectRequest{Repository: "https://example.test/repo.git?token=secret"}, want: "must not contain a query string"},
 		{name: "branch only", project: projectRequest{Branch: "feature"}, want: "requires --repository"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -151,6 +155,22 @@ func TestValidateCreationRejectsCredentialURLsAndBranchWithoutRepository(t *test
 			}
 			if strings.Contains(fmt.Sprint(err), "secret") {
 				t.Fatalf("validation error leaked credentials: %v", err)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name       string
+		repository string
+	}{
+		{name: "https", repository: "https://github.com/example/project.git"},
+		{name: "platform userinfo", repository: "https://agent@example.test/repo.git"},
+		{name: "ssh userinfo", repository: "ssh://git@github.com/example/project.git"},
+		{name: "ssh scp syntax", repository: "git@github.com:example/project.git"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := validateCreation("sandbox", createOptions{Template: "dev-small", IdentityFile: identity, Project: &projectRequest{Repository: test.repository}})
+			if err != nil {
+				t.Fatalf("validateCreation(%q) = %v", test.repository, err)
 			}
 		})
 	}

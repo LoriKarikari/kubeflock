@@ -549,6 +549,9 @@ func (a *App) createOrRestore(ctx context.Context, target KubeTarget, name, home
 	if homeUID == "" {
 		return createSandbox(ctx, target, name, nil, options)
 	}
+	if options.Project != nil {
+		return createdSandbox{}, errors.New("a restored home does not accept --repository; restore it first, then clone inside the sandbox")
+	}
 	selection, err := inspectRestore(ctx, target, name, homeUID, options)
 	if err != nil {
 		return createdSandbox{}, err
@@ -638,8 +641,8 @@ func (a *App) reportCreated(created createdSandbox, restored bool) error {
 	if created.Project == nil {
 		return nil
 	}
-	if created.Project.Error != nil {
-		fmt.Fprintf(a.Err, "kubeflock: checkout failed; sandbox %s remains ready for login and retry: %v\n", created.Name, created.Project.Error)
+	if created.Checkout != nil {
+		fmt.Fprintf(a.Err, "kubeflock: checkout failed; sandbox %s remains ready for login and retry: %v\n", created.Name, created.Checkout)
 		return exitError{code: 1}
 	}
 	if created.Project.Branch == "" {

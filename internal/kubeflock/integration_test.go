@@ -1201,6 +1201,21 @@ func TestCLICreatesSandboxWithProject(t *testing.T) {
 	input := strings.Join([]string{"project-wizard", "dev-small", h.identity, bare, "feature", "y", ""}, "\n")
 	wizard := h.invoke(t, h.binary, wizardEnv, input, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
 	assertCLI(t, "Herdr project create", wizard, 0, "checked out branch feature", "")
+
+	emptyHome := filepath.Join(root, "wizard-empty-home")
+	if err := os.Mkdir(emptyHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emptyEnv := append(slices.Clone(h.env), "FAKE_SANDBOX_HOME="+emptyHome)
+	emptyInput := strings.Join([]string{"project-wizard-empty", "dev-small", h.identity, "", "y", ""}, "\n")
+	emptyWizard := h.invoke(t, h.binary, emptyEnv, emptyInput, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
+	assertCLI(t, "Herdr empty project create", emptyWizard, 0, "ready sandbox project-wizard-empty", "")
+	if strings.Contains(emptyWizard.stdout, "checked out") {
+		t.Fatalf("blank repository wizard reported a checkout: %s", emptyWizard.stdout)
+	}
+	if _, err := os.Stat(filepath.Join(emptyHome, "project")); !os.IsNotExist(err) {
+		t.Fatalf("blank repository wizard created a checkout: %v", err)
+	}
 }
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {

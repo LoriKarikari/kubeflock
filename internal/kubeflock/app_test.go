@@ -61,6 +61,17 @@ func TestConfigCommandSavesVerifiedTarget(t *testing.T) {
 	}
 }
 
+func TestCreateOrRestoreRejectsProjectOnRestore(t *testing.T) {
+	var output, stderr strings.Builder
+	app := NewApp(strings.NewReader(""), &output, &stderr)
+	_, err := app.createOrRestore(context.Background(), KubeTarget{Context: "test", Namespace: "dev"}, "sandbox", "uid-1", createOptions{
+		Project: &projectRequest{Repository: "https://example.test/repo.git"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not accept --repository") {
+		t.Fatalf("createOrRestore = %v", err)
+	}
+}
+
 func TestCommandErrorHidesOutput(t *testing.T) {
 	err := &commandError{Stderr: "access_token=secret", Stdout: "secret", ExitCode: 1}
 	if got := err.Error(); got != "command exited with status 1" {

@@ -99,18 +99,14 @@ type retainResult struct {
 	Home PersistentHome
 }
 
-type projectCheckout struct {
-	Branch string
-	Error  error
-}
-
 type createdSandbox struct {
 	Name     string
 	Template string
 	WarmPool string
 	SSHAlias string
 	Home     PersistentHome
-	Project  *projectCheckout
+	Project  *projectRequest
+	Checkout error
 }
 
 type restoreSelection struct {
@@ -336,10 +332,8 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	}
 	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}
 	if options.Project != nil {
-		created.Project = &projectCheckout{
-			Branch: options.Project.Branch,
-			Error:  checkoutProject(ctx, target, resolved, *options.Project, options),
-		}
+		created.Project = options.Project
+		created.Checkout = checkoutProject(ctx, target, resolved, *options.Project, options)
 	}
 	return created, nil
 }
@@ -353,6 +347,11 @@ func checkoutProject(ctx context.Context, target KubeTarget, sandbox resolvedSan
 	}
 	args = append(args, "--", project.Repository, "/home/agent/project")
 	if _, err := runKubectl(ctx, options.Global, args...); err != nil {
+		if command, ok := errors.AsType[*commandError](err); ok && !command.TimedOut {
+			if detail := strings.TrimSpace(command.Stderr); detail != "" {
+				err = errors.New(detail)
+			}
+		}
 		return fmt.Errorf("remote git clone: %w", err)
 	}
 	return nil
@@ -483,20 +482,28 @@ func validateRestoreResources(ctx context.Context, client *kubeClient, target Ku
 	return allowedSandboxUID, nil
 }
 
+func validateProject(project *projectRequest) error {
+	if project.Repository == "" {
+		return errors.New("a project branch requires --repository")
+	}
+	if strings.ContainsAny(project.Repository+project.Branch, "\r\n\x00") {
+		return errors.New("repository and branch must not contain control characters")
+	}
+	if parsed, err := url.Parse(project.Repository); err == nil && parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return errors.New("repository URL must not contain a password; configure authentication inside the sandbox")
+		}
+	}
+	if strings.Contains(project.Repository, "?") {
+		return errors.New("repository URL must not contain a query string; configure authentication inside the sandbox")
+	}
+	return nil
+}
+
 func validateCreation(name string, options createOptions) (string, error) {
 	if options.Project != nil {
-		if options.Project.Repository == "" {
-			return "", errors.New("a project branch requires --repository")
-		}
-		if strings.ContainsAny(options.Project.Repository+options.Project.Branch, "\r\n\x00") {
-			return "", errors.New("repository and branch must not contain control characters")
-		}
-		repository, err := url.Parse(options.Project.Repository)
-		if err != nil {
-			return "", errors.New("invalid repository URL")
-		}
-		if repository.User != nil || repository.RawQuery != "" {
-			return "", errors.New("repository URL must not contain credentials or query parameters; configure authentication inside the sandbox")
+		if err := validateProject(options.Project); err != nil {
+			return "", err
 		}
 	}
 	if len(validation.IsDNS1123Label(name)) != 0 {

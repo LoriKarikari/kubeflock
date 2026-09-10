@@ -91,7 +91,7 @@ kubeflock sandbox create my-agent \
   --identity ~/.ssh/id_ed25519
 ```
 
-Restore uses the template recorded at deletion. Kubeflock prints that template image before it authorizes attachment. Restore requires the original sandbox name, because Agent Sandbox derives the PVC name from it, so a plain create under that name fails and names the UID to select. Without `--home`, Kubeflock never adopts retained data.
+Restore uses the template recorded at deletion. Kubeflock prints that template image before it authorizes attachment. Restore requires the original sandbox name, because Agent Sandbox derives the PVC name from it, so a plain create under that name fails and names the UID to select. Without `--home`, Kubeflock never adopts retained data. Restore does not accept `--repository`; clone inside the restored sandbox instead.
 
 ### List sandboxes
 
