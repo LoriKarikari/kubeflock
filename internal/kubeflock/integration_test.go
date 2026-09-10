@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer/recognizer"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
 )
 
 var deleteOptionsCodec = func() runtime.Decoder {
@@ -413,6 +414,8 @@ func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Re
 		_, name, _ = strings.CutLast(path, "/")
 	}
 	switch {
+	case name != "" && request.Method == http.MethodGet:
+		f.getClaim(response, name)
 	case name != "" && request.Method == http.MethodDelete:
 		f.deleteClaim(response, request, name)
 	case name == "" && request.Method == http.MethodPost:
@@ -656,7 +659,7 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 		labels[sandboxNameHashLabel] = "fixture"
 	}
 	if s.homeAdoptable {
-		labels[sandboxAdoptableLabel] = "true"
+		labels[sandboxapi.SandboxAdoptableLabel] = "true"
 	}
 	storageClass, capacity := s.homeStorageClass, s.homeCapacity
 	if storageClass == "" {
@@ -790,6 +793,20 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	}
 	response.WriteHeader(http.StatusCreated)
 	writeFixture(response, claim)
+}
+
+func (f *fixtureAPI) getClaim(response http.ResponseWriter, name string) {
+	s := f.ensureSandbox(name)
+	if s.claim == nil {
+		writeNotFound(response)
+		return
+	}
+	s.reads++
+	if name == "delayed" && s.reads >= 2 && s.homeOwned && s.mode != modeSuspended {
+		s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+		s.claim.Status.Sandbox.Name = name
+	}
+	writeFixture(response, s.claim)
 }
 
 func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Request) {

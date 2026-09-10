@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
 func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
@@ -35,7 +36,7 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 }
 
 func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
-	claim := sandboxClaim{}
+	claim := extensionsapi.SandboxClaim{}
 	claim.Status.Conditions = []metav1.Condition{{
 		Type:    "Ready",
 		Status:  metav1.ConditionFalse,
@@ -60,9 +61,8 @@ func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 		Sandbox:      &SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},
 		Home:         &PersistentHome{Name: "home-sandbox", UID: "home-uid", Capacity: "10Gi", StorageClass: "longhorn"},
 	}
-	claim := sandboxClaim{}
-	claim.Metadata = metav1.ObjectMeta{Name: "sandbox", UID: "claim-uid"}
-	claim.Status.Sandbox.Name = "sandbox"
+	claim := extensionsapi.SandboxClaim{Name: "sandbox", UID: "claim-uid"}
+	claim.Status.SandboxStatus.Name = "sandbox"
 	claim.Status.Conditions = []metav1.Condition{{
 		Type:    "Ready",
 		Status:  metav1.ConditionFalse,
@@ -70,11 +70,11 @@ func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 		Message: "Sandbox is suspended",
 	}}
 
-	stopped := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, map[string]bool{"sandbox-uid": true})
+	stopped := sandboxStatus(saved, []extensionsapi.SandboxClaim{claim}, nil, nil, map[string]bool{"sandbox-uid": true})
 	if stopped.State != "disconnected" || !strings.Contains(stopped.Message, "kubeflock sandbox resume sandbox") {
 		t.Fatalf("stopped status = %#v", stopped)
 	}
-	running := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, nil)
+	running := sandboxStatus(saved, []extensionsapi.SandboxClaim{claim}, nil, nil, nil)
 	if running.State != "provisioning" {
 		t.Fatalf("unsuspended status = %#v", running)
 	}

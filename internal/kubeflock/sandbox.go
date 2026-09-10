@@ -21,6 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
+	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
 // ponytail: failure guessed from condition text; upgrade path is the controller's condition reason taxonomy
@@ -33,7 +35,7 @@ type claimProgress struct {
 	SandboxName string
 }
 
-func progress(claim sandboxClaim) claimProgress {
+func progress(claim extensionsapi.SandboxClaim) claimProgress {
 	ready := meta.FindStatusCondition(claim.Status.Conditions, "Ready")
 	detail := "waiting for the Sandbox controller"
 	if ready != nil {
@@ -48,8 +50,8 @@ func progress(claim sandboxClaim) claimProgress {
 			detail = "waiting for the Sandbox controller"
 		}
 	}
-	if ready != nil && ready.Status == metav1.ConditionTrue && claim.Status.Sandbox.Name != "" {
-		return claimProgress{State: "ready", SandboxName: claim.Status.Sandbox.Name}
+	if ready != nil && ready.Status == metav1.ConditionTrue && claim.Status.SandboxStatus.Name != "" {
+		return claimProgress{State: "ready", SandboxName: claim.Status.SandboxStatus.Name}
 	}
 	if ready != nil && ready.Status == metav1.ConditionFalse && failedReason.MatchString(detail) {
 		return claimProgress{State: "failed", Step: "readiness", Message: detail}
@@ -57,18 +59,18 @@ func progress(claim sandboxClaim) claimProgress {
 	return claimProgress{State: "provisioning", Step: "readiness", Message: detail}
 }
 
-type sandboxOperatingMode string
+type sandboxOperatingMode = sandboxapi.SandboxOperatingMode
 
 const (
-	modeRunning   sandboxOperatingMode = "Running"
-	modeSuspended sandboxOperatingMode = "Suspended"
+	modeRunning   = sandboxapi.SandboxOperatingModeRunning
+	modeSuspended = sandboxapi.SandboxOperatingModeSuspended
 )
 
-func (m sandboxOperatingMode) normalized() sandboxOperatingMode {
-	if m == "" {
+func normalizedMode(mode sandboxOperatingMode) sandboxOperatingMode {
+	if mode == "" {
 		return modeRunning
 	}
-	return m
+	return mode
 }
 
 type projectRequest struct {
@@ -142,24 +144,24 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	return match, nil
 }
 
-func verifySandboxRunning(ctx context.Context, client *kubeClient, target KubeTarget, name string, claim sandboxClaim) error {
-	if claim.Status.Sandbox.Name == "" {
+func verifySandboxRunning(ctx context.Context, client *kubeClient, target KubeTarget, name string, claim extensionsapi.SandboxClaim) error {
+	if claim.Status.SandboxStatus.Name == "" {
 		return nil
 	}
-	sandbox, err := client.getSandboxIfExists(ctx, target, claim.Status.Sandbox.Name, "")
+	sandbox, err := client.getSandboxIfExists(ctx, target, claim.Status.SandboxStatus.Name, "")
 	if err != nil {
 		return err
 	}
-	if sandbox == nil || !controlledBy(sandbox.Metadata.OwnerReferences, claim.Metadata.UID) {
+	if sandbox == nil || !controlledBy(sandbox.OwnerReferences, claim.UID) {
 		return nil
 	}
-	if sandbox.Spec.OperatingMode.normalized() == modeSuspended {
+	if normalizedMode(sandbox.Spec.OperatingMode) == modeSuspended {
 		return fmt.Errorf("sandbox %s/%s is stopped; run: kubeflock sandbox resume %s", target.Namespace, name, name)
 	}
 	return nil
 }
 
-func applyOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, sandbox *sandboxObject, connection *savedConnection, mode sandboxOperatingMode, options lifecycleOptions) error {
+func applyOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, sandbox *sandboxapi.Sandbox, connection *savedConnection, mode sandboxOperatingMode, options lifecycleOptions) error {
 	if mode == modeSuspended {
 		if err := disableMachine(ctx, connection); err != nil {
 			return fmt.Errorf("detach Herdr connection: %w", err)
@@ -170,9 +172,9 @@ func applyOperatingMode(ctx context.Context, client *kubeClient, target KubeTarg
 	}
 	identity := SandboxIdentity{
 		Context:   target.Context,
-		Namespace: sandbox.Metadata.Namespace,
-		Name:      sandbox.Metadata.Name,
-		UID:       string(sandbox.Metadata.UID),
+		Namespace: sandbox.Namespace,
+		Name:      sandbox.Name,
+		UID:       string(sandbox.UID),
 	}
 	return waitForOperatingMode(ctx, client, target, identity, mode, options.Timeout, options.Poll)
 }
@@ -228,20 +230,20 @@ func savedConnectionFor(target KubeTarget, stateDir string, sandbox SandboxIdent
 	return connection, nil
 }
 
-func verifyClaim(claim *sandboxClaim, target KubeTarget, name, warmPool string, saved *ManagedSandbox) error {
-	if claim.Metadata.Labels[managedByLabel] != managedByValue {
+func verifyClaim(claim *extensionsapi.SandboxClaim, target KubeTarget, name, warmPool string, saved *ManagedSandbox) error {
+	if claim.Labels[managedByLabel] != managedByValue {
 		return fmt.Errorf("SandboxClaim %s/%s is not managed by Kubeflock", target.Namespace, name)
 	}
 	if claim.Spec.WarmPoolRef.Name != warmPool {
 		return fmt.Errorf("SandboxClaim %s/%s uses warm pool %s, not %s", target.Namespace, name, claim.Spec.WarmPoolRef.Name, warmPool)
 	}
-	if saved != nil && string(claim.Metadata.UID) != saved.Claim.UID {
-		return fmt.Errorf("SandboxClaim %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, saved.Claim.UID, claim.Metadata.UID)
+	if saved != nil && string(claim.UID) != saved.Claim.UID {
+		return fmt.Errorf("SandboxClaim %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, saved.Claim.UID, claim.UID)
 	}
 	return nil
 }
 
-func verifyClaimHome(claim *sandboxClaim, home *corev1.PersistentVolumeClaim) error {
+func verifyClaimHome(claim *extensionsapi.SandboxClaim, home *corev1.PersistentVolumeClaim) error {
 	if home == nil {
 		return nil
 	}
@@ -249,10 +251,10 @@ func verifyClaimHome(claim *sandboxClaim, home *corev1.PersistentVolumeClaim) er
 	if len(claims) == 1 && claims[0].Name == home.Name && reflect.DeepEqual(claims[0].Spec, home.Spec) {
 		return nil
 	}
-	return fmt.Errorf("SandboxClaim %s/%s uses unexpected home templates", claim.Metadata.Namespace, claim.Metadata.Name)
+	return fmt.Errorf("SandboxClaim %s/%s uses unexpected home templates", claim.Namespace, claim.Name)
 }
 
-func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*sandboxClaim, error) {
+func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*extensionsapi.SandboxClaim, error) {
 	claim, err := client.getClaim(ctx, target.Namespace, name)
 	if err != nil {
 		return nil, err
@@ -271,7 +273,7 @@ func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, nam
 	return nil, createErr
 }
 
-func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, name string, claim *sandboxClaim, timeout, poll time.Duration) (string, error) {
+func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, name string, claim *extensionsapi.SandboxClaim, timeout, poll time.Duration) (string, error) {
 	latest := progress(*claim)
 	err := wait.PollUntilContextTimeout(ctx, poll, timeout, true, func(ctx context.Context) (bool, error) {
 		latest = progress(*claim)
@@ -285,15 +287,15 @@ func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, na
 		if err := verifySandboxRunning(ctx, client, target, name, *claim); err != nil {
 			return false, err
 		}
-		next, err := client.getClaim(ctx, target.Namespace, claim.Metadata.Name)
+		next, err := client.getClaim(ctx, target.Namespace, claim.Name)
 		if err != nil {
 			return false, err
 		}
 		if next == nil {
-			return false, fmt.Errorf("SandboxClaim %s/%s disappeared during provisioning", target.Namespace, claim.Metadata.Name)
+			return false, fmt.Errorf("SandboxClaim %s/%s disappeared during provisioning", target.Namespace, claim.Name)
 		}
-		if next.Metadata.UID != claim.Metadata.UID {
-			return false, fmt.Errorf("SandboxClaim %s/%s was replaced during provisioning", target.Namespace, claim.Metadata.Name)
+		if next.UID != claim.UID {
+			return false, fmt.Errorf("SandboxClaim %s/%s was replaced during provisioning", target.Namespace, claim.Name)
 		}
 		claim = next
 		return false, nil
@@ -397,7 +399,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if retained != nil && home.UID != retained.Home.UID {
 		return createdSandbox{}, fmt.Errorf("sandbox %s attached unexpected home UID %s", name, home.UID)
 	}
-	if err := saveManagedBinding(managed, identity, resolved.Identity, home, options.Global.StateDir, string(claim.Metadata.UID)); err != nil {
+	if err := saveManagedBinding(managed, identity, resolved.Identity, home, options.Global.StateDir, string(claim.UID)); err != nil {
 		return createdSandbox{}, err
 	}
 	credentials, err := client.readCredentials(ctx, target.Namespace, selected)
@@ -464,7 +466,7 @@ func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox Sandbo
 	return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
 }
 
-func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, credentials []string, approved approvedTemplate, home *corev1.PersistentVolumeClaim, stateDir string) (*ManagedSandbox, *sandboxClaim, error) {
+func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, credentials []string, approved approvedTemplate, home *corev1.PersistentVolumeClaim, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
 	saved, err := selectManaged(target, name, stateDir)
 	if err != nil {
 		return nil, nil, err
@@ -499,14 +501,14 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 			Context:   target.Context,
 			Namespace: target.Namespace,
 			Name:      claimName,
-			UID:       string(claim.Metadata.UID),
+			UID:       string(claim.UID),
 		},
 		Template:     approved.Name,
 		WarmPool:     approved.WarmPool,
 		IdentityFile: identity,
 		Credentials:  slices.Clone(credentials),
 	}
-	if err := saveJSON(managedSandboxPath(stateDir, string(claim.Metadata.UID)), managed); err != nil {
+	if err := saveJSON(managedSandboxPath(stateDir, string(claim.UID)), managed); err != nil {
 		return nil, nil, err
 	}
 	return managed, claim, nil
@@ -567,7 +569,7 @@ func validateRestoreResources(ctx context.Context, client *kubeClient, target Ku
 	if err != nil {
 		return "", err
 	}
-	if claim != nil && (saved == nil || string(claim.Metadata.UID) != saved.Claim.UID) {
+	if claim != nil && (saved == nil || string(claim.UID) != saved.Claim.UID) {
 		return "", fmt.Errorf("SandboxClaim %s/%s belongs to another allocation", target.Namespace, resourceName)
 	}
 	sandbox, err := client.getSandboxIfExists(ctx, target, resourceName, "")
@@ -579,12 +581,12 @@ func validateRestoreResources(ctx context.Context, client *kubeClient, target Ku
 		switch {
 		case saved == nil:
 			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
-		case saved.Sandbox != nil && saved.Sandbox.UID != string(sandbox.Metadata.UID):
+		case saved.Sandbox != nil && saved.Sandbox.UID != string(sandbox.UID):
 			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
-		case saved.Sandbox == nil && (claim == nil || !controlledBy(sandbox.Metadata.OwnerReferences, claim.Metadata.UID)):
+		case saved.Sandbox == nil && (claim == nil || !controlledBy(sandbox.OwnerReferences, claim.UID)):
 			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
 		}
-		allowedSandboxUID = string(sandbox.Metadata.UID)
+		allowedSandboxUID = string(sandbox.UID)
 	}
 	if err := client.verifyRestorableHome(ctx, target, resourceName, retained.Home, approved.Home, allowedSandboxUID); err != nil {
 		return "", err
@@ -762,8 +764,8 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if err := verifyClaim(claim, target, managed.Claim.Name, managed.WarmPool, managed); err != nil {
 		return lifecycleResult{}, err
 	}
-	if claim.Status.Sandbox.Name != managed.Sandbox.Name {
-		return lifecycleResult{}, fmt.Errorf("SandboxClaim %s/%s is bound to unexpected Sandbox %s", target.Namespace, managed.Claim.Name, claim.Status.Sandbox.Name)
+	if claim.Status.SandboxStatus.Name != managed.Sandbox.Name {
+		return lifecycleResult{}, fmt.Errorf("SandboxClaim %s/%s is bound to unexpected Sandbox %s", target.Namespace, managed.Claim.Name, claim.Status.SandboxStatus.Name)
 	}
 	sandbox, err := client.getSandbox(ctx, target, managed.Sandbox.Name, managed.Sandbox.UID)
 	if err != nil {
@@ -825,7 +827,7 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		if err := verifyClaim(claim, target, managed.Claim.Name, managed.WarmPool, managed); err != nil {
 			return retainResult{}, err
 		}
-		if sandbox == nil || claim.Status.Sandbox.Name != managed.Sandbox.Name {
+		if sandbox == nil || claim.Status.SandboxStatus.Name != managed.Sandbox.Name {
 			return retainResult{}, errors.New("saved SandboxClaim no longer owns the expected Sandbox")
 		}
 	}
@@ -901,7 +903,7 @@ func waitForClaimDeletion(ctx context.Context, client *kubeClient, target KubeTa
 		if claim == nil {
 			return true, nil
 		}
-		if string(claim.Metadata.UID) != identity.UID {
+		if string(claim.UID) != identity.UID {
 			return false, fmt.Errorf("SandboxClaim %s/%s was replaced during deletion", target.Namespace, identity.Name)
 		}
 		return false, nil
@@ -926,19 +928,19 @@ func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTa
 		if err != nil {
 			return false, err
 		}
-		if sandbox.Spec.OperatingMode.normalized() != mode {
-			return false, fmt.Errorf("sandbox %s/%s operating mode changed to %s", target.Namespace, identity.Name, sandbox.Spec.OperatingMode.normalized())
+		if normalizedMode(sandbox.Spec.OperatingMode) != mode {
+			return false, fmt.Errorf("sandbox %s/%s operating mode changed to %s", target.Namespace, identity.Name, normalizedMode(sandbox.Spec.OperatingMode))
 		}
 		condition := meta.FindStatusCondition(sandbox.Status.Conditions, conditionType)
 		latest = conditionDetail(condition)
-		if conditionObserved(condition, sandbox.Metadata.Generation, metav1.ConditionFalse) && failedReason.MatchString(latest) {
+		if conditionObserved(condition, sandbox.Generation, metav1.ConditionFalse) && failedReason.MatchString(latest) {
 			return false, fmt.Errorf("sandbox failed while entering %s mode: %s", mode, latest)
 		}
 		pods, err := client.ownedPods(ctx, target, sandbox)
 		if err != nil {
 			return false, err
 		}
-		observed := conditionObserved(condition, sandbox.Metadata.Generation, metav1.ConditionTrue)
+		observed := conditionObserved(condition, sandbox.Generation, metav1.ConditionTrue)
 		if mode == modeSuspended {
 			return observed && len(pods) == 0, nil
 		}
@@ -1018,7 +1020,7 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	return statuses, nil
 }
 
-func sandboxStatus(saved ManagedSandbox, claims []sandboxClaim, connections []savedConnection, machines []herdrMachine, suspended map[string]bool) SandboxStatus {
+func sandboxStatus(saved ManagedSandbox, claims []extensionsapi.SandboxClaim, connections []savedConnection, machines []herdrMachine, suspended map[string]bool) SandboxStatus {
 	status := SandboxStatus{
 		Name:      saved.allocationName(),
 		Namespace: saved.Claim.Namespace,
@@ -1030,7 +1032,7 @@ func sandboxStatus(saved ManagedSandbox, claims []sandboxClaim, connections []sa
 	if saved.Sandbox != nil {
 		status.SandboxUID = saved.Sandbox.UID
 	}
-	claim := slices.IndexFunc(claims, func(c sandboxClaim) bool { return string(c.Metadata.UID) == saved.Claim.UID })
+	claim := slices.IndexFunc(claims, func(c extensionsapi.SandboxClaim) bool { return string(c.UID) == saved.Claim.UID })
 	if claim < 0 {
 		status.State, status.Step, status.Message = "failed", "claim", "saved SandboxClaim is missing"
 		return status
