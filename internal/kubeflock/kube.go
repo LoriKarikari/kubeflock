@@ -128,8 +128,6 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	if len(execCert) != 0 {
 		config.CertData, config.KeyData = execCert, execKey
 	}
-	config.ContentType = "application/json"
-	config.AcceptContentTypes = "application/json"
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return nil, err

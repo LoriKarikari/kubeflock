@@ -17,8 +17,18 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
+	"k8s.io/apimachinery/pkg/runtime/serializer/recognizer"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 )
+
+var deleteOptionsCodec = func() runtime.Decoder {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(metav1.AddMetaToScheme(scheme))
+	return recognizer.NewDecoder(protobuf.NewSerializer(scheme, scheme))
+}()
 
 const (
 	keyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -487,8 +497,8 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 	}
 	if request.Method == http.MethodDelete {
 		uid := types.UID(homeUID(name, s))
-		var options metav1.DeleteOptions
-		if json.NewDecoder(request.Body).Decode(&options) != nil || options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != uid {
+		options, ok := deleteOptions(request.Body)
+		if !ok || options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != uid {
 			response.WriteHeader(http.StatusConflict)
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Conflict", "message": fmt.Sprintf("PVC UID precondition did not match %s", uid), "code": 409})
 			return
@@ -540,6 +550,21 @@ func homeUID(name string, s *fixtureSandbox) string {
 		return s.homeUID
 	}
 	return name + "-uid"
+}
+
+func deleteOptions(body io.Reader) (metav1.DeleteOptions, bool) {
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return metav1.DeleteOptions{}, false
+	}
+	var options metav1.DeleteOptions
+	if json.Unmarshal(raw, &options) == nil {
+		return options, true
+	}
+	if _, _, err := deleteOptionsCodec.Decode(raw, nil, &options); err != nil {
+		return metav1.DeleteOptions{}, false
+	}
+	return options, true
 }
 
 func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
