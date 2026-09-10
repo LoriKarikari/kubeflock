@@ -44,21 +44,24 @@ type fixtureClaim struct {
 }
 
 type fixtureAPI struct {
-	mu            sync.Mutex
-	claims        map[string]fixtureClaim
-	modes         map[string]sandboxOperatingMode
-	generations   map[string]int
-	sandboxes     map[string]bool
-	homeOwned     map[string]bool
-	homeAdoptable map[string]bool
-	failDelete    map[string]int
-	failHomePatch int
-	holdMode      bool
-	creates       int
-	reads         map[string]int
-	methods       []string
-	paths         []string
-	auth          []string
+	mu               sync.Mutex
+	claims           map[string]fixtureClaim
+	modes            map[string]sandboxOperatingMode
+	generations      map[string]int
+	sandboxes        map[string]bool
+	homeOwned        map[string]bool
+	homeAdoptable    map[string]bool
+	homeMissing      map[string]bool
+	homeLostOnDelete map[string]bool
+	failDelete       map[string]int
+	failHomePatch    int
+	reAdoptions      int
+	holdMode         bool
+	creates          int
+	reads            map[string]int
+	methods          []string
+	paths            []string
+	auth             []string
 }
 
 func (f *fixtureAPI) snapshot() (int, map[string]int, map[string]fixtureClaim, []string, []string) {
@@ -83,6 +86,26 @@ func (f *fixtureAPI) failNextHomePatch() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failHomePatch++
+}
+
+func (f *fixtureAPI) loseHomeOnDelete(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.homeLostOnDelete[name] = true
+}
+
+func (f *fixtureAPI) adoptedHomes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reAdoptions
+}
+
+func (f *fixtureAPI) reconcileHome(name string) {
+	if f.homeOwned[name] || !f.homeAdoptable[name] {
+		return
+	}
+	f.homeOwned[name] = true
+	f.reAdoptions++
 }
 
 func (f *fixtureAPI) retentionSnapshot(name string) (claim, sandbox, homeOwned bool, paths []string) {
@@ -166,7 +189,11 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 				return
 			}
 			f.sandboxes[name] = false
-			f.homeOwned[name] = f.homeAdoptable[name]
+			f.homeOwned[name] = false
+			f.reconcileHome(name)
+			if f.homeLostOnDelete[name] {
+				f.homeMissing[name] = true
+			}
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
 			return
 		}
@@ -234,6 +261,11 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
 		_, name, _ := strings.CutLast(path, "/")
 		sandbox := strings.TrimPrefix(name, "home-")
+		if f.homeMissing[sandbox] {
+			response.WriteHeader(http.StatusNotFound)
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
+			return
+		}
 		if request.Method == http.MethodPatch {
 			data, _ := io.ReadAll(request.Body)
 			if f.failHomePatch > 0 {
@@ -639,7 +671,8 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	api := &fixtureAPI{
 		claims: map[string]fixtureClaim{}, modes: map[string]sandboxOperatingMode{}, generations: map[string]int{},
-		sandboxes: map[string]bool{}, homeOwned: map[string]bool{}, homeAdoptable: map[string]bool{}, failDelete: map[string]int{}, reads: map[string]int{},
+		sandboxes: map[string]bool{}, homeOwned: map[string]bool{}, homeAdoptable: map[string]bool{},
+		homeMissing: map[string]bool{}, homeLostOnDelete: map[string]bool{}, failDelete: map[string]int{}, reads: map[string]int{},
 	}
 	server := httptest.NewServer(api)
 	defer server.Close()
@@ -775,6 +808,9 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	}
 	failedProfileRemove := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_REMOVE=1"), "")
 	assertCLI(t, "failed profile remove", failedProfileRemove, 2, "", "remove Herdr connection")
+	if adopted := api.adoptedHomes(); adopted != 0 {
+		t.Fatalf("the controller re-adopted the home %d times after orphaning", adopted)
+	}
 	deleted := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
 	assertCLI(t, "delete and retain", deleted, 0, "retained home home-delayed-uid", "stopping compute")
 	claim, sandbox, owned, paths := api.retentionSnapshot("delayed")
@@ -786,12 +822,15 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 			t.Fatalf("PVC deletion requested at %s", path)
 		}
 	}
-	homes := invoke(t, binary, []string{"sandbox", "home", "list", "--output", "json"}, env, "")
-	assertCLI(t, "retained homes", homes, 0, `"uid": "home-delayed-uid"`, "")
-	_, _, retainedHash := api.lifecycleSnapshot("delayed")
-	if retainedHash != originalHome || !strings.Contains(retainedHash, "sha256:fixture-home") {
-		t.Fatalf("retained home readback = %q; want %q", retainedHash, originalHome)
+	if adopted := api.adoptedHomes(); adopted != 0 {
+		t.Fatalf("the controller re-adopted the home %d times", adopted)
 	}
+	homes := retainedHomes(t, binary, env)
+	if len(homes) != 1 || homes[0].Home.UID != "home-delayed-uid" || homes[0].Origin.Name != "delayed" ||
+		homes[0].Template != "dev-small" || homes[0].WarmPool != "dev-small-pool" || homes[0].State != "available" {
+		t.Fatalf("retained homes = %#v", homes)
+	}
+	assertCLI(t, "retained homes text", invoke(t, binary, []string{"sandbox", "home", "list"}, env, ""), 0, "template=dev-small", "")
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("connection state still exists: %v", err)
 	}
@@ -803,6 +842,15 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	sshData, _ = os.ReadFile(sshConfig)
 	if strings.Contains(string(sshData), "kubeflock-") || !strings.Contains(string(sshData), "Host unrelated") {
 		t.Fatalf("managed SSH entry was not removed safely: %s", sshData)
+	}
+
+	second := invoke(t, binary, []string{"sandbox", "create", "fragile", "--template", "dev-small", "--identity", identity, "--timeout", "2s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "second sandbox", second, 0, "ready sandbox fragile", "")
+	api.loseHomeOnDelete("fragile")
+	lost := invoke(t, binary, []string{"sandbox", "delete", "fragile", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
+	assertCLI(t, "vanished home", lost, 2, "", "no retained home was recorded")
+	if remaining := retainedHomes(t, binary, env); len(remaining) != 1 || remaining[0].Origin.Name != "delayed" {
+		t.Fatalf("a vanished home changed the retained list: %#v", remaining)
 	}
 
 	insecure := invoke(t, binary, []string{"sandbox", "create", "unsafe", "--template", "insecure", "--identity", identity, "--kubeconfig", kubeconfig}, env, "")
@@ -849,6 +897,17 @@ func assertCLI(t *testing.T, label string, got result, status int, stdout, stder
 	if stderr != "" && !strings.Contains(got.stderr, stderr) {
 		t.Fatalf("%s = %#v", label, got)
 	}
+}
+
+func retainedHomes(t *testing.T, binary string, env []string) []RetainedHome {
+	t.Helper()
+	listed := invoke(t, binary, []string{"sandbox", "home", "list", "--output", "json"}, env, "")
+	assertCLI(t, "home list", listed, 0, "", "")
+	var homes []RetainedHome
+	if err := json.Unmarshal([]byte(listed.stdout), &homes); err != nil {
+		t.Fatalf("home list = %#v", listed)
+	}
+	return homes
 }
 
 func mustWrite(t *testing.T, path, data string, mode os.FileMode) {

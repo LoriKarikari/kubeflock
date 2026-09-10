@@ -470,6 +470,9 @@ func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarge
 
 func (k *kubeClient) verifyRetainedHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
 	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("sandbox home %s is missing from the cluster; no retained home was recorded", expected.Name)
+	}
 	if err != nil {
 		return err
 	}
