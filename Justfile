@@ -4,6 +4,9 @@ default: verify
 
 verify: fmt vet lint test build
 
+vuln:
+    govulncheck ./...
+
 fmt:
     test -z "$(gofmt -l cmd internal)"
 
