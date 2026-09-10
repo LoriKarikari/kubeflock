@@ -353,10 +353,11 @@ func permissionCheck(
 	access accessCheck,
 ) CheckResult {
 	shown := access.qualified()
-	args := []string{"auth", "can-i", access.Verb, access.resourceArg()}
+	resource := access.resourceArg()
 	if access.ResourceName != "" {
-		args = append(args, access.ResourceName)
+		resource += "/" + access.ResourceName
 	}
+	args := []string{"auth", "can-i", access.Verb, resource}
 	if access.Subresource != "" {
 		args = append(args, "--subresource="+access.Subresource)
 	}
