@@ -604,7 +604,7 @@ func (k *kubeClient) verifyRetainedHome(ctx context.Context, target KubeTarget, 
 func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget, retained RetainedHome) (*PersistentVolume, error) {
 	pvc, err := k.homePVC(ctx, target, retained.Home)
 	if apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("retained home %s PVC is already gone from the cluster; resolve its storage outside Kubeflock before deleting the record", retained.Home.Name)
+		return nil, fmt.Errorf("retained home %s PVC is already gone from the cluster; the storage changed outside Kubeflock", retained.Home.Name)
 	}
 	if err != nil {
 		return nil, err

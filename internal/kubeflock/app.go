@@ -23,11 +23,11 @@ type App struct {
 	Now func() time.Time
 }
 
+const homeDeleteTimeout = 5 * time.Minute
+
 type exitError struct {
 	code int
 }
-
-const homeDeleteTimeout = 5 * time.Minute
 
 func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
