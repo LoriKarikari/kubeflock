@@ -165,181 +165,222 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	f.auth = append(f.auth, request.Header.Get("Authorization"))
 	response.Header().Set("content-type", "application/json")
 	path := request.URL.Path
-	if strings.Contains(path, "/sandboxtemplates/") {
-		_, name, _ := strings.CutLast(path, "/")
-		writeFixture(response, templateFixture(name, name != "insecure"))
-		return
+	switch {
+	case strings.Contains(path, "/sandboxtemplates/"):
+		f.handleTemplate(response, path)
+	case strings.HasSuffix(path, "/sandboxwarmpools"):
+		f.handlePools(response)
+	case strings.Contains(path, "/sandboxclaims"):
+		f.handleClaims(response, request, path)
+	case strings.Contains(path, "/sandboxes/"):
+		f.handleSandboxes(response, request, path)
+	case strings.HasSuffix(path, "/pods"):
+		f.handlePods(response, request)
+	case strings.Contains(path, "/persistentvolumeclaims/home-"):
+		f.handleHome(response, request, path)
+	default:
+		writeNotFound(response)
 	}
-	if strings.HasSuffix(path, "/sandboxwarmpools") {
-		writeFixture(response, map[string]any{
-			"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
-			"kind":       "SandboxWarmPoolList",
-			"items": []any{
-				poolFixture("dev-small"),
-				poolFixture("insecure"),
-			},
-		})
-		return
-	}
-	if strings.HasSuffix(path, "/sandboxclaims") && request.Method == http.MethodPost {
-		f.createClaim(response, request)
-		return
-	}
-	if strings.Contains(path, "/sandboxclaims/") && request.Method == http.MethodDelete {
-		_, name, _ := strings.CutLast(path, "/")
-		if !validOrphanDelete(request, "claim-"+name) {
-			response.WriteHeader(http.StatusConflict)
-			return
-		}
-		if f.failDelete["claim"] > 0 {
-			f.failDelete["claim"]--
-			response.WriteHeader(http.StatusInternalServerError)
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim delete failed", "code": 500})
-			return
-		}
-		f.sandbox(name).claim = nil
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
-		return
-	}
-	if strings.HasSuffix(path, "/sandboxclaims") {
-		f.listClaims(response, request)
-		return
-	}
-	if strings.Contains(path, "/sandboxes/") {
-		_, name, _ := strings.CutLast(path, "/")
-		s := f.sandbox(name)
-		if request.Method == http.MethodDelete {
-			if !validOrphanDelete(request, "sandbox-"+name) {
-				response.WriteHeader(http.StatusConflict)
-				return
-			}
-			if f.failDelete["sandbox"] > 0 {
-				f.failDelete["sandbox"]--
-				response.WriteHeader(http.StatusInternalServerError)
-				writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "sandbox delete failed", "code": 500})
-				return
-			}
-			s.present = false
-			s.homeOwned = false
-			f.reconcileHome(s)
-			if s.loseHomeOnDelete {
-				s.homeMissing = true
-			}
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
-			return
-		}
-		if !s.present {
-			response.WriteHeader(http.StatusNotFound)
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "sandbox not found", "code": 404})
-			return
-		}
-		if request.Method == http.MethodPatch {
-			var operations []struct {
-				Path  string               `json:"path"`
-				Value sandboxOperatingMode `json:"value"`
-			}
-			if json.NewDecoder(request.Body).Decode(&operations) != nil {
-				response.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			mode := sandboxOperatingMode("")
-			for _, operation := range operations {
-				if operation.Path == "/spec/operatingMode" {
-					mode = operation.Value
-				}
-			}
-			if mode != modeRunning && mode != modeSuspended {
-				response.WriteHeader(http.StatusUnprocessableEntity)
-				return
-			}
-			if s.mode == modeSuspended && mode == modeRunning {
-				s.generation++
-			}
-			s.mode = mode
-		}
-		writeFixture(response, f.sandboxFixture(name, s.mode))
-		return
-	}
-	if strings.HasSuffix(path, "/pods") {
-		name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
-		s := f.sandbox(name)
-		items := []any{}
-		running := !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended
-		if running {
-			controller := true
-			items = append(items, map[string]any{
-				"apiVersion": "v1",
-				"kind":       "Pod",
-				"metadata": map[string]any{
-					"name": "sandbox-" + name,
-					"uid":  fmt.Sprintf("pod-%s-%d", name, s.generation),
-					"ownerReferences": []any{map[string]any{
-						"uid": "sandbox-" + name, "controller": controller,
-					}},
-				},
-				"spec": map[string]any{
-					"containers": []any{map[string]any{
-						"name": "sandbox",
-						"ports": []any{map[string]any{
-							"name": "ssh", "containerPort": 2200,
-						}},
-					}},
-				},
-			})
-		}
-		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
-		return
-	}
-	if strings.Contains(path, "/persistentvolumeclaims/home-") {
-		_, name, _ := strings.CutLast(path, "/")
-		sandbox := strings.TrimPrefix(name, "home-")
-		s := f.sandbox(sandbox)
-		if s.homeMissing {
-			response.WriteHeader(http.StatusNotFound)
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
-			return
-		}
-		if request.Method == http.MethodPatch {
-			data, _ := io.ReadAll(request.Body)
-			if f.failHomePatch > 0 {
-				f.failHomePatch--
-				response.WriteHeader(http.StatusForbidden)
-				writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC patch forbidden", "code": 403})
-				return
-			}
-			if !bytes.Contains(data, []byte("sandbox-name-hash")) || bytes.Contains(data, []byte("ownerReferences")) {
-				response.WriteHeader(http.StatusUnprocessableEntity)
-				return
-			}
-			s.homeLabeled = false
-		}
-		controller := true
-		owners := []any{}
-		if s.homeOwned {
-			owners = append(owners, map[string]any{"uid": "sandbox-" + sandbox, "controller": controller})
-		}
-		labels := map[string]string{}
-		if s.homeLabeled {
-			labels[sandboxNameHashLabel] = "fixture"
-		}
-		writeFixture(response, map[string]any{
-			"apiVersion": "v1",
-			"kind":       "PersistentVolumeClaim",
-			"metadata": map[string]any{
-				"name":            name,
-				"namespace":       "dev",
-				"uid":             name + "-uid",
-				"resourceVersion": "1",
-				"labels":          labels,
-				"ownerReferences": owners,
-			},
-			"spec":   map[string]any{"storageClassName": "longhorn"},
-			"status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}},
-		})
-		return
-	}
+}
+
+func writeNotFound(response http.ResponseWriter) {
 	response.WriteHeader(http.StatusNotFound)
 	writeFixture(response, map[string]string{"message": "not found"})
+}
+
+func (f *fixtureAPI) handleTemplate(response http.ResponseWriter, path string) {
+	_, name, _ := strings.CutLast(path, "/")
+	writeFixture(response, templateFixture(name, name != "insecure"))
+}
+
+func (f *fixtureAPI) handlePools(response http.ResponseWriter) {
+	writeFixture(response, map[string]any{
+		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+		"kind":       "SandboxWarmPoolList",
+		"items": []any{
+			poolFixture("dev-small"),
+			poolFixture("insecure"),
+		},
+	})
+}
+
+func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Request, path string) {
+	name := ""
+	if strings.Contains(path, "/sandboxclaims/") {
+		_, name, _ = strings.CutLast(path, "/")
+	}
+	switch {
+	case name != "" && request.Method == http.MethodDelete:
+		f.deleteClaim(response, request, name)
+	case name == "" && request.Method == http.MethodPost:
+		f.createClaim(response, request)
+	case name == "":
+		f.listClaims(response, request)
+	default:
+		writeNotFound(response)
+	}
+}
+
+func (f *fixtureAPI) deleteClaim(response http.ResponseWriter, request *http.Request, name string) {
+	if !validOrphanDelete(request, "claim-"+name) {
+		response.WriteHeader(http.StatusConflict)
+		return
+	}
+	if f.failDelete["claim"] > 0 {
+		f.failDelete["claim"]--
+		response.WriteHeader(http.StatusInternalServerError)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim delete failed", "code": 500})
+		return
+	}
+	f.sandbox(name).claim = nil
+	writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+}
+
+func (f *fixtureAPI) handleSandboxes(response http.ResponseWriter, request *http.Request, path string) {
+	_, name, _ := strings.CutLast(path, "/")
+	s := f.sandbox(name)
+	if request.Method == http.MethodDelete {
+		f.deleteSandbox(response, request, name, s)
+		return
+	}
+	if !s.present {
+		response.WriteHeader(http.StatusNotFound)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "sandbox not found", "code": 404})
+		return
+	}
+	if request.Method == http.MethodPatch {
+		f.patchMode(response, request, name, s)
+		return
+	}
+	writeFixture(response, f.sandboxFixture(name, s.mode))
+}
+
+func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
+	if !validOrphanDelete(request, "sandbox-"+name) {
+		response.WriteHeader(http.StatusConflict)
+		return
+	}
+	if f.failDelete["sandbox"] > 0 {
+		f.failDelete["sandbox"]--
+		response.WriteHeader(http.StatusInternalServerError)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "sandbox delete failed", "code": 500})
+		return
+	}
+	s.present = false
+	s.homeOwned = false
+	f.reconcileHome(s)
+	if s.loseHomeOnDelete {
+		s.homeMissing = true
+	}
+	writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+}
+
+func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
+	var operations []struct {
+		Path  string               `json:"path"`
+		Value sandboxOperatingMode `json:"value"`
+	}
+	if json.NewDecoder(request.Body).Decode(&operations) != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	mode := sandboxOperatingMode("")
+	for _, operation := range operations {
+		if operation.Path == "/spec/operatingMode" {
+			mode = operation.Value
+		}
+	}
+	if mode != modeRunning && mode != modeSuspended {
+		response.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
+	if s.mode == modeSuspended && mode == modeRunning {
+		s.generation++
+	}
+	s.mode = mode
+	writeFixture(response, f.sandboxFixture(name, s.mode))
+}
+
+func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Request) {
+	name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
+	s := f.sandbox(name)
+	items := []any{}
+	if !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended {
+		controller := true
+		items = append(items, map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]any{
+				"name": "sandbox-" + name,
+				"uid":  fmt.Sprintf("pod-%s-%d", name, s.generation),
+				"ownerReferences": []any{map[string]any{
+					"uid": "sandbox-" + name, "controller": controller,
+				}},
+			},
+			"spec": map[string]any{
+				"containers": []any{map[string]any{
+					"name": "sandbox",
+					"ports": []any{map[string]any{
+						"name": "ssh", "containerPort": 2200,
+					}},
+				}},
+			},
+		})
+	}
+	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
+}
+
+func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Request, path string) {
+	_, name, _ := strings.CutLast(path, "/")
+	sandbox := strings.TrimPrefix(name, "home-")
+	s := f.sandbox(sandbox)
+	if s.homeMissing {
+		response.WriteHeader(http.StatusNotFound)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
+		return
+	}
+	if request.Method == http.MethodPatch && !f.patchHome(response, request, s) {
+		return
+	}
+	controller := true
+	owners := []any{}
+	if s.homeOwned {
+		owners = append(owners, map[string]any{"uid": "sandbox-" + sandbox, "controller": controller})
+	}
+	labels := map[string]string{}
+	if s.homeLabeled {
+		labels[sandboxNameHashLabel] = "fixture"
+	}
+	writeFixture(response, map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PersistentVolumeClaim",
+		"metadata": map[string]any{
+			"name":            name,
+			"namespace":       "dev",
+			"uid":             name + "-uid",
+			"resourceVersion": "1",
+			"labels":          labels,
+			"ownerReferences": owners,
+		},
+		"spec":   map[string]any{"storageClassName": "longhorn"},
+		"status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}},
+	})
+}
+
+func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Request, s *fixtureSandbox) bool {
+	data, _ := io.ReadAll(request.Body)
+	if f.failHomePatch > 0 {
+		f.failHomePatch--
+		response.WriteHeader(http.StatusForbidden)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC patch forbidden", "code": 403})
+		return false
+	}
+	if !bytes.Contains(data, []byte("sandbox-name-hash")) || bytes.Contains(data, []byte("ownerReferences")) {
+		response.WriteHeader(http.StatusUnprocessableEntity)
+		return false
+	}
+	s.homeLabeled = false
+	return true
 }
 
 func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Request) {
