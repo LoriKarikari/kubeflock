@@ -268,13 +268,20 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 
 func validateTemplate(template sandboxTemplate, warmPool string) (approvedTemplate, error) {
 	name := template.Metadata.Name
-	if name == "" || template.Spec.NetworkPolicyManagement == "Unmanaged" || !podHardened(template.Spec.PodTemplate.Spec) {
+	pod := template.Spec.PodTemplate.Spec
+	if name == "" || template.Spec.NetworkPolicyManagement == "Unmanaged" || !podHardened(pod) {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s does not meet Kubeflock pod hardening requirements", name)
 	}
-	for _, container := range template.Spec.PodTemplate.Spec.Containers {
+	if len(pod.EphemeralContainers) != 0 {
+		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s declares ephemeral containers", name)
+	}
+	for _, container := range slices.Concat(pod.InitContainers, pod.Containers) {
 		if !containerHardened(container) {
-			return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s contains an unhardened or unbudgeted container", name)
+			return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s contains an unhardened or unbudgeted container %s", name, container.Name)
 		}
+	}
+	if !volumesHardened(pod.Volumes, template.Spec.VolumeClaimTemplates) {
+		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s mounts a volume that is not one of its claim templates", name)
 	}
 	if home, image, ok := homeClaimTemplate(template); ok {
 		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home}, nil
@@ -286,6 +293,10 @@ func podHardened(pod corev1.PodSpec) bool {
 	security := pod.SecurityContext
 	return ptr.Deref(pod.RuntimeClassName, "") == "gvisor" &&
 		!ptr.Deref(pod.AutomountServiceAccountToken, true) &&
+		!pod.HostNetwork &&
+		!pod.HostPID &&
+		!pod.HostIPC &&
+		!ptr.Deref(pod.ShareProcessNamespace, false) &&
 		security != nil &&
 		ptr.Deref(security.RunAsNonRoot, false) &&
 		ptr.Deref(security.RunAsUser, 0) == 1000 &&
@@ -298,15 +309,31 @@ func podHardened(pod corev1.PodSpec) bool {
 func containerHardened(container corev1.Container) bool {
 	security := container.SecurityContext
 	return security != nil &&
+		!ptr.Deref(security.Privileged, false) &&
+		security.ProcMount == nil &&
 		!ptr.Deref(security.AllowPrivilegeEscalation, true) &&
 		ptr.Deref(security.RunAsNonRoot, false) &&
 		ptr.Deref(security.RunAsUser, 0) == 1000 &&
 		security.SeccompProfile != nil &&
 		security.SeccompProfile.Type == corev1.SeccompProfileTypeRuntimeDefault &&
 		security.Capabilities != nil &&
+		len(security.Capabilities.Add) == 0 &&
 		slices.Contains(security.Capabilities.Drop, corev1.Capability("ALL")) &&
 		len(container.Resources.Requests) != 0 &&
 		len(container.Resources.Limits) != 0
+}
+
+func volumesHardened(volumes []corev1.Volume, templates []corev1.PersistentVolumeClaim) bool {
+	claims := make([]string, 0, len(templates))
+	for _, template := range templates {
+		claims = append(claims, template.Name)
+	}
+	for _, volume := range volumes {
+		if volume.PersistentVolumeClaim == nil || !slices.Contains(claims, volume.PersistentVolumeClaim.ClaimName) {
+			return false
+		}
+	}
+	return true
 }
 
 func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, string, bool) {
