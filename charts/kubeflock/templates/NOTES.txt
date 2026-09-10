@@ -8,3 +8,9 @@ Configure and check the CLI target:
 Create a sandbox:
 
   kubeflock sandbox create <name> --template {{ .Values.sandbox.templateName }} --identity <private-key-path>
+{{- if gt (len .Values.access.subjects) 1 }}
+
+WARNING: this release lists {{ len .Values.access.subjects }} subjects, and each one can exec into every
+Sandbox and read every persistent home in {{ .Values.namespace.name }}. Share a namespace only between
+identities that may already read each other's files.
+{{- end }}
