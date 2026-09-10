@@ -421,7 +421,7 @@ func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Re
 	case name == "" && request.Method == http.MethodPost:
 		f.createClaim(response, request)
 	case name == "":
-		f.listClaims(response, request)
+		f.listClaims(response)
 	default:
 		writeNotFound(response)
 	}
@@ -809,27 +809,12 @@ func (f *fixtureAPI) getClaim(response http.ResponseWriter, name string) {
 	writeFixture(response, s.claim)
 }
 
-func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Request) {
+func (f *fixtureAPI) listClaims(response http.ResponseWriter) {
 	items := []fixtureClaim{}
-	field := request.URL.Query().Get("fieldSelector")
-	if field == "" {
-		for _, s := range f.sandboxes {
-			if s.claim != nil && s.claim.Metadata.Labels[managedByLabel] == managedByValue {
-				items = append(items, *s.claim)
-			}
+	for _, s := range f.sandboxes {
+		if s.claim != nil && s.claim.Metadata.Labels[managedByLabel] == managedByValue {
+			items = append(items, *s.claim)
 		}
-		writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
-		return
-	}
-	name := strings.TrimPrefix(field, "metadata.name=")
-	s := f.ensureSandbox(name)
-	if s.claim != nil {
-		s.reads++
-		if name == "delayed" && s.reads >= 2 && s.homeOwned && s.mode != modeSuspended {
-			s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-			s.claim.Status.Sandbox.Name = name
-		}
-		items = append(items, *s.claim)
 	}
 	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
 }
