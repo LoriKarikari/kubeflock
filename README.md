@@ -1,9 +1,8 @@
 # Kubeflock
 
-Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Connections travel through the Kubernetes API, so Sandboxes need no public SSH service or direct workstation route.
+Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr through the Kubernetes API. A sandbox needs neither a public SSH service nor a direct route from your workstation.
 
-
-![Kubeflock creates a Sandbox, launches Pi in Herdr, and reconnects without stopping Pi](docs/demo.gif)
+![Kubeflock creates a sandbox, launches Pi in Herdr, and reconnects without stopping Pi](docs/demo.gif)
 
 ## Requirements
 
@@ -14,14 +13,16 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr. Conn
 
 ## Install
 
-Build and push the starter Sandbox image, or use a compatible custom image:
+Build and push the starter sandbox image, or use a compatible image:
 
 ```bash
 docker build --tag REGISTRY/kubeflock-sandbox:VERSION sandbox-image
 docker push REGISTRY/kubeflock-sandbox:VERSION
 ```
 
-Set `sandbox.image` in your values file to that tag or digest. See [`sandbox-image/README.md`](sandbox-image/README.md) for the image contents and authentication model.
+Set `sandbox.image` in your values file to the image tag or digest. The [sandbox image documentation](sandbox-image/README.md) describes its contents and authentication model.
+
+Build the binary that Herdr runs, install the CLI, and link the plugin:
 
 ```bash
 go build -o bin/kubeflock ./cmd/kubeflock
@@ -29,7 +30,7 @@ go install ./cmd/kubeflock
 herdr plugin link .
 ```
 
-Prepare a values file and install the cluster resources:
+Copy the example values file, edit it for your cluster, and install the chart:
 
 ```bash
 cp charts/kubeflock/values.example.yaml values.yaml
@@ -40,43 +41,121 @@ helm upgrade --install kubeflock charts/kubeflock \
   --wait
 ```
 
-The chart creates the developer namespace, access rules, budgets, Sandbox template, and zero-replica warm pool. See [`charts/kubeflock/README.md`](charts/kubeflock/README.md) for values, controller installation, and GitOps use.
+The chart creates the developer namespace, access rules, budgets, sandbox template, and empty warm pool. The [Helm chart documentation](charts/kubeflock/README.md) covers all values, controller installation, and GitOps use.
 
-## Configure
+## Configure the target cluster
 
-### Set the target
+Save the Kubernetes context and namespace that Kubeflock must use:
 
 ```bash
 kubeflock cluster config --context NAME --namespace NAME
 ```
 
-The saved context remains authoritative when the current kubectl context changes.
+Kubeflock keeps using the saved context if your current `kubectl` context changes.
 
-### Show the target
+Show the saved target:
 
 ```bash
 kubeflock cluster config show [--output text|json]
 ```
 
-### Check the target
+Check that the target supports Kubeflock:
 
 ```bash
 kubeflock cluster check [--timeout 60s] [--output text|json]
 ```
 
-## Sandboxes
+## Manage sandboxes
 
 ### Create and connect
 
 ```bash
 kubeflock sandbox create my-agent \
   --template dev-small \
-  --identity ~/.ssh/id_ed25519
+  --identity ~/.ssh/id_ed25519 \
+  --repository https://github.com/example/project.git \
+  --branch main
 ```
 
-Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities.
+Kubeflock creates the sandbox, connects it to Herdr, and clones the repository into `/home/agent/project`. Omit `--repository` and `--branch` to create an empty sandbox.
+
+If creation fails and you retry it, Kubeflock reuses the saved Claim, Sandbox, PVC, and Herdr identities. If the clone fails, the sandbox remains available for login and another attempt. Kubeflock does not replace an existing checkout.
+
+Configure Git credentials or SSH keys inside the sandbox. Kubeflock rejects repository URLs that contain credentials. It does not copy private keys, Git or model credentials, or SSH agents from your workstation.
+
+### List sandboxes
+
+```bash
+kubeflock sandbox list [--output text|json]
+```
+
+The command reports `provisioning`, `ready`, `failed`, and `disconnected` states.
+
+### Connect
+
+```bash
+kubeflock sandbox connect NAME --identity PATH
+```
+
+The first connection requires an identity file and saves the sandbox host key.
+
+### Reconnect
+
+```bash
+kubeflock sandbox reconnect [NAME]
+```
+
+Reconnect accepts no flags. Kubeflock refuses a changed host key.
+
+### Disconnect
+
+```bash
+kubeflock sandbox disconnect [NAME]
+```
+
+The sandbox and its remote processes keep running.
+
+### Stop
+
+```bash
+kubeflock sandbox stop [NAME] [--timeout 5m]
+```
+
+Kubeflock disconnects Herdr, stops the compute, and keeps the persistent home.
+
+### Resume
+
+```bash
+kubeflock sandbox resume [NAME] [--timeout 5m]
+```
+
+Kubeflock starts a new Pod for the existing Sandbox and reconnects with the saved host key.
+
+### Delete
+
+```bash
+kubeflock sandbox delete [NAME] [--timeout 5m]
+```
+
+Kubeflock stops the compute and orphan-deletes the Claim and Sandbox with UID checks. It keeps the PVC and records it as a retained home.
+
+## Manage retained homes
+
+Deleting a sandbox retains its persistent home. You can list, restore, or permanently delete that home.
+
+### List retained homes
+
+```bash
+kubeflock sandbox home list [--output text|json]
+```
+
+The command shows each home by PVC name and UID. It also shows the source sandbox, template, capacity, storage class, and state. The list includes only the configured Kubernetes context and namespace.
+
+A home has the `restoring` state when an interrupted restore left its record behind. Retry the restore to finish attaching it. A home in the `deleting` state also shows the persistent volume identity when Kubeflock recorded one.
 
 ### Restore a retained home
+
+Use the PVC UID from `kubeflock sandbox home list`:
 
 ```bash
 kubeflock sandbox create my-agent \
@@ -85,63 +164,9 @@ kubeflock sandbox create my-agent \
   --identity ~/.ssh/id_ed25519
 ```
 
-Restore uses the template recorded at deletion. Kubeflock prints that template image before it authorizes attachment. Restore requires the original sandbox name, because Agent Sandbox derives the PVC name from it, so a plain create under that name fails and names the UID to select. Without `--home`, Kubeflock never adopts retained data.
+Use the original sandbox name. Agent Sandbox derives the PVC name from it. If you run `create` with that name but omit `--home`, Kubeflock refuses the retained data and prints the PVC UID to use.
 
-### List sandboxes
-
-```bash
-kubeflock sandbox list [--output text|json]
-```
-
-Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states.
-
-### Connect
-
-```bash
-kubeflock sandbox connect NAME --identity PATH
-```
-
-A first connection pins that Sandbox's host key and needs the identity file.
-
-### Reconnect
-
-```bash
-kubeflock sandbox reconnect [NAME]
-```
-
-Reconnect takes no flags. A changed host key is refused rather than pinned again.
-
-### Stop
-
-```bash
-kubeflock sandbox stop [NAME] [--timeout 5m]
-```
-
-Stopping terminates compute after Herdr detaches and retains the persistent home.
-
-### Resume
-
-```bash
-kubeflock sandbox resume [NAME] [--timeout 5m]
-```
-
-Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin.
-
-### Delete
-
-```bash
-kubeflock sandbox delete [NAME] [--timeout 5m]
-```
-
-Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. Kubeflock never deletes a PVC, and it copies no private keys, repository credentials, model credentials, or SSH agents into a Sandbox.
-
-### List retained homes
-
-```bash
-kubeflock sandbox home list [--output text|json]
-```
-
-Homes are listed by PVC name and UID, with their origin, template, capacity, storage class, and state. The list covers the configured target only, so homes recorded for another context or namespace stay hidden. A home shows `restoring` when an interrupted restore left its record behind, and a retry finishes the attachment. A `deleting` home also shows the residual PV identity when one is recorded.
+Kubeflock uses the template recorded when you deleted the sandbox. Before it attaches the home, it prints the template image for approval. Restore does not accept `--repository`. Clone the repository inside the restored sandbox instead.
 
 ### Permanently delete a retained home
 
@@ -149,14 +174,8 @@ Homes are listed by PVC name and UID, with their origin, template, capacity, sto
 kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
 ```
 
-Kubeflock shows the target, PVC identity, capacity, storage class, persistent volume, and data-loss warning before requiring the exact PVC UID. Scripts must pass the same UID through `--confirm`. A missing or mismatched confirmation exits non-zero and deletes nothing. The command refuses allocated, mounted, restoring, replaced, or ambiguously owned storage. It also refuses a `Retain` reclaim policy because Kubernetes cannot confirm deletion of the underlying storage asset. For `Delete`, Kubeflock records the PVC and persistent volume identities, deletes only that PVC with a UID precondition, and reports success only after both objects disappear. A persistent volume that is already gone does not block the record from clearing. A home whose PVC is already gone is refused, because Kubeflock cannot tell what storage replaced it. A failed attempt remains listed as `deleting` for a safe retry.
+Kubeflock shows the target, PVC identity, capacity, storage class, persistent volume, and a data-loss warning. Interactive use requires you to enter the exact PVC UID. Scripts must pass the same UID with `--confirm`. A missing or different UID stops the command without deleting data.
 
-### Disconnect
+The command refuses storage that is allocated, mounted, restoring, replaced, or owned ambiguously. It also refuses a `Retain` reclaim policy because Kubernetes cannot confirm deletion of the storage itself.
 
-```bash
-kubeflock sandbox disconnect [NAME]
-```
-
-Disconnecting leaves the Sandbox and its remote processes running.
-
-Herdr provides matching lifecycle, restore, listing, and permanent home deletion actions.
+For a `Delete` reclaim policy, Kubeflock records the PVC and persistent volume identities. It deletes only that PVC, with a UID check, and succeeds after both objects disappear. If the persistent volume is already gone, Kubeflock can still clear the record. If the PVC is already gone, Kubeflock refuses the operation because it cannot identify replacement storage. A failed attempt remains in the `deleting` state so you can retry it safely.
