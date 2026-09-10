@@ -45,7 +45,8 @@ type kubeClient struct {
 type sandboxClaim struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		WarmPoolRef corev1.LocalObjectReference `json:"warmPoolRef"`
+		WarmPoolRef          corev1.LocalObjectReference    `json:"warmPoolRef"`
+		VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
 	} `json:"spec"`
 	Status struct {
 		Conditions []metav1.Condition          `json:"conditions"`
@@ -67,9 +68,10 @@ type sandboxObject struct {
 type sandboxTemplate struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		NetworkPolicyManagement string                         `json:"networkPolicyManagement"`
-		PodTemplate             corev1.PodTemplateSpec         `json:"podTemplate"`
-		VolumeClaimTemplates    []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
+		NetworkPolicyManagement    string                         `json:"networkPolicyManagement"`
+		PodTemplate                corev1.PodTemplateSpec         `json:"podTemplate"`
+		VolumeClaimTemplatesPolicy string                         `json:"volumeClaimTemplatesPolicy"`
+		VolumeClaimTemplates       []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
 	} `json:"spec"`
 }
 
@@ -87,6 +89,7 @@ type approvedTemplate struct {
 	Image           string
 	ResourceVersion string
 	Home            corev1.PersistentVolumeClaim
+	HomeOverrides   bool
 }
 
 type resolvedSandbox struct {
@@ -112,10 +115,12 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	var execToken string
 	var execCert, execKey []byte
 	if auth := raw.AuthInfos[contextConfig.AuthInfo]; auth != nil && auth.Exec != nil {
-		execToken, execCert, execKey, err = runExecCredential(ctx, auth.Exec)
+		execToken, execCert, execKey, err = runExecCredential(ctx, auth.Exec, raw.Clusters[contextConfig.Cluster])
 		if err != nil {
 			return nil, err
 		}
+		// ponytail: the helper runs once per command and the token never refreshes, so a
+		// credential shorter-lived than a wait window fails mid-command. Refresh on 401 if it bites.
 		auth.Exec = nil
 	}
 	config, err := clientcmd.NewNonInteractiveClientConfig(*raw, target.Context, &clientcmd.ConfigOverrides{}, rules).ClientConfig()
@@ -139,13 +144,40 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	return &kubeClient{dynamic: dynamicClient, core: coreClient}, nil
 }
 
-func runExecCredential(ctx context.Context, execConfig *clientcmdapi.ExecConfig) (string, []byte, []byte, error) {
+type execCredentialInfo struct {
+	APIVersion string                 `json:"apiVersion"`
+	Kind       string                 `json:"kind"`
+	Spec       execCredentialInfoSpec `json:"spec"`
+}
+
+type execCredentialInfoSpec struct {
+	Interactive bool                   `json:"interactive"`
+	Cluster     *execCredentialCluster `json:"cluster,omitempty"`
+}
+
+type execCredentialCluster struct {
+	Server                   string `json:"server,omitempty"`
+	TLSServerName            string `json:"tls-server-name,omitempty"`
+	InsecureSkipTLSVerify    bool   `json:"insecure-skip-tls-verify,omitempty"`
+	CertificateAuthorityData string `json:"certificate-authority-data,omitempty"`
+	ProxyURL                 string `json:"proxy-url,omitempty"`
+}
+
+func runExecCredential(ctx context.Context, execConfig *clientcmdapi.ExecConfig, cluster *clientcmdapi.Cluster) (string, []byte, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	env := make([]string, 0, len(execConfig.Env))
+	if execConfig.InteractiveMode == clientcmdapi.AlwaysExecInteractiveMode {
+		return "", nil, nil, fmt.Errorf("kubeconfig credential helper %s requires an interactive session", execConfig.Command)
+	}
+	info, err := execCredentialInfoFor(execConfig, cluster)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	env := make([]string, 0, len(execConfig.Env)+1)
 	for _, item := range execConfig.Env {
 		env = append(env, item.Name+"="+item.Value)
 	}
+	env = append(env, "KUBERNETES_EXEC_INFO="+string(info))
 	output, err := runCaptured(ctx, execConfig.Command, execConfig.Args, env, nil)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("kubeconfig credential helper: %w", err)
@@ -178,6 +210,30 @@ func runExecCredential(ctx context.Context, execConfig *clientcmdapi.ExecConfig)
 	return status.Token, cert, key, nil
 }
 
+// execCredentialInfoFor builds the KUBERNETES_EXEC_INFO payload that the credential plugin
+// contract requires, including the cluster details clients must pass on request.
+func execCredentialInfoFor(execConfig *clientcmdapi.ExecConfig, cluster *clientcmdapi.Cluster) ([]byte, error) {
+	apiVersion := execConfig.APIVersion
+	switch apiVersion {
+	case "":
+		apiVersion = "client.authentication.k8s.io/v1beta1"
+	case "client.authentication.k8s.io/v1beta1", "client.authentication.k8s.io/v1":
+	default:
+		return nil, fmt.Errorf("unsupported kubeconfig credential helper apiVersion %q", apiVersion)
+	}
+	info := execCredentialInfo{APIVersion: apiVersion, Kind: "ExecCredential", Spec: execCredentialInfoSpec{Interactive: false}}
+	if execConfig.ProvideClusterInfo && cluster != nil {
+		info.Spec.Cluster = &execCredentialCluster{
+			Server:                   cluster.Server,
+			TLSServerName:            cluster.TLSServerName,
+			InsecureSkipTLSVerify:    cluster.InsecureSkipTLSVerify,
+			CertificateAuthorityData: base64.StdEncoding.EncodeToString(cluster.CertificateAuthorityData),
+			ProxyURL:                 cluster.ProxyURL,
+		}
+	}
+	return json.Marshal(info)
+}
+
 func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*sandboxClaim, error) {
 	list, err := k.dynamic.Resource(claimResource).Namespace(namespace).List(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + name})
 	if err != nil {
@@ -199,11 +255,19 @@ func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*san
 	return &claim, nil
 }
 
-func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string) (*sandboxClaim, error) {
+func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*sandboxClaim, error) {
+	spec := map[string]any{"warmPoolRef": map[string]any{"name": warmPool}}
+	if home != nil {
+		claimSpec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&home.Spec)
+		if err != nil {
+			return nil, err
+		}
+		spec["volumeClaimTemplates"] = []any{map[string]any{"metadata": map[string]any{"name": home.Name}, "spec": claimSpec}}
+	}
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim",
 		"metadata": map[string]any{"name": name, "namespace": target.Namespace, "labels": map[string]any{managedByLabel: managedByValue}},
-		"spec":     map[string]any{"warmPoolRef": map[string]any{"name": warmPool}},
+		"spec":     spec,
 	}}
 	created, err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Create(
 		ctx,
@@ -260,8 +324,8 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 	if len(matches) != 1 {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must have exactly one SandboxWarmPool; found %d", name, len(matches))
 	}
-	if matches[0].Spec.Replicas == nil || *matches[0].Spec.Replicas != 0 {
-		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s must have zero warm standbys for cold creation", matches[0].Metadata.Name)
+	if matches[0].Spec.Replicas == nil {
+		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s has no replica count", matches[0].Metadata.Name)
 	}
 	return validateTemplate(template, matches[0].Metadata.Name)
 }
@@ -284,7 +348,7 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s mounts a volume that is not one of its claim templates", name)
 	}
 	if home, image, ok := homeClaimTemplate(template); ok {
-		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home}, nil
+		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home, HomeOverrides: template.Spec.VolumeClaimTemplatesPolicy == "Overrides"}, nil
 	}
 	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", name)
 }
@@ -366,7 +430,7 @@ func mountedClaimName(volumes []corev1.Volume, mountName string) string {
 
 func validHomeTemplate(templates []corev1.PersistentVolumeClaim, claimName string) (corev1.PersistentVolumeClaim, bool) {
 	for _, home := range templates {
-		if home.Name == claimName && home.Spec.StorageClassName != nil && home.Spec.Resources.Requests.Storage() != nil {
+		if home.Name == claimName && home.Spec.StorageClassName != nil && !home.Spec.Resources.Requests.Storage().IsZero() {
 			return home, true
 		}
 	}
@@ -612,7 +676,7 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 	if len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
 		return nil, fmt.Errorf("retained home %s has uncertain ownership or is reserved for restore", pvc.Name)
 	}
-	claim, err := k.getClaim(ctx, target.Namespace, retained.Origin.Name)
+	claim, err := k.getClaim(ctx, target.Namespace, retained.claimIdentity().Name)
 	if err != nil {
 		return nil, err
 	}
@@ -736,6 +800,26 @@ func (k *kubeClient) orphanDeleteSandbox(ctx context.Context, target KubeTarget,
 		return nil
 	}
 	return err
+}
+
+func (k *kubeClient) suspendedSandboxes(ctx context.Context, target KubeTarget, managed []ManagedSandbox) (map[string]bool, error) {
+	suspended := map[string]bool{}
+	for _, saved := range managed {
+		if saved.Sandbox == nil {
+			continue
+		}
+		sandbox, err := k.getSandboxIfExists(ctx, target, saved.Sandbox.Name, "")
+		if err != nil {
+			return nil, err
+		}
+		if sandbox == nil || string(sandbox.Metadata.UID) != saved.Sandbox.UID {
+			continue
+		}
+		if sandbox.Spec.OperatingMode.normalized() == modeSuspended {
+			suspended[saved.Sandbox.UID] = true
+		}
+	}
+	return suspended, nil
 }
 
 func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (resolvedSandbox, error) {

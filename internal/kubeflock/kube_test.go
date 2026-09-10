@@ -72,6 +72,12 @@ func TestValidateTemplateHardeningGate(t *testing.T) {
 		want   string
 	}{
 		{name: "hardened template", mutate: func(*sandboxTemplate) {}},
+		{name: "home without a storage request", mutate: func(template *sandboxTemplate) {
+			template.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests = nil
+		}, want: "must expose a valid SSH port and mount a persistent home at /home/agent"},
+		{name: "home with a zero storage request", mutate: func(template *sandboxTemplate) {
+			template.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("0")
+		}, want: "must expose a valid SSH port and mount a persistent home at /home/agent"},
 		{name: "hardened init container", mutate: func(template *sandboxTemplate) {
 			template.Spec.PodTemplate.Spec.InitContainers = []corev1.Container{hardenedInitContainer()}
 		}},

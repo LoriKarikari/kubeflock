@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -29,6 +30,16 @@ func (e *commandError) Error() string {
 		return fmt.Sprintf("command exited with status %d", e.ExitCode)
 	}
 	return fmt.Sprintf("start command: %v", e.Cause)
+}
+
+// stderrDetail returns the command's own diagnostic, which is the only explanation for a
+// failure of a local tool. Callers that may print secrets must not use it.
+func stderrDetail(err error) string {
+	command, ok := errors.AsType[*commandError](err)
+	if !ok || command.TimedOut {
+		return ""
+	}
+	return strings.TrimSpace(command.Stderr)
 }
 
 func commandContext(ctx context.Context, command string, args ...string) *exec.Cmd {

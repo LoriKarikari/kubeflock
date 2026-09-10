@@ -75,3 +75,15 @@ func saveConfig(path string, target KubeTarget) error {
 	}
 	return atomicWrite(path, data, 0o600)
 }
+
+// loadSavedTarget returns the configured target, or nil when no config exists yet.
+func loadSavedTarget(path string) (*KubeTarget, error) {
+	target, err := loadConfig(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &target, nil
+}

@@ -23,5 +23,6 @@ sandbox:
     sizeGi: 10
 
 capacity:
+  warmStandbys: 0
   maxActiveSandboxes: 2
   maxRetainedHomes: 4

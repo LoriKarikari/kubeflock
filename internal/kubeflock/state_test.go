@@ -1,6 +1,22 @@
 package kubeflock
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestUnreadableStateNamesItsFileAndRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sandbox-uid.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"phase":"prepared","surprise":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadConnection(path)
+	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "move the file aside") {
+		t.Fatalf("loadConnection error = %v", err)
+	}
+}
 
 func TestStateValidationRejectsIncompleteRecords(t *testing.T) {
 	connection := Connection{

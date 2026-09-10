@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
@@ -29,6 +31,52 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 		t.Fatalf("retry did not acquire the allocation lock: %v", err)
 	} else if err := retry.Unlock(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
+	claim := sandboxClaim{}
+	claim.Status.Conditions = []metav1.Condition{{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "ReconcilerError",
+		Message: "pod is forbidden: exceeded quota",
+	}}
+	got := progress(claim)
+	if got.State != "failed" || !strings.Contains(got.Message, "quota") {
+		t.Fatalf("quota progress = %#v", got)
+	}
+}
+
+func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
+	saved := ManagedSandbox{
+		Version:      1,
+		Phase:        managedBound,
+		Name:         "sandbox",
+		Claim:        SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "claim-uid"},
+		Template:     "dev-small",
+		WarmPool:     "dev-small",
+		IdentityFile: "/key",
+		Sandbox:      &SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},
+		Home:         &PersistentHome{Name: "home-sandbox", UID: "home-uid", Capacity: "10Gi", StorageClass: "longhorn"},
+	}
+	claim := sandboxClaim{}
+	claim.Metadata = metav1.ObjectMeta{Name: "sandbox", UID: "claim-uid"}
+	claim.Status.Sandbox.Name = "sandbox"
+	claim.Status.Conditions = []metav1.Condition{{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "SandboxSuspended",
+		Message: "Sandbox is suspended",
+	}}
+
+	stopped := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, map[string]bool{"sandbox-uid": true})
+	if stopped.State != "disconnected" || !strings.Contains(stopped.Message, "kubeflock sandbox resume sandbox") {
+		t.Fatalf("stopped status = %#v", stopped)
+	}
+	running := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, nil)
+	if running.State != "provisioning" {
+		t.Fatalf("unsuspended status = %#v", running)
 	}
 }
 

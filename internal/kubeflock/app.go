@@ -431,7 +431,7 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 				if retained.Deletion != nil {
 					residual = fmt.Sprintf(" pv=%s pvUID=%s", retained.Deletion.Name, retained.Deletion.UID)
 				}
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.Origin.Name, retained.Template, residual)
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.allocationName(), retained.Template, residual)
 			}
 			return nil
 		},
@@ -502,7 +502,7 @@ func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
 				return err
 			}
 			references, err := client.credentialReferences(command.Context(), target.Namespace)
-			if err != nil {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
 			if len(references) == 0 {
@@ -527,7 +527,11 @@ func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			connection, err := disconnect(command.Context(), name, options.StateDir)
+			target, err := loadSavedTarget(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			connection, err := disconnect(command.Context(), target, name, options.StateDir)
 			if err != nil {
 				return err
 			}
@@ -572,9 +576,6 @@ func createActionCommand(pane string) *cobra.Command {
 				"--plugin", cmp.Or(os.Getenv("HERDR_PLUGIN_ID"), "kubeflock"),
 				"--entrypoint", pane,
 				"--focus",
-			}
-			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
-				args = append(args, "--workspace", workspace)
 			}
 			_, err := runHerdr(command.Context(), args...)
 			return err

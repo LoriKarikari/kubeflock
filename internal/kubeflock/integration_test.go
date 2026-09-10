@@ -46,6 +46,7 @@ type fixtureClaim struct {
 		WarmPoolRef struct {
 			Name string `json:"name"`
 		} `json:"warmPoolRef"`
+		VolumeClaimTemplates []map[string]any `json:"volumeClaimTemplates,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Conditions []metav1.Condition `json:"conditions"`
@@ -98,6 +99,7 @@ type fixtureAPI struct {
 	credentials     map[string]credentialConfig
 	secrets         map[string]map[string][]byte
 	forbiddenSecret string
+	noConfigMap     bool
 }
 
 func (f *fixtureAPI) approveCredential(name, secret, key, environment string, value []byte) {
@@ -113,6 +115,12 @@ func (f *fixtureAPI) forbidSecret(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forbiddenSecret = name
+}
+
+func (f *fixtureAPI) removeCredentialConfig() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noConfigMap = true
 }
 
 func (f *fixtureAPI) ensureSandbox(name string) *fixtureSandbox {
@@ -350,6 +358,10 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 }
 
 func (f *fixtureAPI) handleCredentialConfig(response http.ResponseWriter) {
+	if f.noConfigMap {
+		writeNotFound(response)
+		return
+	}
 	data := map[string]string{}
 	for name, reference := range f.credentials {
 		encoded, _ := json.Marshal(reference)
@@ -490,7 +502,17 @@ func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Reque
 		s.generation++
 	}
 	s.mode = mode
+	if s.claim != nil {
+		s.claim.Status.Conditions = []metav1.Condition{claimCondition(mode)}
+	}
 	writeFixture(response, f.sandboxFixture(name, s.mode))
+}
+
+func claimCondition(mode sandboxOperatingMode) metav1.Condition {
+	if mode == modeSuspended {
+		return metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SandboxSuspended", Message: "Sandbox is suspended"}
+	}
+	return metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"}
 }
 
 func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Request) {
@@ -736,13 +758,25 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	}
 	f.creates++
 	s.incarnation++
-	s.sandboxUID = fixtureUID("sandbox", name, s.incarnation)
+	sandboxName := name
+	if name == "warm" {
+		sandboxName = "dev-small-standby"
+		f.sandboxes[sandboxName] = s
+	}
+	s.sandboxUID = fixtureUID("sandbox", sandboxName, s.incarnation)
 	claim := claimFixture(name, pool)
+	if templates, ok := spec["volumeClaimTemplates"].([]any); ok {
+		for _, template := range templates {
+			if value, ok := template.(map[string]any); ok {
+				claim.Spec.VolumeClaimTemplates = append(claim.Spec.VolumeClaimTemplates, value)
+			}
+		}
+	}
 	claim.Metadata.UID = types.UID(fixtureUID("claim", name, s.incarnation))
 	adopted := s.incarnation == 1 || s.homeAdoptable
 	if adopted && name != "delayed" && name != "waiting" {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-		claim.Status.Sandbox.Name = name
+		claim.Status.Sandbox.Name = sandboxName
 	} else if !adopted {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "InvalidPVC", Message: "retained home is not adoptable", LastTransitionTime: metav1.Now()}}
 	}
@@ -774,7 +808,7 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 	s := f.ensureSandbox(name)
 	if s.claim != nil {
 		s.reads++
-		if name == "delayed" && s.reads >= 2 && s.homeOwned {
+		if name == "delayed" && s.reads >= 2 && s.homeOwned && s.mode != modeSuspended {
 			s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 			s.claim.Status.Sandbox.Name = name
 		}
@@ -846,7 +880,7 @@ func poolFixture(template string) map[string]any {
 		"kind":       "SandboxWarmPool",
 		"metadata":   metadataFixture(template+"-pool", template+"-pool-uid"),
 		"spec": map[string]any{
-			"replicas":           0,
+			"replicas":           1,
 			"sandboxTemplateRef": map[string]string{"name": template},
 		},
 	}
@@ -922,8 +956,9 @@ func templateFixture(name string, secure bool, homeClaim string) map[string]any 
 		"kind":       "SandboxTemplate",
 		"metadata":   metadataFixture(name, name+"-uid"),
 		"spec": map[string]any{
-			"networkPolicyManagement": "Managed",
-			"podTemplate":             map[string]any{"spec": podSpec},
+			"networkPolicyManagement":    "Managed",
+			"volumeClaimTemplatesPolicy": "Overrides",
+			"podTemplate":                map[string]any{"spec": podSpec},
 			"volumeClaimTemplates": []any{map[string]any{
 				"metadata": map[string]string{"name": homeClaim},
 				"spec": map[string]any{
@@ -949,6 +984,11 @@ func TestHelperProcess(t *testing.T) {
 	kind, args := os.Args[separator+1], os.Args[separator+2:]
 	switch kind {
 	case "credential":
+		info := os.Getenv("KUBERNETES_EXEC_INFO")
+		if !strings.Contains(info, `"kind":"ExecCredential"`) || !strings.Contains(info, `"apiVersion":"client.authentication.k8s.io/v1"`) {
+			fmt.Fprintln(os.Stderr, "credential helper received no ExecCredential context")
+			os.Exit(2)
+		}
 		fmt.Print(`{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"fixture"}}`)
 	case "kubectl":
 		helperKubectl(args)
@@ -1056,6 +1096,7 @@ func helperHerdr(args []string) {
 	}
 	if len(args) >= 2 && args[0] == "machine" && args[1] == "add" {
 		if os.Getenv("FAKE_HERDR_FAIL_ADD") == "1" {
+			fmt.Fprintln(os.Stderr, "error: remote platform detection failed: agent@host: Permission denied (publickey).")
 			os.Exit(1)
 		}
 		state.AddCount++
@@ -1374,6 +1415,63 @@ func TestCLIAttachesOnlyApprovedCredentials(t *testing.T) {
 	if !h.api.hasClaim("registration-failure") {
 		t.Fatal("registration failure deleted the sandbox claim")
 	}
+
+	h.api.removeCredentialConfig()
+	assertCLI(t, "credential list without config", h.run(t, "sandbox", "credential", "list", "--kubeconfig", h.kubeconfig), 0, "no approved credentials", "")
+}
+
+func TestCLIAdoptsIdentityAfterFailedConnection(t *testing.T) {
+	h := newHarness(t)
+	second := filepath.Join(t.TempDir(), "id_ed25519_second")
+	mustWrite(t, second, "second private key fixture\n", 0o600)
+	resolved, err := resolveIdentityFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "failed first connection", failed, 2, "", "herdr exited")
+	connectionFile := h.connectionState("sandbox-identity-retry")
+	assertJSONField(t, connectionFile, "phase", "prepared")
+
+	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", second, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "identity switch after failure", retried, 0, "ready sandbox identity-retry", "")
+
+	data, err := os.ReadFile(connectionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connection Connection
+	if json.Unmarshal(data, &connection) != nil {
+		t.Fatal("invalid connection state")
+	}
+	if connection.SSH.IdentityFile != resolved {
+		t.Fatalf("saved identity = %q; want %q", connection.SSH.IdentityFile, resolved)
+	}
+
+	connected := h.run(t, "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "connected identity stays pinned", connected, 2, "", "is connected with identity file")
+}
+
+func TestCLIListsWithoutHerdrWhenNoProfileIsConnected(t *testing.T) {
+	h := newHarness(t)
+	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "unregistered", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "failed connection", failed, 2, "", "herdr exited")
+
+	listed := h.runWith(t, "KUBEFLOCK_HERDR=/nonexistent/herdr", "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "list without herdr", listed, 0, `"state": "failed"`, "")
+}
+
+func TestCLIRejectsInteractiveCredentialHelper(t *testing.T) {
+	h := newHarness(t)
+	data, err := os.ReadFile(h.kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := filepath.Join(t.TempDir(), "interactive.yaml")
+	mustWrite(t, interactive, strings.Replace(string(data), "interactiveMode: Never", "interactiveMode: Always", 1), 0o600)
+	listed := h.run(t, "sandbox", "credential", "list", "--kubeconfig", interactive)
+	assertCLI(t, "interactive credential helper", listed, 2, "", "requires an interactive session")
 }
 
 func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
@@ -1400,16 +1498,50 @@ func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
 	assertCLI(t, "same selection retry", repeated, 0, "attached 1 approved credential", "")
 }
 
+func TestCLIWarmStandbyRetainsAndRestoresItsExclusiveHome(t *testing.T) {
+	h := newHarness(t)
+
+	created := h.run(t, "sandbox", "create", "warm", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm create", created, 0, "ready sandbox warm", "")
+	var herdr herdrFixture
+	data, _ := os.ReadFile(h.herdrState)
+	_ = json.Unmarshal(data, &herdr)
+	if !slices.ContainsFunc(herdr.Machines, func(machine herdrMachine) bool { return machine.Label == "warm" }) {
+		t.Fatalf("Herdr did not keep the requested allocation name: %#v", herdr.Machines)
+	}
+	listed := h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm list", listed, 0, `"name": "warm"`, "")
+	if !strings.Contains(listed.stdout, `"sandboxUid": "sandbox-dev-small-standby"`) {
+		t.Fatalf("warm allocation did not retain adopted Sandbox identity: %s", listed.stdout)
+	}
+
+	deleted := h.run(t, "sandbox", "delete", "warm", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm delete", deleted, 0, "retained home home-dev-small-standby", "")
+	homes := h.retainedHomes(t)
+	if len(homes) != 1 || homes[0].Name != "warm" || homes[0].Claim.Name != "warm" || homes[0].Origin.Name != "dev-small-standby" {
+		t.Fatalf("warm retained home provenance = %#v", homes)
+	}
+
+	restored := h.run(t, "sandbox", "create", "warm", "--home", "home-dev-small-standby-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm restore", restored, 0, "ready sandbox warm; restored home home-dev-small-standby", "")
+	if homes := h.retainedHomes(t); len(homes) != 0 {
+		t.Fatalf("restored home remains retained: %#v", homes)
+	}
+}
+
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	const sandboxUID = "sandbox-delayed"
 	h := newHarness(t)
 
-	assertCLI(t, "restore action", h.run(t, "sandbox", "restore-action"), 0, "", "")
+	assertCLI(t, "restore action", h.runWith(t, "HERDR_WORKSPACE_ID=w3", "sandbox", "restore-action"), 0, "", "")
 	var actionState herdrFixture
 	data, _ := os.ReadFile(h.herdrState)
 	_ = json.Unmarshal(data, &actionState)
 	if !slices.Contains(actionState.PaneArgs, "restore") {
 		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
+	}
+	if slices.Contains(actionState.PaneArgs, "--workspace") {
+		t.Fatalf("popup action passed an invalid workspace target: %#v", actionState.PaneArgs)
 	}
 	assertCLI(t, "delete home action", h.run(t, "sandbox", "delete-home-action"), 0, "", "")
 	data, _ = os.ReadFile(h.herdrState)
@@ -1419,7 +1551,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	}
 
 	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
+	assertCLI(t, "failed create", failed, 2, "", "herdr exited: command exited with status 1: error: remote platform detection failed")
 	if creates, reads := h.api.createCount(), h.api.claimReads("delayed"); creates != 1 || reads != 2 {
 		t.Fatalf("creates=%d reads=%d", creates, reads)
 	}
@@ -1475,6 +1607,9 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	if mode != modeSuspended || pod != "" {
 		t.Fatalf("stopped lifecycle: mode=%s pod=%s", mode, pod)
 	}
+	assertCLI(t, "stopped list", h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig), 0, `"state": "disconnected"`, "")
+	stoppedCreate := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create on stopped sandbox", stoppedCreate, 2, "", "is stopped; run: kubeflock sandbox resume delayed")
 	repeatedStop := h.run(t, "sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "repeated stop", repeatedStop, 0, "stopped sandbox", "")
 
