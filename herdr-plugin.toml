@@ -80,6 +80,13 @@ contexts = ["workspace", "pane"]
 command = ["bin/kubeflock", "sandbox", "restore-action"]
 
 [[actions]]
+id = "home-delete"
+title = "Kubeflock: Permanently delete retained home"
+description = "Permanently delete one retained home after exact storage confirmation."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "delete-home-action"]
+
+[[actions]]
 id = "sandbox-disconnect"
 title = "Kubeflock: Disconnect sandbox"
 description = "Disconnect the saved sandbox while leaving its remote processes running."
@@ -101,3 +108,11 @@ placement = "popup"
 width = "80%"
 height = 14
 command = ["bin/kubeflock", "sandbox", "restore-wizard"]
+
+[[panes]]
+id = "delete-home"
+title = "Permanently delete retained home"
+placement = "popup"
+width = "80%"
+height = 16
+command = ["bin/kubeflock", "sandbox", "delete-home-wizard"]

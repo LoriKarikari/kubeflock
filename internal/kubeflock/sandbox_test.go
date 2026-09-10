@@ -19,7 +19,7 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := prepareCreation(target, "sandbox", options); err == nil || !strings.Contains(err.Error(), "already being created") {
+	if _, _, err := prepareCreation(target, "sandbox", options); err == nil || !strings.Contains(err.Error(), "storage operation in progress") {
 		t.Fatalf("concurrent creation was not rejected: %v", err)
 	}
 	if err := first.Unlock(); err != nil {
@@ -29,5 +29,18 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 		t.Fatalf("retry did not acquire the allocation lock: %v", err)
 	} else if err := retry.Unlock(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStorageLockSerializesRestoreAndDeletion(t *testing.T) {
+	target := KubeTarget{Context: "homelab", Namespace: "developer"}
+	dir := t.TempDir()
+	first, err := acquireSandboxLock(target, "sandbox", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Unlock() }()
+	if _, err := acquireSandboxLock(target, "sandbox", dir); err == nil {
+		t.Fatal("concurrent storage operation acquired the same lock")
 	}
 }

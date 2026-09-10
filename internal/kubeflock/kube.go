@@ -601,6 +601,117 @@ func (k *kubeClient) verifyRetainedHome(ctx context.Context, target KubeTarget, 
 	return nil
 }
 
+func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget, retained RetainedHome) (*PersistentVolume, error) {
+	pvc, err := k.homePVC(ctx, target, retained.Home)
+	if apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("retained home %s PVC is already gone from the cluster; the storage changed outside Kubeflock", retained.Home.Name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
+		return nil, fmt.Errorf("retained home %s has uncertain ownership or is reserved for restore", pvc.Name)
+	}
+	claim, err := k.getClaim(ctx, target.Namespace, retained.Origin.Name)
+	if err != nil {
+		return nil, err
+	}
+	sandbox, err := k.getSandboxIfExists(ctx, target, retained.Origin.Name, "")
+	if err != nil {
+		return nil, err
+	}
+	if claim != nil || sandbox != nil {
+		return nil, fmt.Errorf("retained home %s has an active or uncertain sandbox allocation", pvc.Name)
+	}
+	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for _, pod := range pods.Items {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == pvc.Name {
+				return nil, fmt.Errorf("retained home %s is mounted by Pod %s", pvc.Name, pod.Name)
+			}
+		}
+	}
+	if pvc.Spec.VolumeName == "" {
+		return nil, fmt.Errorf("retained home %s has no bound persistent volume", pvc.Name)
+	}
+	volume, err := k.core.PersistentVolumes().Get(ctx, pvc.Spec.VolumeName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	claimRef := volume.Spec.ClaimRef
+	if claimRef == nil || claimRef.Namespace != target.Namespace || claimRef.Name != pvc.Name || claimRef.UID != pvc.UID {
+		return nil, fmt.Errorf("persistent volume %s has uncertain ownership", volume.Name)
+	}
+	return &PersistentVolume{Name: volume.Name, UID: string(volume.UID), ReclaimPolicy: string(volume.Spec.PersistentVolumeReclaimPolicy)}, nil
+}
+
+func (k *kubeClient) verifyPendingHomeDeletion(ctx context.Context, target KubeTarget, retained RetainedHome) error {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, retained.Home.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) || (err == nil && string(pvc.UID) != retained.Home.UID) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	volume, err := k.inspectHomeDeletion(ctx, target, retained)
+	if err != nil {
+		return err
+	}
+	if volume != nil && (retained.Deletion == nil || *volume != *retained.Deletion) {
+		return errors.New("retained home storage identity changed during deletion")
+	}
+	return nil
+}
+
+func (k *kubeClient) deleteHomePVC(ctx context.Context, target KubeTarget, expected PersistentHome) error {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if string(pvc.UID) != expected.UID {
+		return nil
+	}
+	uid := pvc.UID
+	err = k.core.PersistentVolumeClaims(target.Namespace).Delete(ctx, pvc.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (k *kubeClient) homeDeletionComplete(ctx context.Context, target KubeTarget, home PersistentHome, volume *PersistentVolume) (bool, error) {
+	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, home.Name, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return false, err
+	}
+	if err == nil && string(pvc.UID) == home.UID {
+		return false, nil
+	}
+	if volume == nil {
+		return true, nil
+	}
+	pv, err := k.core.PersistentVolumes().Get(ctx, volume.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if string(pv.UID) != volume.UID {
+		return true, nil
+	}
+	return false, nil
+}
+
 func (k *kubeClient) orphanDeleteClaim(ctx context.Context, target KubeTarget, identity SandboxIdentity) error {
 	uid := types.UID(identity.UID)
 	policy := metav1.DeletePropagationOrphan

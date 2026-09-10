@@ -68,7 +68,9 @@ func TestClusterCheckUsesPinnedContextAndRequiredPermissions(t *testing.T) {
 	if !strings.Contains(string(calls), "auth can-i create pods --subresource=exec") ||
 		!strings.Contains(string(calls), "auth can-i delete sandboxes.agents.x-k8s.io") ||
 		!strings.Contains(string(calls), "auth can-i delete sandboxclaims.extensions.agents.x-k8s.io") ||
-		!strings.Contains(string(calls), "auth can-i patch persistentvolumeclaims") {
+		!strings.Contains(string(calls), "auth can-i patch persistentvolumeclaims") ||
+		!strings.Contains(string(calls), "auth can-i delete persistentvolumeclaims") ||
+		!strings.Contains(string(calls), "auth can-i get persistentvolumes") {
 		t.Fatalf("missing required permission probe: %s", calls)
 	}
 }

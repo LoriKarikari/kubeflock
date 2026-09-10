@@ -71,6 +71,19 @@ func TestStateValidationRejectsIncompleteRecords(t *testing.T) {
 	if err := validateRetainedHome(withoutTemplate); err == nil {
 		t.Fatal("retained home without template provenance was accepted")
 	}
+	deleting := retained
+	deleting.State = retainedHomeDeleting
+	if err := validateRetainedHome(deleting); err != nil {
+		t.Fatalf("deleting home whose volume is already gone was rejected: %v", err)
+	}
+	deleting.Deletion = &PersistentVolume{Name: "pv-home-sandbox", UID: "pv-uid", ReclaimPolicy: "Delete"}
+	if err := validateRetainedHome(deleting); err != nil {
+		t.Fatalf("valid deleting home rejected: %v", err)
+	}
+	deleting.Deletion.UID = ""
+	if err := validateRetainedHome(deleting); err == nil {
+		t.Fatal("deleting retained home with incomplete PV identity was accepted")
+	}
 	retained.Home.UID = ""
 	if err := validateRetainedHome(retained); err == nil {
 		t.Fatal("retained home without PVC UID was accepted")

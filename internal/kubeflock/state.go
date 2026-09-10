@@ -147,7 +147,7 @@ func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
 }
 
 func validateRetainedHome(retained RetainedHome) error {
-	if retained.Version != 1 || (retained.State != retainedHomeAvailable && retained.State != retainedHomeRestoring) {
+	if retained.Version != 1 || (retained.State != retainedHomeAvailable && retained.State != retainedHomeRestoring && retained.State != retainedHomeDeleting) {
 		return errors.New("invalid retained home version or state")
 	}
 	if retained.Template == "" || retained.WarmPool == "" || !retained.Origin.complete() {
@@ -155,6 +155,12 @@ func validateRetainedHome(retained RetainedHome) error {
 	}
 	if retained.Home.Name == "" || retained.Home.UID == "" || retained.Home.Capacity == "" {
 		return errors.New("retained home contains incomplete storage identity")
+	}
+	if retained.State == retainedHomeDeleting && retained.Deletion != nil && (retained.Deletion.Name == "" || retained.Deletion.UID == "" || retained.Deletion.ReclaimPolicy == "") {
+		return errors.New("deleting retained home has incomplete persistent volume identity")
+	}
+	if retained.State != retainedHomeDeleting && retained.Deletion != nil {
+		return errors.New("persistent volume deletion identity requires deleting state")
 	}
 	return nil
 }

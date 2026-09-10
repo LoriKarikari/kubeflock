@@ -26,7 +26,7 @@ rules:
     verbs: ["create"] # NOSONAR -- required to read the sandbox host key and proxy SSH
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["get", "patch"]
+    verbs: ["get", "patch", "delete"]
   - apiGroups: [""]
     resources: ["resourcequotas", "limitranges"]
     verbs: ["list"]
@@ -63,6 +63,9 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]
     resourceNames: ["gvisor"]
