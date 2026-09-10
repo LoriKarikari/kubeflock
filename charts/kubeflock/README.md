@@ -36,9 +36,9 @@ credentials:
     environment: ANTHROPIC_API_KEY
 ```
 
-The chart does not create the Secret or copy its value into Helm state. It creates a ConfigMap containing only aliases and local Secret key references. RBAC permits `get` only for the named Secrets. It does not permit Secret listing or cross-namespace references.
+The chart does not create the Secret or copy its value into Helm state. It creates a ConfigMap containing only aliases and local Secret key references. RBAC permits `get` only for the named Secrets. It does not permit Secret listing or cross-namespace references. Because that grant is per Secret, any subject in the namespace can read the full contents of each named Secret with `kubectl`, including keys that no alias references. Treat the alias list as policy, not as a confidentiality boundary.
 
-Users list aliases with `kubeflock sandbox credential list` and repeat `--credential NAME` during creation. Kubeflock writes selected values through Pod exec standard input to mode `0600` files in `~/.config/kubeflock/credentials`. Interactive shells export the configured variables. These files persist with the home through stop, resume, retain, and restore. Missing keys and denied Secret reads leave the sandbox intact.
+Users list aliases with `kubeflock sandbox credential list` and repeat `--credential NAME` during creation. Kubeflock writes selected values through Pod exec standard input to mode `0600` files in `~/.config/kubeflock/credentials`. Interactive shells export the configured variables. These files persist with the home through stop, resume, retain, and restore. A retained home records its aliases, and restore re-attaches the same selection. Repeating the same `create` command refreshes rotated Secret values. Missing keys and denied Secret reads leave the sandbox intact.
 
 ## Agent Sandbox controller
 

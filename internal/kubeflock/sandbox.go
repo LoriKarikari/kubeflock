@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -264,10 +265,25 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 		if err != nil {
 			return createdSandbox{}, err
 		}
-		if *found != restore.Retained {
+		if !reflect.DeepEqual(*found, restore.Retained) {
 			return createdSandbox{}, errors.New("selected retained home changed before attachment; review it and retry")
 		}
 		retained = found
+	}
+	if restore != nil {
+		switch {
+		case len(options.Credentials) == 0:
+			options.Credentials = slices.Clone(restore.Retained.Credentials)
+		case len(restore.Retained.Credentials) > 0 && !sameCredentials(restore.Retained.Credentials, options.Credentials):
+			return createdSandbox{}, fmt.Errorf("retained home %s keeps credentials %s; restore it with the same selection", restore.Retained.Home.Name, strings.Join(restore.Retained.Credentials, ", "))
+		}
+	}
+	selected, err := client.selectCredentials(ctx, target.Namespace, options.Credentials)
+	if err != nil {
+		if restore != nil && len(restore.Retained.Credentials) > 0 {
+			return createdSandbox{}, fmt.Errorf("retained home %s keeps credentials %s: %w", restore.Retained.Home.Name, strings.Join(restore.Retained.Credentials, ", "), err)
+		}
+		return createdSandbox{}, err
 	}
 	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
 	if err != nil {
@@ -318,11 +334,11 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if err := saveManagedBinding(managed, resolved.Identity, home, options.Global.StateDir, string(claim.Metadata.UID)); err != nil {
 		return createdSandbox{}, err
 	}
-	credentials, err := client.resolveCredentials(ctx, target.Namespace, options.Credentials)
+	credentials, err := client.readCredentials(ctx, target.Namespace, selected)
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	if err := installCredentials(ctx, target, resolved, credentials, options.Global); err != nil {
+	if err := installCredentials(ctx, target, resolved, credentials, options); err != nil {
 		return createdSandbox{}, err
 	}
 	connection, err := connect(ctx, target, connectOptions{
@@ -388,10 +404,8 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 	if saved != nil && saved.IdentityFile != identity {
 		return nil, nil, fmt.Errorf("saved sandbox %s/%s uses a different SSH identity file", target.Namespace, name)
 	}
-	if saved != nil {
-		if err := sameCredentials(saved.Credentials, credentials); err != nil {
-			return nil, nil, fmt.Errorf("saved sandbox %s/%s: %w", target.Namespace, name, err)
-		}
+	if saved != nil && !sameCredentials(saved.Credentials, credentials) {
+		return nil, nil, fmt.Errorf("saved sandbox %s/%s uses a different credential selection", target.Namespace, name)
 	}
 	claim, err := obtainClaim(ctx, client, target, name, approved.WarmPool)
 	if err != nil {
@@ -783,12 +797,13 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		return retainResult{}, err
 	}
 	retained := RetainedHome{
-		Version:  1,
-		State:    retainedHomeAvailable,
-		Template: managed.Template,
-		WarmPool: managed.WarmPool,
-		Origin:   *managed.Sandbox,
-		Home:     *managed.Home,
+		Version:     1,
+		State:       retainedHomeAvailable,
+		Template:    managed.Template,
+		WarmPool:    managed.WarmPool,
+		Origin:      *managed.Sandbox,
+		Home:        *managed.Home,
+		Credentials: slices.Clone(managed.Credentials),
 	}
 	if err := saveJSON(retainedHomePath(options.Global.StateDir, managed.Home.UID), retained); err != nil {
 		return retainResult{}, err

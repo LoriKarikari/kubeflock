@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 type App struct {
@@ -486,10 +487,11 @@ func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmati
 }
 
 func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
-	credential := &cobra.Command{Use: "credential", Args: cobra.NoArgs}
+	credential := &cobra.Command{Use: "credential", Short: "Work with administrator-approved credentials", Args: cobra.NoArgs}
 	credential.AddCommand(&cobra.Command{
-		Use:  "list",
-		Args: cobra.NoArgs,
+		Use:   "list",
+		Short: "List approved credential aliases",
+		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
@@ -508,7 +510,7 @@ func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
 				return nil
 			}
 			for _, reference := range references {
-				fmt.Fprintf(a.Out, "%s\t%s\n", reference.Name, reference.Environment)
+				fmt.Fprintf(a.Out, "%s\t%s\n", reference.Name, reference.Config.Environment)
 			}
 			return nil
 		},
@@ -610,7 +612,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				return err
 			}
 			references, err := client.credentialReferences(command.Context(), target.Namespace)
-			if err != nil {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
 			names := make([]string, len(references))

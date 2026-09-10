@@ -95,7 +95,7 @@ type fixtureAPI struct {
 	methods         []string
 	paths           []string
 	auth            []string
-	credentials     map[string]credentialReference
+	credentials     map[string]credentialConfig
 	secrets         map[string]map[string][]byte
 	forbiddenSecret string
 }
@@ -103,7 +103,7 @@ type fixtureAPI struct {
 func (f *fixtureAPI) approveCredential(name, secret, key, environment string, value []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.credentials[name] = credentialReference{Secret: secret, Key: key, Environment: environment}
+	f.credentials[name] = credentialConfig{Secret: secret, Key: key, Environment: environment}
 	if value != nil {
 		f.secrets[secret] = map[string][]byte{key: value}
 	}
@@ -1198,7 +1198,7 @@ type harness struct {
 func newHarness(t *testing.T) harness {
 	t.Helper()
 	dir := t.TempDir()
-	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}, credentials: map[string]credentialReference{}, secrets: map[string]map[string][]byte{}}
+	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}, credentials: map[string]credentialConfig{}, secrets: map[string]map[string][]byte{}}
 	server := httptest.NewServer(api)
 	t.Cleanup(server.Close)
 	binary := buildCLI(t, dir)
@@ -1331,9 +1331,17 @@ func TestCLIAttachesOnlyApprovedCredentials(t *testing.T) {
 
 	denied := h.run(t, "sandbox", "create", "denied-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "other-user/provider-token", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "cross-user credential", denied, 2, "", "credential \"other-user/provider-token\" is not approved")
-	if !h.api.hasClaim("denied-credential") {
-		t.Fatal("credential failure deleted the sandbox claim")
+	if h.api.hasClaim("denied-credential") {
+		t.Fatal("rejected credential created the sandbox claim")
 	}
+
+	typo := h.run(t, "sandbox", "create", "typo-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provder", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "mistyped credential", typo, 2, "", "credential \"provder\" is not approved")
+	if h.api.hasClaim("typo-credential") {
+		t.Fatal("mistyped credential created the sandbox claim")
+	}
+	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "typo-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential retry after rejection", retried, 0, "attached 1 approved credential", "")
 
 	h.api.approveCredential("missing", "missing-token", "token", "MISSING_TOKEN", nil)
 	missing := h.run(t, "sandbox", "create", "missing-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "missing", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
@@ -1366,6 +1374,30 @@ func TestCLIAttachesOnlyApprovedCredentials(t *testing.T) {
 	if !h.api.hasClaim("registration-failure") {
 		t.Fatal("registration failure deleted the sandbox claim")
 	}
+}
+
+func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
+	h := newHarness(t)
+	h.api.approveCredential("provider", "provider-token", "token", "APPROVED_TOKEN", []byte("value"))
+	h.api.approveCredential("other", "other-token", "token", "OTHER_TOKEN", []byte("other"))
+
+	created := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential create", created, 0, "attached 1 approved credential", "")
+	assertCLI(t, "retain credentialed sandbox", h.run(t, "sandbox", "delete", "kept-credential", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-kept-credential", "")
+
+	homes := h.retainedHomes(t)
+	if len(homes) != 1 || !slices.Equal(homes[0].Credentials, []string{"provider"}) {
+		t.Fatalf("retained homes = %#v", homes)
+	}
+
+	restored := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--home", "home-kept-credential-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "restore keeps credentials", restored, 0, "attached 1 approved credential", "")
+
+	changed := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "other", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "changed selection", changed, 2, "", "uses a different credential selection")
+
+	repeated := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "same selection retry", repeated, 0, "attached 1 approved credential", "")
 }
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {

@@ -91,7 +91,7 @@ kubeflock sandbox create my-agent \
 
 Each alias maps to one Secret key in the configured namespace. Kubeflock verifies that the caller can read that Secret, transfers its value to the sandbox over standard input, and exports it under the administrator-defined environment variable for interactive shells. Values do not enter images, local state, command arguments, or diagnostic output. Cross-namespace references are not supported.
 
-Credential files use mode `0600` under `~/.config/kubeflock/credentials`. The shell setup and files persist in the sandbox home across stop, resume, deletion with home retention, and restore. Delete or rotate them inside the sandbox when that persistence is not wanted. An inaccessible or missing Secret stops credential attachment but leaves the sandbox and its files available for retry.
+Credential files use mode `0600` under `~/.config/kubeflock/credentials`. The shell setup and files persist in the sandbox home across stop, resume, deletion with home retention, and restore. Delete or rotate them inside the sandbox when that persistence is not wanted. A retained home records the aliases it was attached with, and restore re-attaches the same selection. Repeating the same `create` command against an existing sandbox copies the current Secret values and refreshes rotated credentials. An inaccessible or missing Secret stops credential attachment but leaves the sandbox and its files available for retry.
 
 If creation fails and you retry it, Kubeflock reuses the saved Claim, Sandbox, PVC, and Herdr identities. If the clone fails, the sandbox remains available for login and another attempt. Kubeflock does not replace an existing checkout.
 
