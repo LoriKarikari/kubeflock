@@ -60,6 +60,12 @@ Create and connect a Sandbox:
 kubeflock sandbox create my-agent \
   --template dev-small \
   --identity ~/.ssh/id_ed25519
+
+# Restore a retained home by its PVC UID.
+kubeflock sandbox create my-agent \
+  --home 330cc485-d9e2-4ddd-8144-fa893496188a \
+  --template dev-small \
+  --identity ~/.ssh/id_ed25519
 ```
 
 Manage Sandboxes:
@@ -75,7 +81,9 @@ kubeflock sandbox home list [--output text|json]
 kubeflock sandbox disconnect [NAME]
 ```
 
-Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. It never deletes a PVC. Disconnecting leaves the Sandbox and its remote processes running.
+Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Supply `--home PVC_UID` to restore a retained PVC through the approved template recorded at deletion. Kubeflock prints the exact image before it authorizes attachment. Restore requires the original sandbox name because Agent Sandbox derives the PVC name from it. Without `--home`, Kubeflock never adopts retained data. Choose another name for a fresh sandbox while the retained home exists.
+
+Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. It never deletes a PVC. Disconnecting leaves the Sandbox and its remote processes running.
 
 Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Retained homes are listed separately by PVC name and UID, with their origin, template, capacity, storage class, and state. Herdr provides matching lifecycle and listing actions.
 
@@ -84,7 +92,7 @@ Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycl
 ```text
 kubeflock cluster config show [--output text|json]
 kubeflock cluster check [--timeout 60s] [--output text|json]
-kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
+kubeflock sandbox create NAME --template NAME --identity PATH [--home PVC_UID] [--timeout 5m]
 kubeflock sandbox stop [NAME] [--timeout 5m]
 kubeflock sandbox resume [NAME] [--timeout 5m]
 kubeflock sandbox delete [NAME] [--timeout 5m]
