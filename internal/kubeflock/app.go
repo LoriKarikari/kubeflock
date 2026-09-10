@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -61,12 +62,20 @@ func (a *App) Run(ctx context.Context, args []string) int {
 func (a *App) command() *cobra.Command {
 	options := globalOptions{}
 	root := &cobra.Command{
-		Use:               "kubeflock",
-		Short:             "Herdr agent environments on Kubernetes",
-		Version:           Version,
-		Args:              cobra.NoArgs,
-		SilenceErrors:     true,
-		SilenceUsage:      true,
+		Use:           "kubeflock",
+		Short:         "Herdr agent environments on Kubernetes",
+		Version:       Version,
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			stateDir, err := filepath.Abs(options.StateDir)
+			if err != nil {
+				return err
+			}
+			options.StateDir = stateDir
+			return nil
+		},
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := command.Help(); err != nil {
