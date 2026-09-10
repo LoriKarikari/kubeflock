@@ -550,12 +550,11 @@ func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, opti
 		if err := saveJSON(retainedHomePath(options.Global.StateDir, uid), retained); err != nil {
 			return err
 		}
+	} else if err := client.verifyPendingHomeDeletion(ctx, target, *retained); err != nil {
+		return err
 	}
 	if retained.State != retainedHomeDeleting || (retained.Deletion != nil && retained.Deletion.ReclaimPolicy != "Delete") {
 		return fmt.Errorf("retained home %s has invalid deletion state", retained.Home.Name)
-	}
-	if err := client.verifyPendingHomeDeletion(ctx, target, *retained); err != nil {
-		return err
 	}
 	if err := client.deleteHomePVC(ctx, target, retained.Home); err != nil {
 		return fmt.Errorf("delete retained home PVC: %w; deletion remains pending for %s", err, deletionTarget(retained.Home, retained.Deletion))

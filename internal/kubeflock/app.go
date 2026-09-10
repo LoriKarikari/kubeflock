@@ -27,6 +27,8 @@ type exitError struct {
 	code int
 }
 
+const homeDeleteTimeout = 5 * time.Minute
+
 func (e exitError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
 func NewApp(in io.Reader, out, stderr io.Writer) *App {
@@ -433,7 +435,7 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 	output.declare(list)
 	var confirmation string
 	var timeout time.Duration
-	remove := &cobra.Command{
+	deleteHome := &cobra.Command{
 		Use:  "delete UID",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -444,9 +446,9 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 			return a.deleteHome(command.Context(), target, args[0], confirmation, timeout, *options)
 		},
 	}
-	remove.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating the PVC UID")
-	remove.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "storage deletion timeout")
-	home.AddCommand(list, remove)
+	deleteHome.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating the PVC UID")
+	deleteHome.Flags().DurationVar(&timeout, "timeout", homeDeleteTimeout, "storage deletion timeout")
+	home.AddCommand(list, deleteHome)
 	return home
 }
 
@@ -668,7 +670,7 @@ func (a *App) deleteHomeWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.deleteHome(command.Context(), target, uid, "", 5*time.Minute, *options)
+			return a.deleteHome(command.Context(), target, uid, "", homeDeleteTimeout, *options)
 		},
 	}
 }

@@ -653,7 +653,7 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 
 func (k *kubeClient) verifyPendingHomeDeletion(ctx context.Context, target KubeTarget, retained RetainedHome) error {
 	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, retained.Home.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) || err == nil && string(pvc.UID) != retained.Home.UID {
+	if apierrors.IsNotFound(err) || (err == nil && string(pvc.UID) != retained.Home.UID) {
 		return nil
 	}
 	if err != nil {
