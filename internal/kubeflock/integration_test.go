@@ -18,7 +18,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
@@ -53,8 +56,8 @@ type fixtureSandbox struct {
 	homeAdoptable    bool
 	homeStorageClass string
 	homeCapacity     string
-	homeAccessModes  []string
-	homeVolumeMode   string
+	homeAccessModes  []corev1.PersistentVolumeAccessMode
+	homeVolumeMode   corev1.PersistentVolumeMode
 	homeUID          string
 	homeMissing      bool
 	volumePolicy     string
@@ -201,7 +204,7 @@ func (f *fixtureAPI) setHomeStorage(name, storageClass, capacity string) {
 	s.homeStorageClass, s.homeCapacity = storageClass, capacity
 }
 
-func (f *fixtureAPI) setHomeLayout(name string, accessModes []string, volumeMode string) {
+func (f *fixtureAPI) setHomeLayout(name string, accessModes []corev1.PersistentVolumeAccessMode, volumeMode corev1.PersistentVolumeMode) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
@@ -351,14 +354,14 @@ func (f *fixtureAPI) handleCredentialConfig(response http.ResponseWriter) {
 		encoded, _ := json.Marshal(reference)
 		data[name] = string(encoded)
 	}
-	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadataFixture(credentialConfigName, credentialConfigName+"-uid"), "data": data})
+	writeFixture(response, corev1.ConfigMap{APIVersion: "v1", Kind: "ConfigMap", Name: credentialConfigName, Namespace: "dev", UID: types.UID(credentialConfigName + "-uid"), Data: data})
 }
 
 func (f *fixtureAPI) handleSecret(response http.ResponseWriter, path string) {
 	_, name, _ := strings.CutLast(path, "/")
 	if name == f.forbiddenSecret {
 		response.WriteHeader(http.StatusForbidden)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "secret access forbidden", "code": 403})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "secret access forbidden", Code: 403})
 		return
 	}
 	data, ok := f.secrets[name]
@@ -366,7 +369,7 @@ func (f *fixtureAPI) handleSecret(response http.ResponseWriter, path string) {
 		writeNotFound(response)
 		return
 	}
-	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": metadataFixture(name, name+"-uid"), "data": data})
+	writeFixture(response, corev1.Secret{APIVersion: "v1", Kind: "Secret", Name: name, Namespace: "dev", UID: types.UID(name + "-uid"), Data: data})
 }
 
 func writeNotFound(response http.ResponseWriter) {
@@ -380,10 +383,10 @@ func (f *fixtureAPI) handleTemplate(response http.ResponseWriter, path string) {
 }
 
 func (f *fixtureAPI) handlePools(response http.ResponseWriter) {
-	writeFixture(response, map[string]any{
-		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
-		"kind":       "SandboxWarmPoolList",
-		"items": []any{
+	writeFixture(response, extensionsapi.SandboxWarmPoolList{
+		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
+		Kind:       "SandboxWarmPoolList",
+		Items: []extensionsapi.SandboxWarmPool{
 			poolFixture("dev-small"),
 			poolFixture("dev-large"),
 			poolFixture("insecure"),
@@ -419,11 +422,11 @@ func (f *fixtureAPI) deleteClaim(response http.ResponseWriter, request *http.Req
 	if f.failDelete["claim"] > 0 {
 		f.failDelete["claim"]--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim delete failed", "code": 500})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim delete failed", Code: 500})
 		return
 	}
-	f.ensureSandbox(name).claim = nil
-	writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+	s.claim = nil
+	writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 }
 
 func (f *fixtureAPI) handleSandboxes(response http.ResponseWriter, request *http.Request, path string) {
@@ -435,7 +438,7 @@ func (f *fixtureAPI) handleSandboxes(response http.ResponseWriter, request *http
 	}
 	if !s.present {
 		response.WriteHeader(http.StatusNotFound)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "sandbox not found", "code": 404})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "sandbox not found", Code: 404})
 		return
 	}
 	if request.Method == http.MethodPatch {
@@ -453,7 +456,7 @@ func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.R
 	if f.failDelete["sandbox"] > 0 {
 		f.failDelete["sandbox"]--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "sandbox delete failed", "code": 500})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "sandbox delete failed", Code: 500})
 		return
 	}
 	s.present = false
@@ -462,7 +465,7 @@ func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.R
 	if s.loseHomeOnDelete {
 		s.homeMissing = true
 	}
-	writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+	writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 }
 
 func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
@@ -502,45 +505,33 @@ func claimCondition(mode sandboxOperatingMode) metav1.Condition {
 }
 
 func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Request) {
+	pods := corev1.PodList{APIVersion: "v1", Kind: "PodList", Items: []corev1.Pod{}}
 	selector := request.URL.Query().Get("labelSelector")
 	if selector == "" {
-		items := []any{}
 		if f.mountedHome != "" {
-			items = append(items, map[string]any{
-				"apiVersion": "v1", "kind": "Pod",
-				"metadata": map[string]any{"name": "foreign-mount", "namespace": "dev", "uid": "foreign-mount"},
-				"spec":     map[string]any{"volumes": []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]string{"claimName": f.mountedHome}}}},
+			pods.Items = append(pods.Items, corev1.Pod{
+				APIVersion: "v1", Kind: "Pod", Name: "foreign-mount", Namespace: "dev", UID: "foreign-mount",
+				Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+					Name: "home", PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: f.mountedHome},
+				}}},
 			})
 		}
-		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
+		writeFixture(response, pods)
 		return
 	}
 	name := strings.TrimPrefix(selector, "agents.x-k8s.io/sandbox=")
 	s := f.ensureSandbox(name)
-	items := []any{}
 	if !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended {
-		controller := true
-		items = append(items, map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Pod",
-			"metadata": map[string]any{
-				"name": "sandbox-" + name,
-				"uid":  fmt.Sprintf("pod-%s-%d", name, s.generation),
-				"ownerReferences": []any{map[string]any{
-					"uid": s.sandboxUID, "controller": controller,
-				}},
-			},
-			"spec": map[string]any{
-				"containers": []any{map[string]any{
-					"name": "sandbox",
-					"ports": []any{map[string]any{
-						"name": "ssh", "containerPort": 2200,
-					}},
-				}},
-			},
+		pods.Items = append(pods.Items, corev1.Pod{
+			APIVersion: "v1", Kind: "Pod", Name: "sandbox-" + name,
+			UID:             types.UID(fmt.Sprintf("pod-%s-%d", name, s.generation)),
+			OwnerReferences: []metav1.OwnerReference{{UID: types.UID(s.sandboxUID), Controller: new(true)}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "sandbox", Ports: []corev1.ContainerPort{{Name: "ssh", ContainerPort: 2200}},
+			}}},
 		})
 	}
-	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
+	writeFixture(response, pods)
 }
 
 func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Request, path string) {
@@ -549,7 +540,7 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 	s := f.ensureSandbox(sandbox)
 	if s.homeMissing {
 		response.WriteHeader(http.StatusNotFound)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "persistentvolumeclaim not found", Code: 404})
 		return
 	}
 	if request.Method == http.MethodDelete {
@@ -557,20 +548,20 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 		options, ok := deleteOptions(request.Body)
 		if !ok || options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != uid {
 			response.WriteHeader(http.StatusConflict)
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Conflict", "message": fmt.Sprintf("PVC UID precondition did not match %s", uid), "code": 409})
+			writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonConflict, Message: fmt.Sprintf("PVC UID precondition did not match %s", uid), Code: 409})
 			return
 		}
 		if f.failDelete["pvc"] > 0 {
 			f.failDelete["pvc"]--
 			response.WriteHeader(http.StatusForbidden)
-			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC delete forbidden", "code": 403})
+			writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC delete forbidden", Code: 403})
 			return
 		}
 		s.terminating, s.homeMissing = s.holdDelete, !s.holdDelete
 		if s.homeMissing && s.volumePolicy != "Retain" && !s.holdVolume {
 			s.volumeMissing = true
 		}
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 		return
 	}
 	if request.Method == http.MethodPatch {
@@ -584,7 +575,7 @@ func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Re
 	_, name, _ := strings.CutLast(path, "/")
 	if request.Method != http.MethodGet {
 		response.WriteHeader(http.StatusMethodNotAllowed)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "MethodNotAllowed", "message": "persistent volumes do not accept " + request.Method, "code": 405})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonMethodNotAllowed, Message: "persistent volumes do not accept " + request.Method, Code: 405})
 		return
 	}
 	sandbox := strings.TrimPrefix(name, "pv-home-")
@@ -597,12 +588,11 @@ func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Re
 	if policy == "" {
 		policy = "Delete"
 	}
-	writeFixture(response, map[string]any{
-		"apiVersion": "v1", "kind": "PersistentVolume",
-		"metadata": map[string]any{"name": name, "uid": name + "-uid"},
-		"spec": map[string]any{
-			"persistentVolumeReclaimPolicy": policy,
-			"claimRef":                      map[string]any{"namespace": "dev", "name": "home-" + sandbox, "uid": homeUID("home-"+sandbox, s)},
+	writeFixture(response, corev1.PersistentVolume{
+		APIVersion: "v1", Kind: "PersistentVolume", Name: name, UID: types.UID(name + "-uid"),
+		Spec: corev1.PersistentVolumeSpec{
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimPolicy(policy),
+			ClaimRef:                      &corev1.ObjectReference{Namespace: "dev", Name: "home-" + sandbox, UID: types.UID(homeUID("home-"+sandbox, s))},
 		},
 	})
 }
@@ -629,13 +619,12 @@ func deleteOptions(body io.Reader) (metav1.DeleteOptions, bool) {
 	return options, true
 }
 
-func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
-	controller := true
-	owners := []any{}
+func homeFixture(name, sandbox string, s *fixtureSandbox) corev1.PersistentVolumeClaim {
+	var owners []metav1.OwnerReference
 	if s.homeOwned {
-		owners = append(owners, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "name": sandbox, "uid": s.sandboxUID, "controller": controller})
+		owners = append(owners, metav1.OwnerReference{APIVersion: "agents.x-k8s.io/v1beta1", Kind: "Sandbox", Name: sandbox, UID: types.UID(s.sandboxUID), Controller: new(true)})
 	} else if s.homeOwner != "" {
-		owners = append(owners, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "name": "foreign", "uid": s.homeOwner, "controller": controller})
+		owners = append(owners, metav1.OwnerReference{APIVersion: "agents.x-k8s.io/v1beta1", Kind: "Sandbox", Name: "foreign", UID: types.UID(s.homeOwner), Controller: new(true)})
 	}
 	labels := map[string]string{}
 	if s.homeLabeled {
@@ -653,30 +642,22 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 	}
 	accessModes := s.homeAccessModes
 	if accessModes == nil {
-		accessModes = []string{"ReadWriteOnce"}
+		accessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 	}
-	spec := map[string]any{"storageClassName": storageClass, "accessModes": accessModes, "volumeName": "pv-" + name}
+	pvc := corev1.PersistentVolumeClaim{
+		APIVersion: "v1", Kind: "PersistentVolumeClaim",
+		Name: name, Namespace: "dev", UID: types.UID(homeUID(name, s)), ResourceVersion: "1",
+		Labels: labels, OwnerReferences: owners,
+		Spec:   corev1.PersistentVolumeClaimSpec{StorageClassName: &storageClass, AccessModes: accessModes, VolumeName: "pv-" + name},
+		Status: corev1.PersistentVolumeClaimStatus{Capacity: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(capacity)}},
+	}
 	if s.homeVolumeMode != "" {
-		spec["volumeMode"] = s.homeVolumeMode
-	}
-	metadata := map[string]any{
-		"name":            name,
-		"namespace":       "dev",
-		"uid":             homeUID(name, s),
-		"resourceVersion": "1",
-		"labels":          labels,
-		"ownerReferences": owners,
+		pvc.Spec.VolumeMode = &s.homeVolumeMode
 	}
 	if s.terminating {
-		metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+		pvc.DeletionTimestamp = new(metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	}
-	return map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
-		"metadata":   metadata,
-		"spec":       spec,
-		"status":     map[string]any{"capacity": map[string]string{"storage": capacity}},
-	}
+	return pvc
 }
 
 func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Request, name, sandbox string, s *fixtureSandbox) {
@@ -684,7 +665,7 @@ func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Reque
 	if f.failHomePatch > 0 {
 		f.failHomePatch--
 		response.WriteHeader(http.StatusForbidden)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC patch forbidden", "code": 403})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC patch forbidden", Code: 403})
 		return
 	}
 	if bytes.Contains(data, []byte("ownerReferences")) {
@@ -711,7 +692,7 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	if f.failClaimCreate > 0 {
 		f.failClaimCreate--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim create interrupted", "code": 500})
+		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim create interrupted", Code: 500})
 		return
 	}
 	var body extensionsapi.SandboxClaim
@@ -777,7 +758,7 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter) {
 			items = append(items, *s.claim)
 		}
 	}
-	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
+	writeFixture(response, extensionsapi.SandboxClaimList{APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaimList", Items: items})
 }
 
 func fixtureUID(kind, name string, incarnation int) string {
@@ -787,7 +768,7 @@ func fixtureUID(kind, name string, incarnation int) string {
 	return fmt.Sprintf("%s-%s-%d", kind, name, incarnation)
 }
 
-func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[string]any {
+func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) sandboxapi.Sandbox {
 	s := f.ensureSandbox(name)
 	observed := mode
 	if f.holdMode {
@@ -797,32 +778,25 @@ func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[
 			observed = modeRunning
 		}
 	}
-	condition := map[string]string{"type": "Ready", "status": "True", "reason": "Ready"}
+	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"}
 	if observed == modeSuspended {
-		condition = map[string]string{"type": "Suspended", "status": "True", "reason": "Suspended"}
+		condition.Type, condition.Reason = "Suspended", "Suspended"
 	}
-	owners := []any{}
+	sandbox := sandboxapi.Sandbox{
+		APIVersion: "agents.x-k8s.io/v1beta1", Kind: "Sandbox",
+		Name: name, Namespace: "dev", UID: types.UID(s.sandboxUID), ResourceVersion: "1",
+		Spec: sandboxapi.SandboxSpec{OperatingMode: mode},
+		Status: sandboxapi.SandboxStatus{
+			LabelSelector: "agents.x-k8s.io/sandbox=" + name,
+			Conditions:    []metav1.Condition{condition},
+		},
+	}
 	if s.claim != nil {
-		owners = append(owners, map[string]any{
-			"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim", "name": name, "uid": s.claim.UID, "controller": true,
-		})
+		sandbox.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaim", Name: name, UID: s.claim.UID, Controller: new(true),
+		}}
 	}
-	return map[string]any{
-		"apiVersion": "agents.x-k8s.io/v1beta1",
-		"kind":       "Sandbox",
-		"metadata": map[string]any{
-			"name":            name,
-			"namespace":       "dev",
-			"uid":             s.sandboxUID,
-			"resourceVersion": "1",
-			"ownerReferences": owners,
-		},
-		"spec": map[string]any{"operatingMode": mode},
-		"status": map[string]any{
-			"selector":   "agents.x-k8s.io/sandbox=" + name,
-			"conditions": []any{condition},
-		},
-	}
+	return sandbox
 }
 
 func validOrphanDelete(request *http.Request, uid string) bool {
@@ -833,18 +807,16 @@ func validOrphanDelete(request *http.Request, uid string) bool {
 }
 
 func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Encode(value) }
-func metadataFixture(name, uid string) map[string]any {
-	return map[string]any{"name": name, "namespace": "dev", "uid": uid}
-}
-
-func poolFixture(template string) map[string]any {
-	return map[string]any{
-		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
-		"kind":       "SandboxWarmPool",
-		"metadata":   metadataFixture(template+"-pool", template+"-pool-uid"),
-		"spec": map[string]any{
-			"replicas":           1,
-			"sandboxTemplateRef": map[string]string{"name": template},
+func poolFixture(template string) extensionsapi.SandboxWarmPool {
+	return extensionsapi.SandboxWarmPool{
+		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
+		Kind:       "SandboxWarmPool",
+		Name:       template + "-pool",
+		Namespace:  "dev",
+		UID:        types.UID(template + "-pool-uid"),
+		Spec: extensionsapi.SandboxWarmPoolSpec{
+			Replicas:    new(int32(1)),
+			TemplateRef: extensionsapi.SandboxTemplateRef{Name: template},
 		},
 	}
 }
@@ -868,69 +840,25 @@ func (f *fixtureAPI) templateClaimName() string {
 	return f.templateClaim
 }
 
-func templateFixture(name string, secure bool, homeClaim string) map[string]any {
-	runtimeClass := "gvisor"
+func templateFixture(name string, secure bool, homeClaim string) extensionsapi.SandboxTemplate {
+	template := gateTemplate()
+	template.APIVersion, template.Kind = "extensions.agents.x-k8s.io/v1beta1", "SandboxTemplate"
+	template.Name, template.Namespace, template.UID = name, "dev", types.UID(name+"-uid")
+	template.Spec.VolumeClaimTemplatesPolicy = extensionsapi.VolumeClaimTemplatesPolicyOverrides
+	pod := &template.Spec.PodTemplate.Spec
 	if !secure {
-		runtimeClass = "runc"
+		pod.RuntimeClassName = new("runc")
 	}
-
-	podSecurity := map[string]any{
-		"runAsNonRoot": true,
-		"runAsUser":    1000,
-		"runAsGroup":   1000,
-		"fsGroup":      1000,
-		"seccompProfile": map[string]string{
-			"type": "RuntimeDefault",
-		},
-	}
-	containerSecurity := map[string]any{
-		"allowPrivilegeEscalation": false,
-		"runAsNonRoot":             true,
-		"runAsUser":                1000,
-		"capabilities":             map[string]any{"drop": []string{"ALL"}},
-		"seccompProfile":           map[string]string{"type": "RuntimeDefault"},
-	}
-	container := map[string]any{
-		"image":           "example.test/sandbox@sha256:fixture",
-		"securityContext": containerSecurity,
-		"ports":           []any{map[string]any{"name": "ssh", "containerPort": 2200}},
-		"resources": map[string]any{
-			"requests": map[string]string{"cpu": "500m", "memory": "1Gi"},
-			"limits":   map[string]string{"cpu": "2", "memory": "4Gi"},
-		},
-		"volumeMounts": []any{map[string]string{"name": "home", "mountPath": "/home/agent"}},
-	}
-	podSpec := map[string]any{
-		"runtimeClassName":             runtimeClass,
-		"automountServiceAccountToken": false,
-		"securityContext":              podSecurity,
-		"containers":                   []any{container},
-		"volumes": []any{map[string]any{
-			"name":                  "home",
-			"persistentVolumeClaim": map[string]string{"claimName": homeClaim},
-		}},
-	}
-
-	return map[string]any{
-		"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
-		"kind":       "SandboxTemplate",
-		"metadata":   metadataFixture(name, name+"-uid"),
-		"spec": map[string]any{
-			"networkPolicyManagement":    "Managed",
-			"volumeClaimTemplatesPolicy": "Overrides",
-			"podTemplate":                map[string]any{"spec": podSpec},
-			"volumeClaimTemplates": []any{map[string]any{
-				"metadata": map[string]string{"name": homeClaim},
-				"spec": map[string]any{
-					"accessModes":      []string{"ReadWriteOnce"},
-					"storageClassName": "longhorn",
-					"resources": map[string]any{
-						"requests": map[string]string{"storage": "10Gi"},
-					},
-				},
-			}},
-		},
-	}
+	container := &pod.Containers[0]
+	container.Name = ""
+	container.Image = "example.test/sandbox@sha256:fixture"
+	container.Ports[0].ContainerPort = 2200
+	container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("1Gi")
+	container.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("4Gi")
+	pod.Volumes[0].PersistentVolumeClaim.ClaimName = homeClaim
+	template.Spec.VolumeClaimTemplates[0].Name = homeClaim
+	template.Spec.VolumeClaimTemplates[0].Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+	return template
 }
 
 func TestHelperProcess(t *testing.T) {
@@ -1392,7 +1320,7 @@ func TestCLIAdoptsIdentityAfterFailedConnection(t *testing.T) {
 	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "failed first connection", failed, 2, "", "herdr exited")
 	connectionFile := h.connectionState("sandbox-identity-retry")
-	assertJSONField(t, connectionFile, "phase", "prepared")
+	assertConnectionPhase(t, connectionFile, connectionPrepared)
 
 	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", second, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "identity switch after failure", retried, 0, "ready sandbox identity-retry", "")
@@ -1516,13 +1444,13 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("creates=%d reads=%d", creates, reads)
 	}
 	connectionFile := h.connectionState(sandboxUID)
-	assertJSONField(t, connectionFile, "phase", "prepared")
+	assertConnectionPhase(t, connectionFile, connectionPrepared)
 	connected := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "connected", connected, 0, "ready sandbox delayed", "")
 	if creates := h.api.createCount(); creates != 1 {
 		t.Fatalf("duplicate created %d claims", creates)
 	}
-	assertJSONField(t, connectionFile, "phase", "connected")
+	assertConnectionPhase(t, connectionFile, connectionConnected)
 	sshData, _ := os.ReadFile(h.sshConfig)
 	if !strings.Contains(string(sshData), "Include ") || !strings.Contains(string(sshData), "Host unrelated") {
 		t.Fatalf("SSH config lost content: %s", sshData)
@@ -1774,7 +1702,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	smallHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "capacity mismatch", smallHome, 2, "", "capacity 1Gi is incompatible with template request 10Gi")
 	h.api.setHomeStorage("delayed", "", "")
-	h.api.setHomeLayout("delayed", []string{"ReadOnlyMany"}, "")
+	h.api.setHomeLayout("delayed", []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany}, "")
 	readOnlyHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "access mode mismatch", readOnlyHome, 2, "", "does not support template access mode ReadWriteOnce")
 	h.api.setHomeLayout("delayed", nil, "Block")
@@ -1882,17 +1810,13 @@ func mustWrite(t *testing.T, path, data string, mode os.FileMode) {
 	}
 }
 
-func assertJSONField(t *testing.T, path, key, want string) {
+func assertConnectionPhase(t *testing.T, path string, want connectionPhase) {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	connection, err := loadConnection(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var value map[string]any
-	if json.Unmarshal(data, &value) != nil {
-		t.Fatal("invalid JSON")
-	}
-	if value[key] != want {
-		t.Fatalf("%s[%s] = %#v; want %q", path, key, value[key], want)
+	if connection.Phase != want {
+		t.Fatalf("%s phase = %q; want %q", path, connection.Phase, want)
 	}
 }

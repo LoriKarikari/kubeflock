@@ -18,12 +18,11 @@ import (
 )
 
 type herdrMachine struct {
-	ID       string `json:"id"`
-	Label    string `json:"label"`
-	Target   string `json:"target"`
-	Session  string `json:"session"`
-	Enabled  bool   `json:"enabled"`
-	Selected bool   `json:"selected"`
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Target  string `json:"target"`
+	Session string `json:"session"`
+	Enabled bool   `json:"enabled"`
 }
 
 type connectOptions struct {

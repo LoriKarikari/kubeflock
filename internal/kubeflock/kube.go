@@ -214,14 +214,6 @@ func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, w
 	return k.extensions.SandboxClaims(target.Namespace).Create(ctx, claim, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
 }
 
-func (k *kubeClient) listClaims(ctx context.Context, namespace string) ([]extensionsapi.SandboxClaim, error) {
-	list, err := k.extensions.SandboxClaims(namespace).List(ctx, metav1.ListOptions{LabelSelector: managedByLabel + "=" + managedByValue})
-	if err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-
 func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, name string) (approvedTemplate, error) {
 	template, err := k.extensions.SandboxTemplates(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

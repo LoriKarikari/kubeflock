@@ -380,7 +380,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if retained != nil && home.UID != retained.Home.UID {
 		return createdSandbox{}, fmt.Errorf("sandbox %s attached unexpected home UID %s", name, home.UID)
 	}
-	if err := saveManagedBinding(managed, identity, resolved.Identity, home, options.Global.StateDir, string(claim.UID)); err != nil {
+	if err := saveManagedBinding(managed, identity, resolved.Identity, home, options.Global.StateDir); err != nil {
 		return createdSandbox{}, err
 	}
 	credentials, err := client.readCredentials(ctx, target.Namespace, selected)
@@ -432,7 +432,7 @@ func checkoutProject(ctx context.Context, target KubeTarget, sandbox resolvedSan
 	return nil
 }
 
-func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox SandboxIdentity, home PersistentHome, stateDir, claimUID string) error {
+func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox SandboxIdentity, home PersistentHome, stateDir string) error {
 	if managed.Phase == managedBound {
 		if managed.Home == nil || managed.Home.UID != home.UID {
 			return fmt.Errorf("sandbox home %s was replaced", home.Name)
@@ -440,11 +440,11 @@ func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox Sandbo
 		if managed.IdentityFile == identity {
 			return nil
 		}
-		managed.IdentityFile = identity
-		return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
+	} else {
+		managed.Phase, managed.Sandbox, managed.Home = managedBound, &sandbox, &home
 	}
-	managed.Phase, managed.Sandbox, managed.Home, managed.IdentityFile = managedBound, &sandbox, &home, identity
-	return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
+	managed.IdentityFile = identity
+	return saveJSON(managedSandboxPath(stateDir, managed.Claim.UID), managed)
 }
 
 func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, credentials []string, approved approvedTemplate, home *sandboxapi.PersistentVolumeClaimTemplate, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
@@ -973,7 +973,7 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	if err != nil {
 		return nil, err
 	}
-	claims, err := client.listClaims(ctx, target.Namespace)
+	claims, err := client.extensions.SandboxClaims(target.Namespace).List(ctx, metav1.ListOptions{LabelSelector: managedByLabel + "=" + managedByValue})
 	if err != nil {
 		return nil, err
 	}
@@ -996,7 +996,7 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	}
 	statuses := make([]SandboxStatus, 0, len(managed))
 	for _, saved := range managed {
-		statuses = append(statuses, sandboxStatus(saved, claims, connections, machines, suspended))
+		statuses = append(statuses, sandboxStatus(saved, claims.Items, connections, machines, suspended))
 	}
 	return statuses, nil
 }

@@ -59,10 +59,7 @@ func validateConnection(connection Connection) error {
 	if !connection.SSH.complete() {
 		return errors.New("connection contains incomplete SSH state")
 	}
-	if err := validateSSHState(connection.SSH); err != nil {
-		return err
-	}
-	return nil
+	return validateSSHState(connection.SSH)
 }
 
 func stateFiles(dir string) ([]string, error) {
