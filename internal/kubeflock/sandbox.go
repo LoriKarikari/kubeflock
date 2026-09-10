@@ -566,7 +566,10 @@ func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, opti
 	if err != nil {
 		return fmt.Errorf("deletion remains pending for %s: %w", deletionTarget(retained.Home, retained.Deletion), err)
 	}
-	return os.Remove(retainedHomePath(options.Global.StateDir, uid))
+	if err := os.Remove(retainedHomePath(options.Global.StateDir, uid)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func deletionTarget(home PersistentHome, volume *PersistentVolume) string {
