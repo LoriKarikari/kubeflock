@@ -70,12 +70,14 @@ kubeflock sandbox connect NAME --identity PATH
 kubeflock sandbox reconnect [NAME]
 kubeflock sandbox stop [NAME] [--timeout 5m]
 kubeflock sandbox resume [NAME] [--timeout 5m]
+kubeflock sandbox delete [NAME] [--timeout 5m]
+kubeflock sandbox home list [--output text|json]
 kubeflock sandbox disconnect [NAME]
 ```
 
-Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Disconnecting leaves the Sandbox and its remote processes running.
+Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. It never deletes a PVC. Disconnecting leaves the Sandbox and its remote processes running.
 
-Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Herdr provides matching actions for cluster checks, target display, creation, listing, stopping, resuming, reconnection, and disconnection.
+Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Retained homes are listed separately by PVC name and UID, with their origin, template, capacity, storage class, and state. Herdr provides matching lifecycle and listing actions.
 
 ## Options
 
@@ -85,6 +87,8 @@ kubeflock cluster check [--timeout 60s] [--output text|json]
 kubeflock sandbox create NAME --template NAME --identity PATH [--timeout 5m]
 kubeflock sandbox stop [NAME] [--timeout 5m]
 kubeflock sandbox resume [NAME] [--timeout 5m]
+kubeflock sandbox delete [NAME] [--timeout 5m]
+kubeflock sandbox home list [--output text|json]
 
 --config PATH
 --kubeconfig PATH
@@ -92,4 +96,4 @@ kubeflock sandbox resume [NAME] [--timeout 5m]
 --state-dir PATH
 ```
 
-Kubeflock does not copy private keys, repository credentials, model credentials, or SSH agents into a Sandbox. It provides no Sandbox or PVC deletion command.
+Kubeflock does not copy private keys, repository credentials, model credentials, or SSH agents into a Sandbox. Sandbox deletion always retains its home. Kubeflock provides no PVC deletion command.

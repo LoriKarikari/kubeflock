@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -123,10 +124,11 @@ func matchingMachines(machines []herdrMachine, connection Connection) []herdrMac
 	return matches
 }
 
-func disableMachine(ctx context.Context, connection Connection) error {
-	if connection.Phase != "connected" {
+func disableMachine(ctx context.Context, saved *savedConnection) error {
+	if saved == nil || saved.Connection.Phase != "connected" {
 		return nil
 	}
+	connection := saved.Connection
 	machines, err := listMachines(ctx)
 	if err != nil {
 		return err
@@ -144,6 +146,61 @@ func disableMachine(ctx context.Context, connection Connection) error {
 		return err
 	}
 	return nil
+}
+
+func removeConnection(ctx context.Context, saved *savedConnection) error {
+	if saved == nil {
+		return nil
+	}
+	connection := saved.Connection
+	if connection.Phase == "connected" {
+		machines, err := listMachines(ctx)
+		if err != nil {
+			return err
+		}
+		for _, machine := range machines {
+			if machine.ID != connection.ProfileID {
+				continue
+			}
+			if !connection.owns(machine) {
+				return fmt.Errorf("refusing to remove non-Kubeflock profile %s", connection.ProfileID)
+			}
+			if _, err := runHerdr(ctx, "machine", "remove", machine.ID); err != nil {
+				return err
+			}
+			break
+		}
+	}
+	if err := removeSSHInclude(connection.SSH); err != nil {
+		return err
+	}
+	for _, path := range []string{connection.SSH.KnownHostsFile, connection.SSH.EntryFile, connection.SSH.ProxyFile, saved.File} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeSSHInclude(state SSHState) error {
+	data, err := os.ReadFile(state.ConfigFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	include, bare := "Include "+sshQuote(state.EntryFile), "Include "+state.EntryFile
+	lines := strings.SplitAfter(string(data), "\n")
+	lines = slices.DeleteFunc(lines, func(line string) bool {
+		trimmed := strings.TrimSpace(line)
+		return trimmed == include || trimmed == bare
+	})
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Stat(state.ConfigFile); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	return atomicWrite(state.ConfigFile, []byte(strings.Join(lines, "")), mode)
 }
 
 func selectConnection(target *KubeTarget, stateDir, name string) (*savedConnection, error) {
@@ -320,7 +377,7 @@ func disconnect(ctx context.Context, name, stateDir string) (Connection, error) 
 	if saved == nil {
 		return Connection{}, errors.New("no saved Kubeflock connection matches this target")
 	}
-	if err := disableMachine(ctx, saved.Connection); err != nil {
+	if err := disableMachine(ctx, saved); err != nil {
 		return Connection{}, err
 	}
 	return saved.Connection, nil

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	"github.com/google/renameio/v2"
 )
@@ -43,6 +41,10 @@ func managedSandboxDir(dir string) string { return filepath.Join(dir, "sandboxes
 func managedSandboxPath(dir, uid string) string {
 	return filepath.Join(managedSandboxDir(dir), uid+".json")
 }
+func retainedHomeDir(dir string) string { return filepath.Join(dir, "retained-homes") }
+func retainedHomePath(dir, uid string) string {
+	return filepath.Join(retainedHomeDir(dir), uid+".json")
+}
 
 func validateConnection(connection Connection) error {
 	if connection.Version != 1 || (connection.Phase != "prepared" && connection.Phase != "connected") {
@@ -60,15 +62,7 @@ func validateConnection(connection Connection) error {
 	return nil
 }
 
-func loadConnection(path string) (Connection, error) {
-	var connection Connection
-	if err := loadJSON(path, &connection); err != nil {
-		return Connection{}, err
-	}
-	return connection, validateConnection(connection)
-}
-
-func listConnections(dir string) ([]savedConnection, error) {
+func stateFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -76,19 +70,42 @@ func listConnections(dir string) ([]savedConnection, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []savedConnection
+	var paths []string
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	return paths, nil
+}
+
+func loadState[T any](path string, validate func(T) error) (T, error) {
+	var value T
+	if err := loadJSON(path, &value); err != nil {
+		return value, err
+	}
+	if err := validate(value); err != nil {
+		return value, fmt.Errorf("decode %q: %w", path, err)
+	}
+	return value, nil
+}
+
+func loadConnection(path string) (Connection, error) { return loadState(path, validateConnection) }
+
+func listConnections(dir string) ([]savedConnection, error) {
+	paths, err := stateFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []savedConnection
+	for _, path := range paths {
 		connection, err := loadConnection(path)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, savedConnection{File: path, Connection: connection})
 	}
-	slices.SortFunc(out, func(a, b savedConnection) int { return strings.Compare(a.File, b.File) })
 	return out, nil
 }
 
@@ -110,35 +127,47 @@ func validateManaged(sandbox ManagedSandbox) error {
 	return nil
 }
 
-func listManagedSandboxes(stateDir string) ([]savedSandbox, error) {
-	dir := managedSandboxDir(stateDir)
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
+	paths, err := stateFiles(managedSandboxDir(stateDir))
 	if err != nil {
 		return nil, err
 	}
-	var out []savedSandbox
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		var sandbox ManagedSandbox
-		if err := loadJSON(path, &sandbox); err != nil {
+	var out []ManagedSandbox
+	for _, path := range paths {
+		sandbox, err := loadState(path, validateManaged)
+		if err != nil {
 			return nil, err
 		}
-		if err := validateManaged(sandbox); err != nil {
-			return nil, fmt.Errorf("decode %q: %w", path, err)
-		}
-		out = append(out, savedSandbox{File: path, Sandbox: sandbox})
+		out = append(out, sandbox)
 	}
-	slices.SortFunc(out, func(a, b savedSandbox) int { return strings.Compare(a.File, b.File) })
 	return out, nil
 }
 
-type savedSandbox struct {
-	File    string
-	Sandbox ManagedSandbox
+func validateRetainedHome(retained RetainedHome) error {
+	if retained.Version != 1 || retained.State != retainedHomeAvailable {
+		return errors.New("invalid retained home version or state")
+	}
+	if retained.Template == "" || retained.WarmPool == "" || !retained.Origin.complete() {
+		return errors.New("retained home contains incomplete provenance")
+	}
+	if retained.Home.Name == "" || retained.Home.UID == "" || retained.Home.Capacity == "" {
+		return errors.New("retained home contains incomplete storage identity")
+	}
+	return nil
+}
+
+func listRetainedHomes(stateDir string) ([]RetainedHome, error) {
+	paths, err := stateFiles(retainedHomeDir(stateDir))
+	if err != nil {
+		return nil, err
+	}
+	var out []RetainedHome
+	for _, path := range paths {
+		home, err := loadState(path, validateRetainedHome)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, home)
+	}
+	return out, nil
 }

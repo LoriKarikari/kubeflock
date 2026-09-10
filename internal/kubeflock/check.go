@@ -56,13 +56,17 @@ func (c accessCheck) qualified() string {
 
 var requiredAccess = []accessCheck{
 	{Name: "perm-get-sandboxes", Verb: "get", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
+	{Name: "perm-patch-sandboxes", Verb: "patch", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
+	{Name: "perm-delete-sandboxes", Verb: "delete", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
 	{Name: "perm-list-sandboxclaims", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
 	{Name: "perm-create-sandboxclaims", Verb: "create", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
+	{Name: "perm-delete-sandboxclaims", Verb: "delete", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
 	{Name: "perm-get-sandboxtemplates", Verb: "get", Group: extensionsAPIGroup, Resource: "sandboxtemplates", Namespaced: true},
 	{Name: "perm-list-sandboxwarmpools", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxwarmpools", Namespaced: true},
 	{Name: "perm-list-pods", Verb: "list", Resource: "pods", Namespaced: true},
 	{Name: "perm-create-pods-exec", Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
 	{Name: "perm-get-persistentvolumeclaims", Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
+	{Name: "perm-patch-persistentvolumeclaims", Verb: "patch", Resource: "persistentvolumeclaims", Namespaced: true},
 	{Name: "perm-list-resourcequotas", Verb: "list", Resource: "resourcequotas", Namespaced: true},
 	{Name: "perm-list-limitranges", Verb: "list", Resource: "limitranges", Namespaced: true},
 	{Name: "perm-list-storageclasses", Verb: "list", Group: "storage.k8s.io", Resource: "storageclasses"},
@@ -375,11 +379,4 @@ func permissionCheck(
 	result := failedCheck(access.Name, message)
 	result.Advisory = access.Advisory
 	return result
-}
-
-func truncate(value string, size int) string {
-	if len(value) <= size {
-		return value
-	}
-	return value[:size]
 }

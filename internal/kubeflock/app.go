@@ -208,6 +208,8 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.connectCommand("reconnect", options),
 		a.lifecycleCommand("stop", modeSuspended, options),
 		a.lifecycleCommand("resume", modeRunning, options),
+		a.retainCommand(options),
+		a.homeCommand(options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
 		createActionCommand(),
@@ -352,6 +354,65 @@ func (a *App) lifecycleCommand(verb string, mode sandboxOperatingMode, options *
 	}
 	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "lifecycle transition timeout")
 	return command
+}
+
+func (a *App) retainCommand(options *globalOptions) *cobra.Command {
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:  "delete [NAME]",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			retained, err := retainSandboxHome(command.Context(), target, name, lifecycleOptions{
+				Timeout: timeout,
+				Poll:    2 * time.Second,
+				Global:  *options,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "deleted sandbox %s/%s; retained home %s (%s)\n", target.Namespace, retained.Name, retained.Home.Name, retained.Home.Capacity)
+			return nil
+		},
+	}
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "deletion timeout")
+	return command
+}
+
+func (a *App) homeCommand(options *globalOptions) *cobra.Command {
+	home := &cobra.Command{Use: "home", Args: cobra.NoArgs}
+	output := outputText
+	list := &cobra.Command{
+		Use:  "list",
+		Args: cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			homes, err := listRetainedHomes(options.StateDir)
+			if err != nil {
+				return err
+			}
+			if output == outputJSON {
+				return writeJSON(a.Out, homes)
+			}
+			if len(homes) == 0 {
+				fmt.Fprintln(a.Out, "no retained homes")
+				return nil
+			}
+			for _, retained := range homes {
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\torigin=%s/%s template=%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
+			}
+			return nil
+		},
+	}
+	output.declare(list)
+	home.AddCommand(list)
+	return home
 }
 
 func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {

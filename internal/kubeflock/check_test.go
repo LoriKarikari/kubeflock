@@ -39,7 +39,7 @@ esac
 	return script, log
 }
 
-func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
+func TestClusterCheckUsesPinnedContextAndRequiredPermissions(t *testing.T) {
 	kubectl, log := fakeCheckKubectl(t)
 	t.Setenv("FAKE_CHECK_LOG", log)
 	app := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{})
@@ -61,12 +61,15 @@ func TestClusterCheckUsesPinnedContextAndReadOnlyPermissions(t *testing.T) {
 		if !strings.Contains(line, "--context saved") {
 			t.Fatalf("call omitted saved context: %s", line)
 		}
-		if strings.Contains(line, "auth can-i delete") || strings.Contains(line, "auth can-i patch") || strings.Contains(line, "auth can-i get secrets") {
+		if strings.Contains(line, "auth can-i get secrets") {
 			t.Fatalf("unexpected permission: %s", line)
 		}
 	}
-	if !strings.Contains(string(calls), "auth can-i create pods --subresource=exec") {
-		t.Fatalf("missing pod exec permission probe: %s", calls)
+	if !strings.Contains(string(calls), "auth can-i create pods --subresource=exec") ||
+		!strings.Contains(string(calls), "auth can-i delete sandboxes.agents.x-k8s.io") ||
+		!strings.Contains(string(calls), "auth can-i delete sandboxclaims.extensions.agents.x-k8s.io") ||
+		!strings.Contains(string(calls), "auth can-i patch persistentvolumeclaims") {
+		t.Fatalf("missing required permission probe: %s", calls)
 	}
 }
 
