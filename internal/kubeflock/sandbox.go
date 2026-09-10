@@ -120,7 +120,7 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 
 func applyOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, sandbox *sandboxObject, connection *savedConnection, mode sandboxOperatingMode, options lifecycleOptions) error {
 	if mode == modeSuspended {
-		if err := disableMachine(ctx, valueOrZero(connection)); err != nil {
+		if err := disableMachine(ctx, connection); err != nil {
 			return fmt.Errorf("detach Herdr connection: %w", err)
 		}
 	}
@@ -387,7 +387,7 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if err != nil {
 		return lifecycleResult{}, err
 	}
-	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+	if _, err := client.ownedHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 		return lifecycleResult{}, err
 	}
 	connection, err := savedConnectionFor(target, options.Global.StateDir, *managed.Sandbox)
@@ -397,7 +397,7 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if err := applyOperatingMode(ctx, client, target, sandbox, connection, mode, options); err != nil {
 		return lifecycleResult{}, err
 	}
-	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+	if _, err := client.ownedHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 		return lifecycleResult{}, err
 	}
 	result := lifecycleResult{Name: managed.Claim.Name}
@@ -452,7 +452,7 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		return retainResult{}, err
 	}
 	if sandbox != nil {
-		if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
+		if _, err := client.ownedHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 			return retainResult{}, err
 		}
 		if err := applyOperatingMode(ctx, client, target, sandbox, connection, modeSuspended, options); err != nil {
@@ -489,7 +489,7 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 	}
 	retained := RetainedHome{
 		Version:  1,
-		State:    "available",
+		State:    retainedHomeAvailable,
 		Template: managed.Template,
 		WarmPool: managed.WarmPool,
 		Origin:   *managed.Sandbox,
@@ -505,13 +505,6 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		return retainResult{}, err
 	}
 	return retainResult{Name: managed.Claim.Name, Home: *managed.Home}, nil
-}
-
-func valueOrZero(connection *savedConnection) Connection {
-	if connection == nil {
-		return Connection{}
-	}
-	return connection.Connection
 }
 
 func waitForClaimDeletion(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, timeout, poll time.Duration) error {

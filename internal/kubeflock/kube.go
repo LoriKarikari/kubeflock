@@ -451,11 +451,6 @@ func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox S
 	return pvc, nil
 }
 
-func (k *kubeClient) verifyHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
-	_, err := k.ownedHome(ctx, target, sandbox, expected)
-	return err
-}
-
 func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
 	pvc, err := k.ownedHome(ctx, target, sandbox, expected)
 	if err != nil {

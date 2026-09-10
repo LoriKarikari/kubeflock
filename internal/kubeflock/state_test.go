@@ -57,7 +57,7 @@ func TestStateValidationRejectsIncompleteRecords(t *testing.T) {
 
 	retained := RetainedHome{
 		Version:  1,
-		State:    "available",
+		State:    retainedHomeAvailable,
 		Template: "dev-small",
 		WarmPool: "dev-small",
 		Origin:   SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},

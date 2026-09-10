@@ -124,10 +124,11 @@ func matchingMachines(machines []herdrMachine, connection Connection) []herdrMac
 	return matches
 }
 
-func disableMachine(ctx context.Context, connection Connection) error {
-	if connection.Phase != "connected" {
+func disableMachine(ctx context.Context, saved *savedConnection) error {
+	if saved == nil || saved.Connection.Phase != "connected" {
 		return nil
 	}
+	connection := saved.Connection
 	machines, err := listMachines(ctx)
 	if err != nil {
 		return err
@@ -376,7 +377,7 @@ func disconnect(ctx context.Context, name, stateDir string) (Connection, error) 
 	if saved == nil {
 		return Connection{}, errors.New("no saved Kubeflock connection matches this target")
 	}
-	if err := disableMachine(ctx, saved.Connection); err != nil {
+	if err := disableMachine(ctx, saved); err != nil {
 		return Connection{}, err
 	}
 	return saved.Connection, nil

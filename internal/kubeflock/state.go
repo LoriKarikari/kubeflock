@@ -143,9 +143,15 @@ func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
 	return out, nil
 }
 
-func validateRetainedHome(home RetainedHome) error {
-	if home.Version != 1 || home.State != "available" || home.Template == "" || home.WarmPool == "" || !home.Origin.complete() || home.Home.Name == "" || home.Home.UID == "" || home.Home.Capacity == "" {
-		return errors.New("invalid retained home")
+func validateRetainedHome(retained RetainedHome) error {
+	if retained.Version != 1 || retained.State != retainedHomeAvailable {
+		return errors.New("invalid retained home version or state")
+	}
+	if retained.Template == "" || retained.WarmPool == "" || !retained.Origin.complete() {
+		return errors.New("retained home contains incomplete provenance")
+	}
+	if retained.Home.Name == "" || retained.Home.UID == "" || retained.Home.Capacity == "" {
+		return errors.New("retained home contains incomplete storage identity")
 	}
 	return nil
 }
