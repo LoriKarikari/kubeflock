@@ -318,7 +318,7 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 	case strings.Contains(path, "/persistentvolumeclaims/home-"):
 		f.handleHome(response, request, path)
 	case strings.Contains(path, "/persistentvolumes/pv-home-"):
-		f.handleVolume(response, path)
+		f.handleVolume(response, request, path)
 	default:
 		writeNotFound(response)
 	}
@@ -523,8 +523,13 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 	writeFixture(response, homeFixture(name, sandbox, s))
 }
 
-func (f *fixtureAPI) handleVolume(response http.ResponseWriter, path string) {
+func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Request, path string) {
 	_, name, _ := strings.CutLast(path, "/")
+	if request.Method != http.MethodGet {
+		response.WriteHeader(http.StatusMethodNotAllowed)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "MethodNotAllowed", "message": fmt.Sprintf("persistent volumes do not accept %s", request.Method), "code": 405})
+		return
+	}
 	sandbox := strings.TrimPrefix(name, "pv-home-")
 	s := f.ensureSandbox(sandbox)
 	if s.volumeMissing {
