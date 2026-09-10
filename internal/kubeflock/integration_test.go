@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,31 +42,42 @@ type fixtureClaim struct {
 	} `json:"status"`
 }
 
-type fixtureAPI struct {
-	mu               sync.Mutex
-	claims           map[string]fixtureClaim
-	modes            map[string]sandboxOperatingMode
-	generations      map[string]int
-	sandboxes        map[string]bool
-	homeOwned        map[string]bool
-	homeAdoptable    map[string]bool
-	homeMissing      map[string]bool
-	homeLostOnDelete map[string]bool
-	failDelete       map[string]int
-	failHomePatch    int
-	reAdoptions      int
-	holdMode         bool
-	creates          int
-	reads            map[string]int
-	methods          []string
-	paths            []string
-	auth             []string
+type fixtureSandbox struct {
+	claim            *fixtureClaim
+	mode             sandboxOperatingMode
+	generation       int
+	present          bool
+	homeOwned        bool
+	homeLabeled      bool
+	homeMissing      bool
+	loseHomeOnDelete bool
+	reads            int
 }
 
-func (f *fixtureAPI) snapshot() (int, map[string]int, map[string]fixtureClaim, []string, []string) {
+type fixtureAPI struct {
+	mu            sync.Mutex
+	sandboxes     map[string]*fixtureSandbox
+	failDelete    map[string]int
+	failHomePatch int
+	reAdoptions   int
+	holdMode      bool
+	creates       int
+	methods       []string
+	paths         []string
+	auth          []string
+}
+
+func (f *fixtureAPI) sandbox(name string) *fixtureSandbox {
+	if f.sandboxes[name] == nil {
+		f.sandboxes[name] = &fixtureSandbox{}
+	}
+	return f.sandboxes[name]
+}
+
+func (f *fixtureAPI) snapshot() (int, []string, []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.creates, maps.Clone(f.reads), maps.Clone(f.claims), slices.Clone(f.methods), slices.Clone(f.auth)
+	return f.creates, slices.Clone(f.methods), slices.Clone(f.auth)
 }
 
 func (f *fixtureAPI) holdLifecycle(hold bool) {
@@ -91,7 +101,13 @@ func (f *fixtureAPI) failNextHomePatch() {
 func (f *fixtureAPI) loseHomeOnDelete(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.homeLostOnDelete[name] = true
+	f.sandbox(name).loseHomeOnDelete = true
+}
+
+func (f *fixtureAPI) setHomeOwned(name string, owned bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sandbox(name).homeOwned = owned
 }
 
 func (f *fixtureAPI) adoptedHomes() int {
@@ -100,29 +116,43 @@ func (f *fixtureAPI) adoptedHomes() int {
 	return f.reAdoptions
 }
 
-func (f *fixtureAPI) reconcileHome(name string) {
-	if f.homeOwned[name] || !f.homeAdoptable[name] {
+func (f *fixtureAPI) claimReads(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sandbox(name).reads
+}
+
+func (f *fixtureAPI) hasClaim(name string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.sandboxes[name]
+	return s != nil && s.claim != nil
+}
+
+func (f *fixtureAPI) reconcileHome(s *fixtureSandbox) {
+	if s.homeOwned || !s.homeLabeled {
 		return
 	}
-	f.homeOwned[name] = true
+	s.homeOwned = true
 	f.reAdoptions++
 }
 
 func (f *fixtureAPI) retentionSnapshot(name string) (claim, sandbox, homeOwned bool, paths []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	_, claim = f.claims[name]
-	return claim, f.sandboxes[name], f.homeOwned[name], slices.Clone(f.paths)
+	s := f.sandbox(name)
+	return s.claim != nil, s.present, s.homeOwned, slices.Clone(f.paths)
 }
 
 func (f *fixtureAPI) lifecycleSnapshot(name string) (sandboxOperatingMode, string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	s := f.sandbox(name)
 	podUID := ""
-	if !f.holdMode && f.modes[name] == modeRunning || f.holdMode && f.modes[name] == modeSuspended {
-		podUID = fmt.Sprintf("pod-%s-%d", name, f.generations[name])
+	if !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended {
+		podUID = fmt.Sprintf("pod-%s-%d", name, s.generation)
 	}
-	return f.modes[name], podUID, "home-" + name + "-uid:sha256:fixture-home"
+	return s.mode, podUID, "home-" + name + "-uid:sha256:fixture-home"
 }
 
 func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -167,7 +197,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim delete failed", "code": 500})
 			return
 		}
-		delete(f.claims, name)
+		f.sandbox(name).claim = nil
 		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
 		return
 	}
@@ -177,6 +207,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	}
 	if strings.Contains(path, "/sandboxes/") {
 		_, name, _ := strings.CutLast(path, "/")
+		s := f.sandbox(name)
 		if request.Method == http.MethodDelete {
 			if !validOrphanDelete(request, "sandbox-"+name) {
 				response.WriteHeader(http.StatusConflict)
@@ -188,16 +219,16 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 				writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "sandbox delete failed", "code": 500})
 				return
 			}
-			f.sandboxes[name] = false
-			f.homeOwned[name] = false
-			f.reconcileHome(name)
-			if f.homeLostOnDelete[name] {
-				f.homeMissing[name] = true
+			s.present = false
+			s.homeOwned = false
+			f.reconcileHome(s)
+			if s.loseHomeOnDelete {
+				s.homeMissing = true
 			}
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
 			return
 		}
-		if !f.sandboxes[name] {
+		if !s.present {
 			response.WriteHeader(http.StatusNotFound)
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "sandbox not found", "code": 404})
 			return
@@ -221,18 +252,19 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 				response.WriteHeader(http.StatusUnprocessableEntity)
 				return
 			}
-			if f.modes[name] == modeSuspended && mode == modeRunning {
-				f.generations[name]++
+			if s.mode == modeSuspended && mode == modeRunning {
+				s.generation++
 			}
-			f.modes[name] = mode
+			s.mode = mode
 		}
-		writeFixture(response, f.sandboxFixture(name))
+		writeFixture(response, f.sandboxFixture(name, s.mode))
 		return
 	}
 	if strings.HasSuffix(path, "/pods") {
 		name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
+		s := f.sandbox(name)
 		items := []any{}
-		running := !f.holdMode && f.modes[name] == modeRunning || f.holdMode && f.modes[name] == modeSuspended
+		running := !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended
 		if running {
 			controller := true
 			items = append(items, map[string]any{
@@ -240,7 +272,7 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 				"kind":       "Pod",
 				"metadata": map[string]any{
 					"name": "sandbox-" + name,
-					"uid":  fmt.Sprintf("pod-%s-%d", name, f.generations[name]),
+					"uid":  fmt.Sprintf("pod-%s-%d", name, s.generation),
 					"ownerReferences": []any{map[string]any{
 						"uid": "sandbox-" + name, "controller": controller,
 					}},
@@ -261,7 +293,8 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 	if strings.Contains(path, "/persistentvolumeclaims/home-") {
 		_, name, _ := strings.CutLast(path, "/")
 		sandbox := strings.TrimPrefix(name, "home-")
-		if f.homeMissing[sandbox] {
+		s := f.sandbox(sandbox)
+		if s.homeMissing {
 			response.WriteHeader(http.StatusNotFound)
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
 			return
@@ -278,15 +311,15 @@ func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Reque
 				response.WriteHeader(http.StatusUnprocessableEntity)
 				return
 			}
-			f.homeAdoptable[sandbox] = false
+			s.homeLabeled = false
 		}
 		controller := true
 		owners := []any{}
-		if f.homeOwned[sandbox] {
+		if s.homeOwned {
 			owners = append(owners, map[string]any{"uid": "sandbox-" + sandbox, "controller": controller})
 		}
 		labels := map[string]string{}
-		if f.homeAdoptable[sandbox] {
+		if s.homeLabeled {
 			labels[sandboxNameHashLabel] = "fixture"
 		}
 		writeFixture(response, map[string]any{
@@ -332,7 +365,8 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if _, exists := f.claims[name]; exists {
+	s := f.sandbox(name)
+	if s.claim != nil {
 		response.WriteHeader(http.StatusConflict)
 		writeFixture(response, map[string]string{"message": "already exists"})
 		return
@@ -343,12 +377,12 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 		claim.Status.Sandbox.Name = name
 	}
-	f.claims[name] = claim
-	f.modes[name] = modeRunning
-	f.generations[name] = 1
-	f.sandboxes[name] = true
-	f.homeOwned[name] = true
-	f.homeAdoptable[name] = true
+	s.claim = &claim
+	s.mode = modeRunning
+	s.generation = 1
+	s.present = true
+	s.homeOwned = true
+	s.homeLabeled = true
 	response.WriteHeader(http.StatusCreated)
 	writeFixture(response, claim)
 }
@@ -357,30 +391,28 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 	items := []fixtureClaim{}
 	field := request.URL.Query().Get("fieldSelector")
 	if field == "" {
-		for _, claim := range f.claims {
-			if claim.Metadata.Labels[managedByLabel] == managedByValue {
-				items = append(items, claim)
+		for _, s := range f.sandboxes {
+			if s.claim != nil && s.claim.Metadata.Labels[managedByLabel] == managedByValue {
+				items = append(items, *s.claim)
 			}
 		}
 		writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
 		return
 	}
 	name := strings.TrimPrefix(field, "metadata.name=")
-	claim, ok := f.claims[name]
-	if ok {
-		f.reads[name]++
-		if name == "delayed" && f.reads[name] >= 2 {
-			claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-			claim.Status.Sandbox.Name = name
-			f.claims[name] = claim
+	s := f.sandbox(name)
+	if s.claim != nil {
+		s.reads++
+		if name == "delayed" && s.reads >= 2 {
+			s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
+			s.claim.Status.Sandbox.Name = name
 		}
-		items = append(items, claim)
+		items = append(items, *s.claim)
 	}
 	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
 }
 
-func (f *fixtureAPI) sandboxFixture(name string) map[string]any {
-	mode := f.modes[name]
+func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[string]any {
 	observed := mode
 	if f.holdMode {
 		if mode == modeRunning {
@@ -667,15 +699,24 @@ func invoke(t *testing.T, binary string, args, env []string, input string) resul
 	return result{status, stdout.String(), stderr.String()}
 }
 
-func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
+type harness struct {
+	api        *fixtureAPI
+	binary     string
+	env        []string
+	identity   string
+	kubeconfig string
+	stateDir   string
+	sshConfig  string
+	herdrState string
+	kubectlLog string
+}
+
+func newHarness(t *testing.T) harness {
+	t.Helper()
 	dir := t.TempDir()
-	api := &fixtureAPI{
-		claims: map[string]fixtureClaim{}, modes: map[string]sandboxOperatingMode{}, generations: map[string]int{},
-		sandboxes: map[string]bool{}, homeOwned: map[string]bool{}, homeAdoptable: map[string]bool{},
-		homeMissing: map[string]bool{}, homeLostOnDelete: map[string]bool{}, failDelete: map[string]int{}, reads: map[string]int{},
-	}
+	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}}
 	server := httptest.NewServer(api)
-	defer server.Close()
+	t.Cleanup(server.Close)
 	binary := buildCLI(t, dir)
 	kubectl := helperWrapper(t, dir, "kubectl")
 	herdr := helperWrapper(t, dir, "herdr")
@@ -689,19 +730,37 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	mustWrite(t, sshConfig, "Host unrelated\n  HostName unrelated.example\n", 0o600)
 	mustWrite(t, herdrState, `{"addCount":0,"machines":[{"id":"ffffffffffffffffffffffffffffffff","label":"Unrelated","target":"unrelated","session":"main","enabled":true,"selected":false}]}`, 0o600)
 	mustWrite(t, kubeconfig, fmt.Sprintf("apiVersion: v1\nkind: Config\nclusters:\n- name: test\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: test\n  context:\n    cluster: test\n    user: test\ncurrent-context: test\nusers:\n- name: test\n  user:\n    exec:\n      apiVersion: client.authentication.k8s.io/v1\n      command: %s\n      interactiveMode: Never\n", server.URL, credential), 0o600)
-	env := []string{"GO_WANT_KUBEFLOCK_HELPER=1", "KUBEFLOCK_CONFIG=" + config, "KUBEFLOCK_STATE_DIR=" + stateDir, "KUBEFLOCK_KUBECTL=" + kubectl, "KUBEFLOCK_HERDR=" + herdr, "KUBEFLOCK_SSH_CONFIG=" + sshConfig, "FAKE_HERDR_STATE=" + herdrState, "FAKE_HOST_KEY=" + keyA, "FAKE_KUBECTL_LOG=" + kubectlLog}
+	return harness{
+		api:        api,
+		binary:     binary,
+		env:        []string{"GO_WANT_KUBEFLOCK_HELPER=1", "KUBEFLOCK_CONFIG=" + config, "KUBEFLOCK_STATE_DIR=" + stateDir, "KUBEFLOCK_KUBECTL=" + kubectl, "KUBEFLOCK_HERDR=" + herdr, "KUBEFLOCK_SSH_CONFIG=" + sshConfig, "FAKE_HERDR_STATE=" + herdrState, "FAKE_HOST_KEY=" + keyA, "FAKE_KUBECTL_LOG=" + kubectlLog},
+		identity:   identity,
+		kubeconfig: kubeconfig,
+		stateDir:   stateDir,
+		sshConfig:  sshConfig,
+		herdrState: herdrState,
+		kubectlLog: kubectlLog,
+	}
+}
+
+func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
+	h := newHarness(t)
+	api, binary, env := h.api, h.binary, h.env
+	identity, kubeconfig := h.identity, h.kubeconfig
+	stateDir, sshConfig := h.stateDir, h.sshConfig
+	herdrState, kubectlLog := h.herdrState, h.kubectlLog
 
 	failed := invoke(t, binary, []string{"sandbox", "create", "delayed", "--template", "dev-small", "--identity", identity, "--timeout", "10s", "--kubeconfig", kubeconfig}, append(env, "FAKE_HERDR_FAIL_ADD=1"), "")
 	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
-	creates, reads, _, _, _ := api.snapshot()
-	if creates != 1 || reads["delayed"] != 2 {
-		t.Fatalf("creates=%d reads=%d", creates, reads["delayed"])
+	creates, _, _ := api.snapshot()
+	if creates != 1 || api.claimReads("delayed") != 2 {
+		t.Fatalf("creates=%d reads=%d", creates, api.claimReads("delayed"))
 	}
 	connectionFile := filepath.Join(stateDir, "sandbox-delayed.json")
 	assertJSONField(t, connectionFile, "phase", "prepared")
 	connected := invoke(t, binary, []string{"sandbox", "create", "delayed", "--template", "dev-small", "--identity", identity, "--timeout", "2s", "--kubeconfig", kubeconfig}, env, "")
 	assertCLI(t, "connected", connected, 0, "ready sandbox delayed", "")
-	creates, _, _, _, _ = api.snapshot()
+	creates, _, _ = api.snapshot()
 	if creates != 1 {
 		t.Fatalf("duplicate created %d claims", creates)
 	}
@@ -776,14 +835,10 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	mismatch := invoke(t, binary, []string{"sandbox", "reconnect", "delayed", "--kubeconfig", kubeconfig}, append(env, "FAKE_HOST_KEY="+keyB), "")
 	assertCLI(t, "mismatch", mismatch, -1, "", "host key mismatch")
 
-	api.mu.Lock()
-	api.homeOwned["delayed"] = false
-	api.mu.Unlock()
+	api.setHomeOwned("delayed", false)
 	unknownOwner := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
 	assertCLI(t, "unknown home owner", unknownOwner, 2, "", "sandbox home home-delayed was replaced")
-	api.mu.Lock()
-	api.homeOwned["delayed"] = true
-	api.mu.Unlock()
+	api.setHomeOwned("delayed", true)
 
 	api.failNextDelete("claim")
 	failedClaimDelete := invoke(t, binary, []string{"sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", kubeconfig}, env, "")
@@ -855,8 +910,8 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 
 	insecure := invoke(t, binary, []string{"sandbox", "create", "unsafe", "--template", "insecure", "--identity", identity, "--kubeconfig", kubeconfig}, env, "")
 	assertCLI(t, "insecure", insecure, -1, "", "does not meet Kubeflock pod hardening requirements")
-	_, _, claims, methods, auths := api.snapshot()
-	if _, exists := claims["unsafe"]; exists {
+	_, methods, auths := api.snapshot()
+	if api.hasClaim("unsafe") {
 		t.Fatal("insecure template created a claim")
 	}
 	assertAPITrace(t, methods, auths)
