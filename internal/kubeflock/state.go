@@ -148,7 +148,7 @@ type savedSandbox struct {
 }
 
 func validateRetainedHome(home RetainedHome) error {
-	if home.Version != 1 || home.State != "available" || !home.Origin.complete() || home.Home.Name == "" || home.Home.UID == "" || home.Home.Capacity == "" {
+	if home.Version != 1 || home.State != "available" || home.Template == "" || home.WarmPool == "" || !home.Origin.complete() || home.Home.Name == "" || home.Home.UID == "" || home.Home.Capacity == "" {
 		return errors.New("invalid retained home")
 	}
 	return nil

@@ -471,7 +471,14 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 	if err := client.verifyRetainedHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 		return retainResult{}, err
 	}
-	retained := RetainedHome{Version: 1, State: "available", Origin: *managed.Sandbox, Home: *managed.Home}
+	retained := RetainedHome{
+		Version:  1,
+		State:    "available",
+		Template: managed.Template,
+		WarmPool: managed.WarmPool,
+		Origin:   *managed.Sandbox,
+		Home:     *managed.Home,
+	}
 	if err := saveJSON(retainedHomePath(options.Global.StateDir, managed.Home.UID), retained); err != nil {
 		return retainResult{}, err
 	}

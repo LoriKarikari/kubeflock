@@ -56,13 +56,20 @@ func TestStateValidationRejectsIncompleteRecords(t *testing.T) {
 	}
 
 	retained := RetainedHome{
-		Version: 1,
-		State:   "available",
-		Origin:  SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},
-		Home:    PersistentHome{Name: "home-sandbox", UID: "home-uid", Capacity: "10Gi", StorageClass: "longhorn"},
+		Version:  1,
+		State:    "available",
+		Template: "dev-small",
+		WarmPool: "dev-small",
+		Origin:   SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},
+		Home:     PersistentHome{Name: "home-sandbox", UID: "home-uid", Capacity: "10Gi", StorageClass: "longhorn"},
 	}
 	if err := validateRetainedHome(retained); err != nil {
 		t.Fatalf("valid retained home rejected: %v", err)
+	}
+	withoutTemplate := retained
+	withoutTemplate.Template = ""
+	if err := validateRetainedHome(withoutTemplate); err == nil {
+		t.Fatal("retained home without template provenance was accepted")
 	}
 	retained.Home.UID = ""
 	if err := validateRetainedHome(retained); err == nil {

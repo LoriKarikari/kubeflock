@@ -74,10 +74,12 @@ type ManagedSandbox struct {
 }
 
 type RetainedHome struct {
-	Version int             `json:"version"`
-	State   string          `json:"state"`
-	Origin  SandboxIdentity `json:"origin"`
-	Home    PersistentHome  `json:"home"`
+	Version  int             `json:"version"`
+	State    string          `json:"state"`
+	Template string          `json:"template"`
+	WarmPool string          `json:"warmPool"`
+	Origin   SandboxIdentity `json:"origin"`
+	Home     PersistentHome  `json:"home"`
 }
 
 type CheckResult struct {
