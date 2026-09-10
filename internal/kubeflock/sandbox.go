@@ -267,6 +267,10 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 		if err := client.authorizeHomeAdoption(ctx, target, retained.Home, allowedSandboxUID); err != nil {
 			return createdSandbox{}, fmt.Errorf("authorize retained home adoption: %w", err)
 		}
+		retained.State = retainedHomeRestoring
+		if err := saveJSON(retainedHomePath(options.Global.StateDir, retained.Home.UID), retained); err != nil {
+			return createdSandbox{}, err
+		}
 	}
 	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, approved, options.Global.StateDir)
 	if err != nil {

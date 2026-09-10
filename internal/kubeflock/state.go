@@ -144,7 +144,7 @@ func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
 }
 
 func validateRetainedHome(retained RetainedHome) error {
-	if retained.Version != 1 || retained.State != retainedHomeAvailable {
+	if retained.Version != 1 || (retained.State != retainedHomeAvailable && retained.State != retainedHomeRestoring) {
 		return errors.New("invalid retained home version or state")
 	}
 	if retained.Template == "" || retained.WarmPool == "" || !retained.Origin.complete() {

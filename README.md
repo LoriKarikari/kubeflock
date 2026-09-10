@@ -85,7 +85,7 @@ Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities. Supp
 
 Stopping terminates compute after Herdr detaches and retains the persistent home. Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin. Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. It never deletes a PVC. Disconnecting leaves the Sandbox and its remote processes running.
 
-Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Retained homes are listed separately by PVC name and UID, with their origin, template, capacity, storage class, and state. Herdr provides matching lifecycle and listing actions.
+Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states. Retained homes are listed separately by PVC name and UID, with their origin, template, capacity, storage class, and state. The list covers the configured target only, so homes recorded for another context or namespace stay hidden. A home shows `restoring` when an interrupted restore left its record behind, and a retry finishes the attachment. Herdr provides matching lifecycle and listing actions.
 
 ## Options
 
