@@ -75,6 +75,64 @@ func TestValidateSSHStateRejectsControlCharacters(t *testing.T) {
 	}
 }
 
+func TestAdoptIdentityOnlyBeforeConnection(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "id_first")
+	second := filepath.Join(dir, "id_second")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("private key\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolvedFirst, err := resolveIdentityFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedSecond, err := resolveIdentityFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := savedConnection{File: filepath.Join(dir, "sandbox-uid.json"), Connection: testConnection(dir, filepath.Join(dir, "sshconfig"))}
+	saved.Connection.SSH.IdentityFile = resolvedFirst
+
+	if err := validateSavedConnection(&saved, connectOptions{IdentityFile: second}); err != nil {
+		t.Fatalf("prepared connection rejected a corrected identity: %v", err)
+	}
+	if saved.Connection.SSH.IdentityFile != resolvedSecond {
+		t.Fatalf("identity = %q; want %q", saved.Connection.SSH.IdentityFile, resolvedSecond)
+	}
+
+	saved.Connection.Phase = connectionConnected
+	if err := validateSavedConnection(&saved, connectOptions{IdentityFile: first}); err == nil {
+		t.Fatal("connected connection switched identity")
+	}
+}
+
+func TestDisconnectScopesToTarget(t *testing.T) {
+	dir := t.TempDir()
+	for _, sandbox := range []SandboxIdentity{
+		{Context: "homelab", Namespace: "dev", Name: "sandbox", UID: "uid-homelab"},
+		{Context: "other", Namespace: "dev", Name: "sandbox", UID: "uid-other"},
+	} {
+		connection := testConnection(dir, filepath.Join(dir, "sshconfig"))
+		connection.Sandbox = sandbox
+		if err := saveJSON(filepath.Join(dir, sandbox.UID+".json"), connection); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := KubeTarget{Context: "other", Namespace: "dev"}
+	connection, err := disconnect(context.Background(), &target, "sandbox", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connection.Sandbox.UID != "uid-other" {
+		t.Fatalf("disconnect matched %q; want uid-other", connection.Sandbox.UID)
+	}
+	if _, err := disconnect(context.Background(), nil, "sandbox", dir); err == nil {
+		t.Fatal("an unscoped disconnect accepted an ambiguous name")
+	}
+}
+
 func TestRemoveConnectionRefusesPathsOutsideStateDir(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := filepath.Join(dir, "state")

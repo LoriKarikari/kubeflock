@@ -47,10 +47,10 @@ func retainedHomePath(dir, uid string) string {
 }
 
 func validateConnection(connection Connection) error {
-	if connection.Version != 1 || (connection.Phase != "prepared" && connection.Phase != "connected") {
+	if connection.Version != 1 || (connection.Phase != connectionPrepared && connection.Phase != connectionConnected) {
 		return errors.New("invalid connection version or phase")
 	}
-	if connection.Phase == "connected" && connection.ProfileID == "" {
+	if connection.Phase == connectionConnected && connection.ProfileID == "" {
 		return errors.New("connected state requires profileId")
 	}
 	if !connection.Sandbox.complete() {
@@ -86,12 +86,19 @@ func stateFiles(dir string) ([]string, error) {
 func loadState[T any](path string, validate func(T) error) (T, error) {
 	var value T
 	if err := loadJSON(path, &value); err != nil {
-		return value, err
+		return value, unreadableState(err)
 	}
 	if err := validate(value); err != nil {
-		return value, fmt.Errorf("decode %q: %w", path, err)
+		return value, unreadableState(fmt.Errorf("decode %q: %w", path, err))
 	}
 	return value, nil
+}
+
+func unreadableState(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("%w; move the file aside to ignore it", err)
 }
 
 func loadConnection(path string) (Connection, error) { return loadState(path, validateConnection) }
@@ -125,13 +132,13 @@ func (sandbox ManagedSandbox) allocationName() string {
 }
 
 func validateManaged(sandbox ManagedSandbox) error {
-	if sandbox.Version != 1 || (sandbox.Phase != "claimed" && sandbox.Phase != "bound") {
+	if sandbox.Version != 1 || (sandbox.Phase != managedClaimed && sandbox.Phase != managedBound) {
 		return errors.New("invalid managed sandbox version or phase")
 	}
 	if !sandbox.Claim.complete() || sandbox.Template == "" || sandbox.WarmPool == "" || sandbox.IdentityFile == "" {
 		return errors.New("managed sandbox contains incomplete identity")
 	}
-	if sandbox.Phase == "bound" && (sandbox.Sandbox == nil || sandbox.Home == nil) {
+	if sandbox.Phase == managedBound && (sandbox.Sandbox == nil || sandbox.Home == nil) {
 		return errors.New("bound sandbox requires sandbox and home identities")
 	}
 	return nil

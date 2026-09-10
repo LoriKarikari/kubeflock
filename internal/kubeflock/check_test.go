@@ -19,7 +19,15 @@ printf '%s\n' "$*" >> "$FAKE_CHECK_LOG"
 case "$*" in
   *"api-versions"*)
     if [ -n "$ALPHA_ONLY" ]; then printf 'v1\nagents.x-k8s.io/v1alpha1\nextensions.agents.x-k8s.io/v1alpha1\n'; else printf 'v1\nagents.x-k8s.io/v1beta1\nextensions.agents.x-k8s.io/v1beta1\n'; fi ;;
+  *"auth can-i"*"secrets/provider-token"*)
+    if [ -n "$DENY_SECRET" ]; then echo no; exit 1; else echo yes; fi ;;
   *"auth can-i"*) if [ -n "$DENY_ALL" ]; then echo no; exit 1; else echo yes; fi ;;
+  *"get configmap kubeflock-credentials"*)
+    if [ -n "$NO_CREDENTIAL_CONFIG" ]; then echo '{}'; else
+      cat <<'JSON'
+{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"kubeflock-credentials"},"data":{"provider":"{\"secret\":\"provider-token\",\"key\":\"token\",\"environment\":\"APPROVED_TOKEN\"}"}}
+JSON
+    fi ;;
   *"api-resources"*"extensions.agents.x-k8s.io"*) printf 'sandboxclaims\nsandboxtemplates\nsandboxwarmpools\n' ;;
   *"api-resources"*"agents.x-k8s.io"*) echo sandboxes ;;
   *"get runtimeclass"*)
@@ -61,11 +69,12 @@ func TestClusterCheckUsesPinnedContextAndRequiredPermissions(t *testing.T) {
 		if !strings.Contains(line, "--context saved") {
 			t.Fatalf("call omitted saved context: %s", line)
 		}
-		if strings.Contains(line, "auth can-i get secrets") {
-			t.Fatalf("unexpected permission: %s", line)
+		if strings.HasSuffix(line, "auth can-i get secrets") {
+			t.Fatalf("unexpected unnamed permission probe: %s", line)
 		}
 	}
 	if !strings.Contains(string(calls), "auth can-i get configmaps/kubeflock-credentials") ||
+		!strings.Contains(string(calls), "auth can-i get secrets/provider-token") ||
 		!strings.Contains(string(calls), "auth can-i create pods --subresource=exec") ||
 		!strings.Contains(string(calls), "auth can-i delete sandboxes.agents.x-k8s.io") ||
 		!strings.Contains(string(calls), "auth can-i delete sandboxclaims.extensions.agents.x-k8s.io") ||
@@ -73,6 +82,32 @@ func TestClusterCheckUsesPinnedContextAndRequiredPermissions(t *testing.T) {
 		!strings.Contains(string(calls), "auth can-i delete persistentvolumeclaims") ||
 		!strings.Contains(string(calls), "auth can-i get persistentvolumes") {
 		t.Fatalf("missing required permission probe: %s", calls)
+	}
+	config := findCheck(report.Checks, "perm-get-credential-config")
+	if config == nil || !config.OK || !strings.Contains(config.Message, "configmaps/kubeflock-credentials") {
+		t.Fatalf("credential config check = %#v", config)
+	}
+	secret := findCheck(report.Checks, "perm-get-secret-provider")
+	if secret == nil || !secret.OK || !strings.Contains(secret.Message, "secrets/provider-token") {
+		t.Fatalf("credential secret check = %#v", secret)
+	}
+}
+
+func TestClusterCheckKeepsSecretProbesAdvisory(t *testing.T) {
+	kubectl, _ := fakeCheckKubectl(t)
+	t.Setenv("DENY_SECRET", "1")
+	report := NewApp(strings.NewReader(""), &strings.Builder{}, &strings.Builder{}).runCheck(
+		context.Background(),
+		KubeTarget{Context: "saved", Namespace: "dev"},
+		globalOptions{Kubectl: kubectl},
+		time.Second,
+	)
+	if !report.OK {
+		t.Fatalf("a denied optional credential failed the whole check: %#v", report.Checks)
+	}
+	secret := findCheck(report.Checks, "perm-get-secret-provider")
+	if secret == nil || secret.OK || !secret.Advisory || !strings.Contains(secret.Message, "cannot get secrets/provider-token") {
+		t.Fatalf("credential secret check = %#v", secret)
 	}
 }
 

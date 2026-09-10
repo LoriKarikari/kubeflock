@@ -502,7 +502,7 @@ func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
 				return err
 			}
 			references, err := client.credentialReferences(command.Context(), target.Namespace)
-			if err != nil {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return err
 			}
 			if len(references) == 0 {
@@ -527,7 +527,11 @@ func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			connection, err := disconnect(command.Context(), name, options.StateDir)
+			target, err := loadSavedTarget(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			connection, err := disconnect(command.Context(), target, name, options.StateDir)
 			if err != nil {
 				return err
 			}

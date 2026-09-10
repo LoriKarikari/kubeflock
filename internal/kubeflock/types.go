@@ -44,9 +44,16 @@ type HerdrState struct {
 	Session string `json:"session"`
 }
 
+type connectionPhase string
+
+const (
+	connectionPrepared  connectionPhase = "prepared"
+	connectionConnected connectionPhase = "connected"
+)
+
 type Connection struct {
 	Version    int             `json:"version"`
-	Phase      string          `json:"phase"`
+	Phase      connectionPhase `json:"phase"`
 	Sandbox    SandboxIdentity `json:"sandbox"`
 	SSH        SSHState        `json:"ssh"`
 	Herdr      HerdrState      `json:"herdr"`
@@ -62,9 +69,16 @@ type PersistentHome struct {
 	StorageClass string `json:"storageClass"`
 }
 
+type managedPhase string
+
+const (
+	managedClaimed managedPhase = "claimed"
+	managedBound   managedPhase = "bound"
+)
+
 type ManagedSandbox struct {
 	Version      int              `json:"version"`
-	Phase        string           `json:"phase"`
+	Phase        managedPhase     `json:"phase"`
 	Name         string           `json:"name,omitzero"`
 	Claim        SandboxIdentity  `json:"claim"`
 	Template     string           `json:"template"`

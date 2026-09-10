@@ -99,6 +99,7 @@ type fixtureAPI struct {
 	credentials     map[string]credentialConfig
 	secrets         map[string]map[string][]byte
 	forbiddenSecret string
+	noConfigMap     bool
 }
 
 func (f *fixtureAPI) approveCredential(name, secret, key, environment string, value []byte) {
@@ -114,6 +115,12 @@ func (f *fixtureAPI) forbidSecret(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.forbiddenSecret = name
+}
+
+func (f *fixtureAPI) removeCredentialConfig() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.noConfigMap = true
 }
 
 func (f *fixtureAPI) ensureSandbox(name string) *fixtureSandbox {
@@ -351,6 +358,10 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 }
 
 func (f *fixtureAPI) handleCredentialConfig(response http.ResponseWriter) {
+	if f.noConfigMap {
+		writeNotFound(response)
+		return
+	}
 	data := map[string]string{}
 	for name, reference := range f.credentials {
 		encoded, _ := json.Marshal(reference)
@@ -491,7 +502,17 @@ func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Reque
 		s.generation++
 	}
 	s.mode = mode
+	if s.claim != nil {
+		s.claim.Status.Conditions = []metav1.Condition{claimCondition(mode)}
+	}
 	writeFixture(response, f.sandboxFixture(name, s.mode))
+}
+
+func claimCondition(mode sandboxOperatingMode) metav1.Condition {
+	if mode == modeSuspended {
+		return metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, Reason: "SandboxSuspended", Message: "Sandbox is suspended"}
+	}
+	return metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready"}
 }
 
 func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Request) {
@@ -787,7 +808,7 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 	s := f.ensureSandbox(name)
 	if s.claim != nil {
 		s.reads++
-		if name == "delayed" && s.reads >= 2 && s.homeOwned {
+		if name == "delayed" && s.reads >= 2 && s.homeOwned && s.mode != modeSuspended {
 			s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 			s.claim.Status.Sandbox.Name = name
 		}
@@ -963,6 +984,11 @@ func TestHelperProcess(t *testing.T) {
 	kind, args := os.Args[separator+1], os.Args[separator+2:]
 	switch kind {
 	case "credential":
+		info := os.Getenv("KUBERNETES_EXEC_INFO")
+		if !strings.Contains(info, `"kind":"ExecCredential"`) || !strings.Contains(info, `"apiVersion":"client.authentication.k8s.io/v1"`) {
+			fmt.Fprintln(os.Stderr, "credential helper received no ExecCredential context")
+			os.Exit(2)
+		}
 		fmt.Print(`{"apiVersion":"client.authentication.k8s.io/v1","kind":"ExecCredential","status":{"token":"fixture"}}`)
 	case "kubectl":
 		helperKubectl(args)
@@ -1070,6 +1096,7 @@ func helperHerdr(args []string) {
 	}
 	if len(args) >= 2 && args[0] == "machine" && args[1] == "add" {
 		if os.Getenv("FAKE_HERDR_FAIL_ADD") == "1" {
+			fmt.Fprintln(os.Stderr, "error: remote platform detection failed: agent@host: Permission denied (publickey).")
 			os.Exit(1)
 		}
 		state.AddCount++
@@ -1388,6 +1415,63 @@ func TestCLIAttachesOnlyApprovedCredentials(t *testing.T) {
 	if !h.api.hasClaim("registration-failure") {
 		t.Fatal("registration failure deleted the sandbox claim")
 	}
+
+	h.api.removeCredentialConfig()
+	assertCLI(t, "credential list without config", h.run(t, "sandbox", "credential", "list", "--kubeconfig", h.kubeconfig), 0, "no approved credentials", "")
+}
+
+func TestCLIAdoptsIdentityAfterFailedConnection(t *testing.T) {
+	h := newHarness(t)
+	second := filepath.Join(t.TempDir(), "id_ed25519_second")
+	mustWrite(t, second, "second private key fixture\n", 0o600)
+	resolved, err := resolveIdentityFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "failed first connection", failed, 2, "", "herdr exited")
+	connectionFile := h.connectionState("sandbox-identity-retry")
+	assertJSONField(t, connectionFile, "phase", "prepared")
+
+	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", second, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "identity switch after failure", retried, 0, "ready sandbox identity-retry", "")
+
+	data, err := os.ReadFile(connectionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connection Connection
+	if json.Unmarshal(data, &connection) != nil {
+		t.Fatal("invalid connection state")
+	}
+	if connection.SSH.IdentityFile != resolved {
+		t.Fatalf("saved identity = %q; want %q", connection.SSH.IdentityFile, resolved)
+	}
+
+	connected := h.run(t, "sandbox", "create", "identity-retry", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "connected identity stays pinned", connected, 2, "", "is connected with identity file")
+}
+
+func TestCLIListsWithoutHerdrWhenNoProfileIsConnected(t *testing.T) {
+	h := newHarness(t)
+	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "unregistered", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "failed connection", failed, 2, "", "herdr exited")
+
+	listed := h.runWith(t, "KUBEFLOCK_HERDR=/nonexistent/herdr", "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "list without herdr", listed, 0, `"state": "failed"`, "")
+}
+
+func TestCLIRejectsInteractiveCredentialHelper(t *testing.T) {
+	h := newHarness(t)
+	data, err := os.ReadFile(h.kubeconfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interactive := filepath.Join(t.TempDir(), "interactive.yaml")
+	mustWrite(t, interactive, strings.Replace(string(data), "interactiveMode: Never", "interactiveMode: Always", 1), 0o600)
+	listed := h.run(t, "sandbox", "credential", "list", "--kubeconfig", interactive)
+	assertCLI(t, "interactive credential helper", listed, 2, "", "requires an interactive session")
 }
 
 func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
@@ -1467,7 +1551,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	}
 
 	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
+	assertCLI(t, "failed create", failed, 2, "", "herdr exited: command exited with status 1: error: remote platform detection failed")
 	if creates, reads := h.api.createCount(), h.api.claimReads("delayed"); creates != 1 || reads != 2 {
 		t.Fatalf("creates=%d reads=%d", creates, reads)
 	}
@@ -1523,6 +1607,9 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	if mode != modeSuspended || pod != "" {
 		t.Fatalf("stopped lifecycle: mode=%s pod=%s", mode, pod)
 	}
+	assertCLI(t, "stopped list", h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig), 0, `"state": "disconnected"`, "")
+	stoppedCreate := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create on stopped sandbox", stoppedCreate, 2, "", "is stopped; run: kubeflock sandbox resume delayed")
 	repeatedStop := h.run(t, "sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "repeated stop", repeatedStop, 0, "stopped sandbox", "")
 

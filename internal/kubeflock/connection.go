@@ -37,7 +37,11 @@ type connectOptions struct {
 func runHerdr(ctx context.Context, args ...string) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	return runCaptured(callCtx, cmp.Or(os.Getenv("KUBEFLOCK_HERDR"), os.Getenv("HERDR_BIN_PATH"), "herdr"), args, nil, nil)
+	out, err := runCaptured(callCtx, cmp.Or(os.Getenv("KUBEFLOCK_HERDR"), os.Getenv("HERDR_BIN_PATH"), "herdr"), args, nil, nil)
+	if detail := stderrDetail(err); detail != "" {
+		err = fmt.Errorf("%w: %s", err, detail)
+	}
+	return out, err
 }
 
 func listMachines(ctx context.Context) ([]herdrMachine, error) {
@@ -68,7 +72,7 @@ func ensureMachine(ctx context.Context, connection Connection) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if connection.Phase == "connected" {
+	if connection.Phase == connectionConnected {
 		return ensureSavedMachine(ctx, machines, connection)
 	}
 	matches := matchingMachines(machines, connection)
@@ -127,7 +131,7 @@ func matchingMachines(machines []herdrMachine, connection Connection) []herdrMac
 }
 
 func disableMachine(ctx context.Context, saved *savedConnection) error {
-	if saved == nil || saved.Connection.Phase != "connected" {
+	if saved == nil || saved.Connection.Phase != connectionConnected {
 		return nil
 	}
 	connection := saved.Connection
@@ -155,7 +159,7 @@ func removeConnection(ctx context.Context, saved *savedConnection) error {
 		return nil
 	}
 	connection := saved.Connection
-	if connection.Phase == "connected" {
+	if connection.Phase == connectionConnected {
 		machines, err := listMachines(ctx)
 		if err != nil {
 			return err
@@ -309,17 +313,43 @@ func validateSavedConnection(saved *savedConnection, options connectOptions) err
 	if saved == nil && options.IdentityFile == "" {
 		return errors.New("specify --identity for the first connection")
 	}
+	return adoptIdentity(saved, options)
+}
+
+// adoptIdentity records a new identity file on a connection that never reached the connected
+// phase. A connected sandbox keeps its identity so a later command cannot switch keys silently.
+func adoptIdentity(saved *savedConnection, options connectOptions) error {
 	if saved == nil || options.IdentityFile == "" {
 		return nil
 	}
-	identity, err := filepath.Abs(options.IdentityFile)
+	identity, err := resolveIdentityFile(options.IdentityFile)
 	if err != nil {
 		return err
 	}
-	if identity != saved.Connection.SSH.IdentityFile {
+	if identity == saved.Connection.SSH.IdentityFile {
+		return nil
+	}
+	if saved.Connection.Phase == connectionConnected {
 		return errors.New("the saved connection uses a different SSH identity file")
 	}
-	return nil
+	saved.Connection.SSH.IdentityFile = identity
+	return saveJSON(saved.File, saved.Connection)
+}
+
+// resolveIdentityFile returns the absolute path of a usable SSH identity file.
+func resolveIdentityFile(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 func activateConnection(ctx context.Context, target KubeTarget, options connectOptions, saved *savedConnection, sandbox SandboxIdentity, kubectl, hostKey string) (Connection, error) {
@@ -344,10 +374,10 @@ func activateConnection(ctx context.Context, target KubeTarget, options connectO
 	if err != nil {
 		return Connection{}, err
 	}
-	if connection.Phase == "connected" {
+	if connection.Phase == connectionConnected {
 		return connection, nil
 	}
-	connection.Phase, connection.ProfileID = "connected", profileID
+	connection.Phase, connection.ProfileID = connectionConnected, profileID
 	if err := saveJSON(path, connection); err != nil {
 		return Connection{}, err
 	}
@@ -355,15 +385,8 @@ func activateConnection(ctx context.Context, target KubeTarget, options connectO
 }
 
 func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl, hostKey string) (string, Connection, error) {
-	identity, err := filepath.EvalSymlinks(options.IdentityFile)
+	identity, err := resolveIdentityFile(options.IdentityFile)
 	if err != nil {
-		return "", Connection{}, err
-	}
-	identity, err = filepath.Abs(identity)
-	if err != nil {
-		return "", Connection{}, err
-	}
-	if _, err := os.Stat(identity); err != nil {
 		return "", Connection{}, err
 	}
 	uid := sandbox.UID
@@ -404,8 +427,8 @@ func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl,
 	return path, connection, saveJSON(path, connection)
 }
 
-func disconnect(ctx context.Context, name, stateDir string) (Connection, error) {
-	saved, err := selectConnection(nil, stateDir, name)
+func disconnect(ctx context.Context, target *KubeTarget, name, stateDir string) (Connection, error) {
+	saved, err := selectConnection(target, stateDir, name)
 	if err != nil {
 		return Connection{}, err
 	}

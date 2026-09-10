@@ -50,6 +50,9 @@ func (c accessCheck) resourceArg() string {
 
 func (c accessCheck) qualified() string {
 	name := c.resourceArg()
+	if c.ResourceName != "" {
+		name += "/" + c.ResourceName
+	}
 	if c.Subresource != "" {
 		name += "/" + c.Subresource
 	}
@@ -172,6 +175,7 @@ func (a *App) runCheck(ctx context.Context, target KubeTarget, options globalOpt
 	}
 	checks = append(checks, limits)
 	checks = append(checks, checkAccess(ctx, target, options, requestTimeoutArg, perCall)...)
+	checks = append(checks, credentialSecretChecks(ctx, target, options, requestTimeoutArg, perCall)...)
 	report := CheckReport{Context: target.Context, Namespace: target.Namespace, OK: true, Checks: checks, CheckedAt: a.now().UTC()}
 	for _, check := range checks {
 		if !check.OK && !check.Advisory {
@@ -279,6 +283,41 @@ func checkAccess(ctx context.Context, target KubeTarget, options globalOptions, 
 	}
 	_ = group.Wait()
 	return permissions
+}
+
+// credentialSecretChecks probes read access to the Secrets named by the approved credential
+// configuration. The RBAC rule lists those Secret names, so a probe without a name would warn on
+// every correctly scoped cluster. Credentials are optional, so each result stays advisory.
+func credentialSecretChecks(ctx context.Context, target KubeTarget, options globalOptions, req string, perCall time.Duration) []CheckResult {
+	callCtx, cancel := context.WithTimeout(ctx, perCall)
+	defer cancel()
+	out, err := runKubectl(callCtx, options, baseArgs(target, req, "get", "configmap", credentialConfigName, "-o", "json")...)
+	if err != nil {
+		return nil
+	}
+	var config struct {
+		Data map[string]string `json:"data"`
+	}
+	if json.Unmarshal([]byte(out), &config) != nil {
+		return nil
+	}
+	aliases := slices.Sorted(maps.Keys(config.Data))
+	checks := make([]CheckResult, 0, len(aliases))
+	for _, alias := range aliases {
+		var decoded credentialConfig
+		if json.Unmarshal([]byte(config.Data[alias]), &decoded) != nil || decoded.Secret == "" {
+			continue
+		}
+		checks = append(checks, permissionCheck(ctx, target, options, req, perCall, accessCheck{
+			Name:         "perm-get-secret-" + alias,
+			Verb:         "get",
+			Resource:     "secrets",
+			ResourceName: decoded.Secret,
+			Namespaced:   true,
+			Advisory:     true,
+		}))
+	}
+	return checks
 }
 
 type resourceQuota struct {
