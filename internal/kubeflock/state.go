@@ -59,6 +59,9 @@ func validateConnection(connection Connection) error {
 	if !connection.SSH.complete() {
 		return errors.New("connection contains incomplete SSH state")
 	}
+	if err := validateSSHState(connection.SSH); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -144,7 +147,7 @@ func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
 }
 
 func validateRetainedHome(retained RetainedHome) error {
-	if retained.Version != 1 || retained.State != retainedHomeAvailable {
+	if retained.Version != 1 || (retained.State != retainedHomeAvailable && retained.State != retainedHomeRestoring) {
 		return errors.New("invalid retained home version or state")
 	}
 	if retained.Template == "" || retained.WarmPool == "" || !retained.Origin.complete() {
@@ -154,6 +157,37 @@ func validateRetainedHome(retained RetainedHome) error {
 		return errors.New("retained home contains incomplete storage identity")
 	}
 	return nil
+}
+
+func selectRetainedHome(target KubeTarget, uid, stateDir string) (*RetainedHome, error) {
+	homes, err := listRetainedHomes(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range homes {
+		if homes[i].Home.UID != uid {
+			continue
+		}
+		if homes[i].Origin.Context != target.Context || homes[i].Origin.Namespace != target.Namespace {
+			return nil, fmt.Errorf("retained home %s belongs to target %s/%s", uid, homes[i].Origin.Context, homes[i].Origin.Namespace)
+		}
+		return &homes[i], nil
+	}
+	return nil, fmt.Errorf("no retained home has UID %s", uid)
+}
+
+func retainedHomeForOrigin(target KubeTarget, name, stateDir string) (*RetainedHome, error) {
+	homes, err := listRetainedHomes(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range homes {
+		origin := homes[i].Origin
+		if origin.Context == target.Context && origin.Namespace == target.Namespace && origin.Name == name {
+			return &homes[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func listRetainedHomes(stateDir string) ([]RetainedHome, error) {

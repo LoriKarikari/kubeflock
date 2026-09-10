@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -174,7 +175,17 @@ func removeConnection(ctx context.Context, saved *savedConnection) error {
 	if err := removeSSHInclude(connection.SSH); err != nil {
 		return err
 	}
-	for _, path := range []string{connection.SSH.KnownHostsFile, connection.SSH.EntryFile, connection.SSH.ProxyFile, saved.File} {
+	return removeStateFiles(saved)
+}
+
+func removeStateFiles(saved *savedConnection) error {
+	stateDir := filepath.Dir(saved.File)
+	sshDir := filepath.Join(filepath.Dir(stateDir), "ssh")
+	paths := []string{saved.Connection.SSH.KnownHostsFile, saved.Connection.SSH.EntryFile, saved.Connection.SSH.ProxyFile, saved.File}
+	for _, path := range paths {
+		if !pathWithin(path, stateDir) && !pathWithin(path, sshDir) {
+			return fmt.Errorf("refusing to remove %s because it is outside the Kubeflock state directory", path)
+		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -182,8 +193,20 @@ func removeConnection(ctx context.Context, saved *savedConnection) error {
 	return nil
 }
 
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func removeSSHInclude(state SSHState) error {
-	data, err := os.ReadFile(state.ConfigFile)
+	configPath, err := sshConfigPath(state.ConfigFile)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(configPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -191,16 +214,24 @@ func removeSSHInclude(state SSHState) error {
 		return err
 	}
 	include, bare := "Include "+sshQuote(state.EntryFile), "Include "+state.EntryFile
+	removed := false
 	lines := strings.SplitAfter(string(data), "\n")
 	lines = slices.DeleteFunc(lines, func(line string) bool {
 		trimmed := strings.TrimSpace(line)
-		return trimmed == include || trimmed == bare
+		if trimmed == include || trimmed == bare {
+			removed = true
+			return true
+		}
+		return false
 	})
+	if !removed {
+		return nil
+	}
 	mode := os.FileMode(0o600)
-	if info, statErr := os.Stat(state.ConfigFile); statErr == nil {
+	if info, statErr := os.Stat(configPath); statErr == nil {
 		mode = info.Mode().Perm()
 	}
-	return atomicWrite(state.ConfigFile, []byte(strings.Join(lines, "")), mode)
+	return atomicWrite(configPath, []byte(strings.Join(lines, "")), mode)
 }
 
 func selectConnection(target *KubeTarget, stateDir, name string) (*savedConnection, error) {
@@ -366,6 +397,9 @@ func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl,
 		},
 	}
 	path := filepath.Join(options.Global.StateDir, uid+".json")
+	if err := validateSSHState(connection.SSH); err != nil {
+		return "", Connection{}, err
+	}
 	return path, connection, saveJSON(path, connection)
 }
 
@@ -397,16 +431,58 @@ func sshQuote(value string) string {
 	value = strings.ReplaceAll(value, `"`, `\"`)
 	return `"` + value + `"`
 }
+
+func validateSSHState(state SSHState) error {
+	fields := []struct{ name, value string }{
+		{"alias", state.Alias},
+		{"identity file", state.IdentityFile},
+		{"known hosts file", state.KnownHostsFile},
+		{"entry file", state.EntryFile},
+		{"proxy file", state.ProxyFile},
+		{"config file", state.ConfigFile},
+	}
+	for _, field := range fields {
+		if !utf8.ValidString(field.value) || strings.ContainsAny(field.value, "\r\n\x00") {
+			return fmt.Errorf("saved SSH %s %q contains an invalid character", field.name, field.value)
+		}
+	}
+	return nil
+}
+
+func sshConfigPath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, filepath.Base(path)), nil
+}
 func shellQuote(value string) string { return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'` }
 
 func ensureSSHFiles(connection Connection, stateFile string) error {
 	state := connection.SSH
-	main, err := os.ReadFile(state.ConfigFile)
+	if err := validateSSHState(state); err != nil {
+		return err
+	}
+	configPath, err := sshConfigPath(state.ConfigFile)
+	if err != nil {
+		return err
+	}
+	main, err := os.ReadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	mode := os.FileMode(0o600)
-	if info, statErr := os.Stat(state.ConfigFile); statErr == nil {
+	if info, statErr := os.Stat(configPath); statErr == nil {
 		mode = info.Mode().Perm()
 	}
 	include := "Include " + sshQuote(state.EntryFile)
@@ -418,7 +494,7 @@ func ensureSSHFiles(connection Connection, stateFile string) error {
 		}
 	}
 	if !included {
-		if err := atomicWrite(state.ConfigFile, []byte(include+"\n"+string(main)), mode); err != nil {
+		if err := atomicWrite(configPath, []byte(include+"\n"+string(main)), mode); err != nil {
 			return err
 		}
 	}

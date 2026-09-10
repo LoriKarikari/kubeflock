@@ -6,6 +6,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- end }}
 
 {{- define "kubeflock.validate" -}}
+{{- range .Values.access.subjects }}
+{{- if has (lower .name) (list "system:authenticated" "system:unauthenticated" "system:serviceaccounts") }}
+{{- fail (printf "access.subjects %q grants every identity in the cluster; list explicit users, groups, or service accounts" .name) }}
+{{- end }}
+{{- end }}
 {{- if gt (int .Values.sandbox.resources.cpuRequestMillicores) (int .Values.sandbox.resources.cpuLimitMillicores) -}}
 {{- fail "sandbox.resources.cpuRequestMillicores cannot exceed cpuLimitMillicores" -}}
 {{- end -}}

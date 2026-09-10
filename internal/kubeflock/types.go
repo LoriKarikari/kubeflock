@@ -84,7 +84,10 @@ type RetainedHome struct {
 
 type retainedHomeState string
 
-const retainedHomeAvailable retainedHomeState = "available"
+const (
+	retainedHomeAvailable retainedHomeState = "available"
+	retainedHomeRestoring retainedHomeState = "restoring"
+)
 
 type CheckResult struct {
 	Name     string `json:"name"`

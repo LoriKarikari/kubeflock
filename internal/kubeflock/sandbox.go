@@ -99,6 +99,11 @@ type createdSandbox struct {
 	Home     PersistentHome
 }
 
+type restoreSelection struct {
+	Retained RetainedHome
+	Approved approvedTemplate
+}
+
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
 	saved, err := listManagedSandboxes(stateDir)
 	if err != nil {
@@ -218,7 +223,7 @@ func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, cl
 	return latest.SandboxName, nil
 }
 
-func createSandbox(ctx context.Context, target KubeTarget, name string, options createOptions) (createdSandbox, error) {
+func createSandbox(ctx context.Context, target KubeTarget, name string, restore *restoreSelection, options createOptions) (createdSandbox, error) {
 	identity, creationLock, err := prepareCreation(target, name, options)
 	if err != nil {
 		return createdSandbox{}, err
@@ -228,9 +233,44 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, options 
 	if err != nil {
 		return createdSandbox{}, err
 	}
+	var retained *RetainedHome
+	if restore == nil {
+		found, err := retainedHomeForOrigin(target, name, options.Global.StateDir)
+		if err != nil {
+			return createdSandbox{}, err
+		}
+		if found != nil {
+			return createdSandbox{}, fmt.Errorf("retained home %s occupies the storage name for sandbox %s; select it explicitly with --home %s or choose a new sandbox name", found.Home.Name, name, found.Home.UID)
+		}
+	} else {
+		found, err := selectRetainedHome(target, restore.Retained.Home.UID, options.Global.StateDir)
+		if err != nil {
+			return createdSandbox{}, err
+		}
+		if *found != restore.Retained {
+			return createdSandbox{}, errors.New("selected retained home changed before attachment; review it and retry")
+		}
+		retained = found
+	}
 	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
 	if err != nil {
 		return createdSandbox{}, err
+	}
+	if restore != nil {
+		if approved.ResourceVersion != restore.Approved.ResourceVersion || approved.Image != restore.Approved.Image {
+			return createdSandbox{}, errors.New("selected SandboxTemplate changed before attachment; review it and retry")
+		}
+		allowedSandboxUID, err := validateRestoreResources(ctx, client, target, name, identity, *retained, approved, options.Global.StateDir)
+		if err != nil {
+			return createdSandbox{}, err
+		}
+		if err := client.authorizeHomeAdoption(ctx, target, retained.Home, allowedSandboxUID); err != nil {
+			return createdSandbox{}, fmt.Errorf("authorize retained home adoption: %w", err)
+		}
+		retained.State = retainedHomeRestoring
+		if err := saveJSON(retainedHomePath(options.Global.StateDir, retained.Home.UID), retained); err != nil {
+			return createdSandbox{}, err
+		}
 	}
 	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, approved, options.Global.StateDir)
 	if err != nil {
@@ -251,9 +291,12 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, options 
 	if sandboxName != name {
 		return createdSandbox{}, fmt.Errorf("SandboxClaim %s/%s was bound to unexpected Sandbox %s", target.Namespace, name, sandboxName)
 	}
-	home, err := client.resolveHome(ctx, target, resolved.Identity, approved.HomeTemplate)
+	home, err := client.resolveHome(ctx, target, resolved.Identity, approved.Home.Name)
 	if err != nil {
 		return createdSandbox{}, err
+	}
+	if retained != nil && home.UID != retained.Home.UID {
+		return createdSandbox{}, fmt.Errorf("sandbox %s attached unexpected home UID %s", name, home.UID)
 	}
 	if err := saveManagedBinding(managed, resolved.Identity, home, options.Global.StateDir, string(claim.Metadata.UID)); err != nil {
 		return createdSandbox{}, err
@@ -266,6 +309,11 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, options 
 	})
 	if err != nil {
 		return createdSandbox{}, err
+	}
+	if retained != nil {
+		if err := os.Remove(retainedHomePath(options.Global.StateDir, retained.Home.UID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return createdSandbox{}, err
+		}
 	}
 	return createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}, nil
 }
@@ -321,21 +369,100 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 	return managed, claim, nil
 }
 
-func prepareCreation(target KubeTarget, name string, options createOptions) (string, *flock.Flock, error) {
+func inspectRestore(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (restoreSelection, error) {
+	identity, err := validateCreation(name, options)
+	if err != nil {
+		return restoreSelection{}, err
+	}
+	retained, err := selectRetainedHome(target, homeUID, options.Global.StateDir)
+	if err != nil {
+		return restoreSelection{}, err
+	}
+	if name != retained.Origin.Name {
+		return restoreSelection{}, fmt.Errorf("retained home %s can only be restored as sandbox %s", retained.Home.Name, retained.Origin.Name)
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return restoreSelection{}, err
+	}
+	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
+	if err != nil {
+		return restoreSelection{}, err
+	}
+	if retained.Template != approved.Name || retained.WarmPool != approved.WarmPool {
+		return restoreSelection{}, fmt.Errorf("retained home %s requires template %s and warm pool %s", retained.Home.Name, retained.Template, retained.WarmPool)
+	}
+	if _, err := validateRestoreResources(ctx, client, target, name, identity, *retained, approved, options.Global.StateDir); err != nil {
+		return restoreSelection{}, err
+	}
+	return restoreSelection{Retained: *retained, Approved: approved}, nil
+}
+
+func validateRestoreResources(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, retained RetainedHome, approved approvedTemplate, stateDir string) (string, error) {
+	saved, err := selectManaged(target, name, stateDir)
+	if err != nil {
+		return "", err
+	}
+	if saved != nil {
+		if saved.Template != approved.Name || saved.WarmPool != approved.WarmPool || saved.IdentityFile != identity {
+			return "", fmt.Errorf("saved sandbox %s/%s uses different restore settings", target.Namespace, name)
+		}
+		if saved.Home != nil && saved.Home.UID != retained.Home.UID {
+			return "", fmt.Errorf("saved sandbox %s/%s uses a different home", target.Namespace, name)
+		}
+	}
+	claim, err := client.getClaim(ctx, target.Namespace, name)
+	if err != nil {
+		return "", err
+	}
+	if claim != nil && (saved == nil || string(claim.Metadata.UID) != saved.Claim.UID) {
+		return "", fmt.Errorf("SandboxClaim %s/%s belongs to another allocation", target.Namespace, name)
+	}
+	sandbox, err := client.getSandboxIfExists(ctx, target, name, "")
+	if err != nil {
+		return "", err
+	}
+	allowedSandboxUID := ""
+	if sandbox != nil {
+		switch {
+		case saved == nil:
+			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
+		case saved.Sandbox != nil && saved.Sandbox.UID != string(sandbox.Metadata.UID):
+			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
+		case saved.Sandbox == nil && (claim == nil || !controlledBy(sandbox.Metadata.OwnerReferences, claim.Metadata.UID)):
+			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
+		}
+		allowedSandboxUID = string(sandbox.Metadata.UID)
+	}
+	if err := client.verifyRestorableHome(ctx, target, name, retained.Home, approved.Home, allowedSandboxUID); err != nil {
+		return "", err
+	}
+	return allowedSandboxUID, nil
+}
+
+func validateCreation(name string, options createOptions) (string, error) {
 	if len(validation.IsDNS1123Label(name)) != 0 {
-		return "", nil, fmt.Errorf("invalid sandbox name %q", name)
+		return "", fmt.Errorf("invalid sandbox name %q", name)
 	}
 	if len(validation.IsDNS1123Label(options.Template)) != 0 {
-		return "", nil, fmt.Errorf("invalid template name %q", options.Template)
+		return "", fmt.Errorf("invalid template name %q", options.Template)
 	}
 	if options.IdentityFile == "" {
-		return "", nil, errors.New("specify --identity for sandbox creation")
+		return "", errors.New("specify --identity for sandbox creation")
 	}
 	identity, err := filepath.EvalSymlinks(options.IdentityFile)
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 	identity, err = filepath.Abs(identity)
+	if err != nil {
+		return "", err
+	}
+	return identity, nil
+}
+
+func prepareCreation(target KubeTarget, name string, options createOptions) (string, *flock.Flock, error) {
+	identity, err := validateCreation(name, options)
 	if err != nil {
 		return "", nil, err
 	}

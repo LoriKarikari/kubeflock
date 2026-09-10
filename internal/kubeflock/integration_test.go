@@ -46,25 +46,36 @@ type fixtureSandbox struct {
 	claim            *fixtureClaim
 	mode             sandboxOperatingMode
 	generation       int
+	incarnation      int
+	sandboxUID       string
 	present          bool
 	homeOwned        bool
+	homeOwner        string
 	homeLabeled      bool
+	homeAdoptable    bool
+	homeStorageClass string
+	homeCapacity     string
+	homeAccessModes  []string
+	homeVolumeMode   string
 	homeMissing      bool
 	loseHomeOnDelete bool
 	reads            int
 }
 
 type fixtureAPI struct {
-	mu            sync.Mutex
-	sandboxes     map[string]*fixtureSandbox
-	failDelete    map[string]int
-	failHomePatch int
-	reAdoptions   int
-	holdMode      bool
-	creates       int
-	methods       []string
-	paths         []string
-	auth          []string
+	mu              sync.Mutex
+	sandboxes       map[string]*fixtureSandbox
+	failDelete      map[string]int
+	failHomePatch   int
+	failClaimCreate int
+	templateClaim   string
+	mountedHome     string
+	reAdoptions     int
+	holdMode        bool
+	creates         int
+	methods         []string
+	paths           []string
+	auth            []string
 }
 
 func (f *fixtureAPI) ensureSandbox(name string) *fixtureSandbox {
@@ -110,6 +121,12 @@ func (f *fixtureAPI) failNextHomePatch() {
 	f.failHomePatch++
 }
 
+func (f *fixtureAPI) failNextClaimCreate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failClaimCreate++
+}
+
 func (f *fixtureAPI) loseHomeOnDelete(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -119,7 +136,41 @@ func (f *fixtureAPI) loseHomeOnDelete(name string) {
 func (f *fixtureAPI) setHomeOwned(name string, owned bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.ensureSandbox(name).homeOwned = owned
+	s := f.ensureSandbox(name)
+	s.homeOwned, s.homeOwner = owned, ""
+}
+
+func (f *fixtureAPI) setForeignHomeOwner(name, owner string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.ensureSandbox(name)
+	s.homeOwned, s.homeOwner = false, owner
+}
+
+func (f *fixtureAPI) mountHome(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mountedHome = name
+}
+
+func (f *fixtureAPI) setHomeStorage(name, storageClass, capacity string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.ensureSandbox(name)
+	s.homeStorageClass, s.homeCapacity = storageClass, capacity
+}
+
+func (f *fixtureAPI) setHomeLayout(name string, accessModes []string, volumeMode string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.ensureSandbox(name)
+	s.homeAccessModes, s.homeVolumeMode = accessModes, volumeMode
+}
+
+func (f *fixtureAPI) setTemplateClaim(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.templateClaim = name
 }
 
 func (f *fixtureAPI) adoptedHomes() int {
@@ -216,7 +267,7 @@ func writeNotFound(response http.ResponseWriter) {
 
 func (f *fixtureAPI) handleTemplate(response http.ResponseWriter, path string) {
 	_, name, _ := strings.CutLast(path, "/")
-	writeFixture(response, templateFixture(name, name != "insecure"))
+	writeFixture(response, templateFixture(name, name != "insecure", f.templateClaimName()))
 }
 
 func (f *fixtureAPI) handlePools(response http.ResponseWriter) {
@@ -225,6 +276,7 @@ func (f *fixtureAPI) handlePools(response http.ResponseWriter) {
 		"kind":       "SandboxWarmPoolList",
 		"items": []any{
 			poolFixture("dev-small"),
+			poolFixture("dev-large"),
 			poolFixture("insecure"),
 		},
 	})
@@ -248,7 +300,8 @@ func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Re
 }
 
 func (f *fixtureAPI) deleteClaim(response http.ResponseWriter, request *http.Request, name string) {
-	if !validOrphanDelete(request, "claim-"+name) {
+	s := f.ensureSandbox(name)
+	if s.claim == nil || !validOrphanDelete(request, string(s.claim.Metadata.UID)) {
 		response.WriteHeader(http.StatusConflict)
 		return
 	}
@@ -282,7 +335,7 @@ func (f *fixtureAPI) handleSandboxes(response http.ResponseWriter, request *http
 }
 
 func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
-	if !validOrphanDelete(request, "sandbox-"+name) {
+	if !validOrphanDelete(request, s.sandboxUID) {
 		response.WriteHeader(http.StatusConflict)
 		return
 	}
@@ -328,7 +381,20 @@ func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Reque
 }
 
 func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Request) {
-	name := strings.TrimPrefix(request.URL.Query().Get("labelSelector"), "agents.x-k8s.io/sandbox=")
+	selector := request.URL.Query().Get("labelSelector")
+	if selector == "" {
+		items := []any{}
+		if f.mountedHome != "" {
+			items = append(items, map[string]any{
+				"apiVersion": "v1", "kind": "Pod",
+				"metadata": map[string]any{"name": "foreign-mount", "namespace": "dev", "uid": "foreign-mount"},
+				"spec":     map[string]any{"volumes": []any{map[string]any{"name": "home", "persistentVolumeClaim": map[string]string{"claimName": f.mountedHome}}}},
+			})
+		}
+		writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "PodList", "items": items})
+		return
+	}
+	name := strings.TrimPrefix(selector, "agents.x-k8s.io/sandbox=")
 	s := f.ensureSandbox(name)
 	items := []any{}
 	if !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended {
@@ -340,7 +406,7 @@ func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Requ
 				"name": "sandbox-" + name,
 				"uid":  fmt.Sprintf("pod-%s-%d", name, s.generation),
 				"ownerReferences": []any{map[string]any{
-					"uid": "sandbox-" + name, "controller": controller,
+					"uid": s.sandboxUID, "controller": controller,
 				}},
 			},
 			"spec": map[string]any{
@@ -376,11 +442,31 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 	controller := true
 	owners := []any{}
 	if s.homeOwned {
-		owners = append(owners, map[string]any{"uid": "sandbox-" + sandbox, "controller": controller})
+		owners = append(owners, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "name": sandbox, "uid": s.sandboxUID, "controller": controller})
+	} else if s.homeOwner != "" {
+		owners = append(owners, map[string]any{"apiVersion": "agents.x-k8s.io/v1beta1", "kind": "Sandbox", "name": "foreign", "uid": s.homeOwner, "controller": controller})
 	}
 	labels := map[string]string{}
 	if s.homeLabeled {
 		labels[sandboxNameHashLabel] = "fixture"
+	}
+	if s.homeAdoptable {
+		labels[sandboxAdoptableLabel] = "true"
+	}
+	storageClass, capacity := s.homeStorageClass, s.homeCapacity
+	if storageClass == "" {
+		storageClass = "longhorn"
+	}
+	if capacity == "" {
+		capacity = "10Gi"
+	}
+	accessModes := s.homeAccessModes
+	if accessModes == nil {
+		accessModes = []string{"ReadWriteOnce"}
+	}
+	spec := map[string]any{"storageClassName": storageClass, "accessModes": accessModes}
+	if s.homeVolumeMode != "" {
+		spec["volumeMode"] = s.homeVolumeMode
 	}
 	return map[string]any{
 		"apiVersion": "v1",
@@ -393,8 +479,8 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 			"labels":          labels,
 			"ownerReferences": owners,
 		},
-		"spec":   map[string]any{"storageClassName": "longhorn"},
-		"status": map[string]any{"capacity": map[string]string{"storage": "10Gi"}},
+		"spec":   spec,
+		"status": map[string]any{"capacity": map[string]string{"storage": capacity}},
 	}
 }
 
@@ -406,15 +492,33 @@ func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Reque
 		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC patch forbidden", "code": 403})
 		return
 	}
-	if !bytes.Contains(data, []byte("sandbox-name-hash")) || bytes.Contains(data, []byte("ownerReferences")) {
+	if bytes.Contains(data, []byte("ownerReferences")) {
 		response.WriteHeader(http.StatusUnprocessableEntity)
 		return
 	}
-	s.homeLabeled = false
+	changed := false
+	if bytes.Contains(data, []byte("sandbox-name-hash")) {
+		s.homeLabeled = false
+		changed = true
+	}
+	if bytes.Contains(data, []byte("adoptable")) {
+		s.homeAdoptable = !bytes.Contains(data, []byte(`"op":"remove"`))
+		changed = true
+	}
+	if !changed {
+		response.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
 	writeFixture(response, homeFixture(name, sandbox, s))
 }
 
 func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Request) {
+	if f.failClaimCreate > 0 {
+		f.failClaimCreate--
+		response.WriteHeader(http.StatusInternalServerError)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim create interrupted", "code": 500})
+		return
+	}
 	var body map[string]any
 	if json.NewDecoder(request.Body).Decode(&body) != nil {
 		response.WriteHeader(http.StatusBadRequest)
@@ -444,17 +548,25 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		return
 	}
 	f.creates++
+	s.incarnation++
+	s.sandboxUID = fixtureUID("sandbox", name, s.incarnation)
 	claim := claimFixture(name, pool)
-	if name != "delayed" && name != "waiting" {
+	claim.Metadata.UID = types.UID(fixtureUID("claim", name, s.incarnation))
+	adopted := s.incarnation == 1 || s.homeAdoptable
+	if adopted && name != "delayed" && name != "waiting" {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 		claim.Status.Sandbox.Name = name
+	} else if !adopted {
+		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "InvalidPVC", Message: "retained home is not adoptable", LastTransitionTime: metav1.Now()}}
 	}
 	s.claim = &claim
 	s.mode = modeRunning
 	s.generation = 1
 	s.present = true
-	s.homeOwned = true
-	s.homeLabeled = true
+	s.homeOwned = adopted
+	if s.incarnation == 1 {
+		s.homeLabeled = true
+	}
 	response.WriteHeader(http.StatusCreated)
 	writeFixture(response, claim)
 }
@@ -475,7 +587,7 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 	s := f.ensureSandbox(name)
 	if s.claim != nil {
 		s.reads++
-		if name == "delayed" && s.reads >= 2 {
+		if name == "delayed" && s.reads >= 2 && s.homeOwned {
 			s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 			s.claim.Status.Sandbox.Name = name
 		}
@@ -484,7 +596,15 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter, request *http.Requ
 	writeFixture(response, map[string]any{"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaimList", "items": items})
 }
 
+func fixtureUID(kind, name string, incarnation int) string {
+	if incarnation < 2 {
+		return kind + "-" + name
+	}
+	return fmt.Sprintf("%s-%s-%d", kind, name, incarnation)
+}
+
 func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[string]any {
+	s := f.ensureSandbox(name)
 	observed := mode
 	if f.holdMode {
 		if mode == modeRunning {
@@ -497,14 +617,21 @@ func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[
 	if observed == modeSuspended {
 		condition = map[string]string{"type": "Suspended", "status": "True", "reason": "Suspended"}
 	}
+	owners := []any{}
+	if s.claim != nil {
+		owners = append(owners, map[string]any{
+			"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim", "name": name, "uid": s.claim.Metadata.UID, "controller": true,
+		})
+	}
 	return map[string]any{
 		"apiVersion": "agents.x-k8s.io/v1beta1",
 		"kind":       "Sandbox",
 		"metadata": map[string]any{
 			"name":            name,
 			"namespace":       "dev",
-			"uid":             "sandbox-" + name,
+			"uid":             s.sandboxUID,
 			"resourceVersion": "1",
+			"ownerReferences": owners,
 		},
 		"spec": map[string]any{"operatingMode": mode},
 		"status": map[string]any{
@@ -553,7 +680,14 @@ func claimFixture(name, pool string) fixtureClaim {
 	return claim
 }
 
-func templateFixture(name string, secure bool) map[string]any {
+func (f *fixtureAPI) templateClaimName() string {
+	if f.templateClaim == "" {
+		return "home"
+	}
+	return f.templateClaim
+}
+
+func templateFixture(name string, secure bool, homeClaim string) map[string]any {
 	runtimeClass := "gvisor"
 	if !secure {
 		runtimeClass = "runc"
@@ -576,6 +710,7 @@ func templateFixture(name string, secure bool) map[string]any {
 		"seccompProfile":           map[string]string{"type": "RuntimeDefault"},
 	}
 	container := map[string]any{
+		"image":           "example.test/sandbox@sha256:fixture",
 		"securityContext": containerSecurity,
 		"ports":           []any{map[string]any{"name": "ssh", "containerPort": 2200}},
 		"resources": map[string]any{
@@ -591,7 +726,7 @@ func templateFixture(name string, secure bool) map[string]any {
 		"containers":                   []any{container},
 		"volumes": []any{map[string]any{
 			"name":                  "home",
-			"persistentVolumeClaim": map[string]string{"claimName": "home"},
+			"persistentVolumeClaim": map[string]string{"claimName": homeClaim},
 		}},
 	}
 
@@ -603,8 +738,9 @@ func templateFixture(name string, secure bool) map[string]any {
 			"networkPolicyManagement": "Managed",
 			"podTemplate":             map[string]any{"spec": podSpec},
 			"volumeClaimTemplates": []any{map[string]any{
-				"metadata": map[string]string{"name": "home"},
+				"metadata": map[string]string{"name": homeClaim},
 				"spec": map[string]any{
+					"accessModes":      []string{"ReadWriteOnce"},
 					"storageClassName": "longhorn",
 					"resources": map[string]any{
 						"requests": map[string]string{"storage": "10Gi"},
@@ -853,6 +989,14 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	const sandboxUID = "sandbox-delayed"
 	h := newHarness(t)
 
+	assertCLI(t, "restore action", h.run(t, "sandbox", "restore-action"), 0, "", "")
+	var actionState herdrFixture
+	data, _ := os.ReadFile(h.herdrState)
+	_ = json.Unmarshal(data, &actionState)
+	if !slices.Contains(actionState.PaneArgs, "restore") {
+		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
+	}
+
 	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
 	if creates, reads := h.api.createCount(), h.api.claimReads("delayed"); creates != 1 || reads != 2 {
@@ -886,7 +1030,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	reconnected := h.run(t, "sandbox", "reconnect", "delayed", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "reconnect", reconnected, 0, "", "")
 	var herdrData herdrFixture
-	data, _ := os.ReadFile(h.herdrState)
+	data, _ = os.ReadFile(h.herdrState)
 	_ = json.Unmarshal(data, &herdrData)
 	if herdrData.AddCount != 1 {
 		t.Fatalf("Herdr add count = %d", herdrData.AddCount)
@@ -981,7 +1125,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		homes[0].Template != "dev-small" || homes[0].WarmPool != "dev-small-pool" || homes[0].State != "available" {
 		t.Fatalf("retained homes = %#v", homes)
 	}
-	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "home-delayed\tavailable", "")
+	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "uid=home-delayed-uid", "")
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("connection state still exists: %v", err)
 	}
@@ -995,13 +1139,94 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("managed SSH entry was not removed safely: %s", sshData)
 	}
 
+	outside := homes[0]
+	outside.Home.UID = "outside-home-uid"
+	outside.Origin.Context = "other"
+	if err := saveJSON(retainedHomePath(h.stateDir, outside.Home.UID), outside); err != nil {
+		t.Fatal(err)
+	}
+	outsideTarget := h.run(t, "sandbox", "create", "delayed", "--home", outside.Home.UID, "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "outside target", outsideTarget, 2, "", "belongs to target other/dev")
+	if listed := h.retainedHomes(t); len(listed) != 1 || listed[0].Home.UID != "home-delayed-uid" {
+		t.Fatalf("home list exposed another target: %#v", listed)
+	}
+	if err := os.Remove(retainedHomePath(h.stateDir, outside.Home.UID)); err != nil {
+		t.Fatal(err)
+	}
+
+	freshSameName := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "fresh original name", freshSameName, 2, "", "select it explicitly with --home home-delayed-uid")
+	wrongName := h.run(t, "sandbox", "create", "replacement", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "renamed restore", wrongName, 2, "", "can only be restored as sandbox delayed")
+	wrongTemplate := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-large", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "template mismatch", wrongTemplate, 2, "", "requires template dev-small and warm pool dev-small-pool")
+
+	h.api.setForeignHomeOwner("delayed", "sandbox-foreign")
+	foreignOwner := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "conflicting restore", foreignOwner, 2, "", "is owned by Sandbox/foreign")
+	h.api.setHomeOwned("delayed", false)
+	h.api.mountHome("home-delayed")
+	mounted := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "mounted restore", mounted, 2, "", "is mounted by Pod foreign-mount")
+	h.api.mountHome("")
+
+	h.api.setHomeStorage("delayed", "slow", "10Gi")
+	wrongClass := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "storage class mismatch", wrongClass, 2, "", `uses storage class "slow", not template storage class "longhorn"`)
+	h.api.setHomeStorage("delayed", "longhorn", "1Gi")
+	smallHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "capacity mismatch", smallHome, 2, "", "capacity 1Gi is incompatible with template request 10Gi")
+	h.api.setHomeStorage("delayed", "", "")
+	h.api.setHomeLayout("delayed", []string{"ReadOnlyMany"}, "")
+	readOnlyHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "access mode mismatch", readOnlyHome, 2, "", "does not support template access mode ReadWriteOnce")
+	h.api.setHomeLayout("delayed", nil, "Block")
+	blockHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "volume mode mismatch", blockHome, 2, "", "has an incompatible volume mode")
+	h.api.setHomeLayout("delayed", nil, "")
+	h.api.setTemplateClaim("other")
+	claimDrift := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "claim name drift", claimDrift, 2, "", "does not match template claim name other")
+	h.api.setTemplateClaim("")
+
+	h.api.failNextClaimCreate()
+	interruptedRestore := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "interrupted restore", interruptedRestore, 2, "", "claim create interrupted")
+	if state := h.api.state("delayed"); state.claim || state.sandbox || state.homeOwned {
+		t.Fatalf("interrupted restore made the home unrecoverable: %#v", state)
+	}
+	if remaining := h.retainedHomes(t); len(remaining) != 1 || remaining[0].Home.UID != "home-delayed-uid" || remaining[0].State != retainedHomeRestoring {
+		t.Fatalf("interrupted restore lost its retained record: %#v", remaining)
+	}
+
+	failedConnect := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "3s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "restore connect failure", failedConnect, 2, "", "herdr exited")
+	if state := h.api.state("delayed"); !state.claim || !state.sandbox || !state.homeOwned {
+		t.Fatalf("restore connect failure lost its allocation: %#v", state)
+	}
+	if remaining := h.retainedHomes(t); len(remaining) != 1 || remaining[0].State != retainedHomeRestoring {
+		t.Fatalf("restore connect failure lost its retained record: %#v", remaining)
+	}
+
+	restored := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "3s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "restore", restored, 0, "restored home home-delayed", "template dev-small image example.test/sandbox@sha256:fixture")
+	if state := h.api.state("delayed"); !state.claim || !state.sandbox || !state.homeOwned {
+		t.Fatalf("restore state: %#v", state)
+	}
+	if remaining := h.retainedHomes(t); len(remaining) != 0 {
+		t.Fatalf("restored home remained available: %#v", remaining)
+	}
+	if _, err := os.Stat(h.connectionState("sandbox-delayed-2")); err != nil {
+		t.Fatalf("restored sandbox did not get identity-bound SSH state: %v", err)
+	}
+
 	second := h.run(t, "sandbox", "create", "fragile", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "second sandbox", second, 0, "ready sandbox fragile", "")
 	h.api.loseHomeOnDelete("fragile")
 	lost := h.run(t, "sandbox", "delete", "fragile", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "vanished home", lost, 2, "", "no retained home was recorded")
-	if remaining := h.retainedHomes(t); len(remaining) != 1 || remaining[0].Origin.Name != "delayed" {
-		t.Fatalf("a vanished home changed the retained list: %#v", remaining)
+	if remaining := h.retainedHomes(t); len(remaining) != 0 {
+		t.Fatalf("a vanished home created a retained record: %#v", remaining)
 	}
 
 	insecure := h.run(t, "sandbox", "create", "unsafe", "--template", "insecure", "--identity", h.identity, "--kubeconfig", h.kubeconfig)
