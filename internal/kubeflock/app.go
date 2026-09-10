@@ -463,9 +463,11 @@ func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmati
 			confirmation = ""
 		}
 	}
+	if confirmation == "" {
+		return errors.New("confirmation was empty; no storage was deleted")
+	}
 	if confirmation != uid {
-		fmt.Fprintln(a.Out, "cancelled; no storage was deleted")
-		return nil
+		return fmt.Errorf("confirmation %q does not match PVC UID %s; no storage was deleted", confirmation, uid)
 	}
 	if err := deleteRetainedHome(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
 		return err

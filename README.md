@@ -149,7 +149,7 @@ Homes are listed by PVC name and UID, with their origin, template, capacity, sto
 kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
 ```
 
-Kubeflock shows the target, PVC identity, capacity, storage class, PV, and data-loss warning before requiring the exact PVC UID. Scripts must pass the same UID through `--confirm`. The command refuses allocated, mounted, restoring, replaced, or ambiguously owned storage. It also refuses a `Retain` reclaim policy because Kubernetes cannot confirm deletion of the underlying storage asset. For `Delete`, Kubeflock records the exact PVC and PV identities, deletes only that PVC with a UID precondition, and reports success only after both objects disappear. A failed attempt remains listed as `deleting` with its residual PV for a safe retry.
+Kubeflock shows the target, PVC identity, capacity, storage class, PV, and data-loss warning before requiring the exact PVC UID. Scripts must pass the same UID through `--confirm`. A missing or mismatched confirmation exits non-zero and deletes nothing. The command refuses allocated, mounted, restoring, replaced, or ambiguously owned storage. It also refuses a `Retain` reclaim policy because Kubernetes cannot confirm deletion of the underlying storage asset. For `Delete`, Kubeflock records the exact PVC and PV identities, deletes only that PVC with a UID precondition, and reports success only after both objects disappear. A failed attempt remains listed as `deleting` with its residual PV for a safe retry.
 
 ### Disconnect
 
