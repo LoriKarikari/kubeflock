@@ -44,17 +44,29 @@ The chart creates the developer namespace, access rules, budgets, Sandbox templa
 
 ## Configure
 
+### Set the target
+
 ```bash
 kubeflock cluster config --context NAME --namespace NAME
-kubeflock cluster config show [--output text|json]
-kubeflock cluster check [--timeout 60s] [--output text|json]
 ```
 
 The saved context remains authoritative when the current kubectl context changes.
 
+### Show the target
+
+```bash
+kubeflock cluster config show [--output text|json]
+```
+
+### Check the target
+
+```bash
+kubeflock cluster check [--timeout 60s] [--output text|json]
+```
+
 ## Sandboxes
 
-Create and connect a Sandbox:
+### Create and connect
 
 ```bash
 kubeflock sandbox create my-agent \
@@ -64,7 +76,7 @@ kubeflock sandbox create my-agent \
 
 Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities.
 
-Restore a retained home by its PVC UID:
+### Restore a retained home
 
 ```bash
 kubeflock sandbox create my-agent \
@@ -75,7 +87,7 @@ kubeflock sandbox create my-agent \
 
 Restore uses the template recorded at deletion. Kubeflock prints that template image before it authorizes attachment. Restore requires the original sandbox name, because Agent Sandbox derives the PVC name from it, so a plain create under that name fails and names the UID to select. Without `--home`, Kubeflock never adopts retained data.
 
-List Sandboxes:
+### List sandboxes
 
 ```bash
 kubeflock sandbox list [--output text|json]
@@ -83,7 +95,7 @@ kubeflock sandbox list [--output text|json]
 
 Kubeflock reports `provisioning`, `ready`, `failed`, and `disconnected` lifecycle states.
 
-Connect to a new Sandbox:
+### Connect
 
 ```bash
 kubeflock sandbox connect NAME --identity PATH
@@ -91,7 +103,7 @@ kubeflock sandbox connect NAME --identity PATH
 
 A first connection pins that Sandbox's host key and needs the identity file.
 
-Reconnect with a saved identity:
+### Reconnect
 
 ```bash
 kubeflock sandbox reconnect [NAME]
@@ -99,7 +111,7 @@ kubeflock sandbox reconnect [NAME]
 
 Reconnect takes no flags. A changed host key is refused rather than pinned again.
 
-Stop Sandbox compute:
+### Stop
 
 ```bash
 kubeflock sandbox stop [NAME] [--timeout 5m]
@@ -107,7 +119,7 @@ kubeflock sandbox stop [NAME] [--timeout 5m]
 
 Stopping terminates compute after Herdr detaches and retains the persistent home.
 
-Resume Sandbox compute:
+### Resume
 
 ```bash
 kubeflock sandbox resume [NAME] [--timeout 5m]
@@ -115,7 +127,7 @@ kubeflock sandbox resume [NAME] [--timeout 5m]
 
 Resuming starts a new Pod from the existing Sandbox and reconnects with the saved host-key pin.
 
-Delete a Sandbox and retain its home:
+### Delete
 
 ```bash
 kubeflock sandbox delete [NAME] [--timeout 5m]
@@ -123,7 +135,7 @@ kubeflock sandbox delete [NAME] [--timeout 5m]
 
 Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditions, and records the surviving PVC as a retained home. Kubeflock never deletes a PVC, and it copies no private keys, repository credentials, model credentials, or SSH agents into a Sandbox.
 
-List retained homes:
+### List retained homes
 
 ```bash
 kubeflock sandbox home list [--output text|json]
@@ -131,7 +143,7 @@ kubeflock sandbox home list [--output text|json]
 
 Homes are listed by PVC name and UID, with their origin, template, capacity, storage class, and state. The list covers the configured target only, so homes recorded for another context or namespace stay hidden. A home shows `restoring` when an interrupted restore left its record behind, and a retry finishes the attachment.
 
-Disconnect a Sandbox:
+### Disconnect
 
 ```bash
 kubeflock sandbox disconnect [NAME]
