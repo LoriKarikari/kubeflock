@@ -352,6 +352,16 @@ func controlledBy(owners []metav1.OwnerReference, uid types.UID) bool {
 	})
 }
 
+func foreignOwner(owners []metav1.OwnerReference, allowed types.UID) (metav1.OwnerReference, bool) {
+	if len(owners) == 0 {
+		return metav1.OwnerReference{}, false
+	}
+	if allowed != "" && len(owners) == 1 && controlledBy(owners, allowed) {
+		return metav1.OwnerReference{}, false
+	}
+	return owners[0], true
+}
+
 func findSSHPort(ports []corev1.ContainerPort) int32 {
 	for _, port := range ports {
 		if port.Name == "ssh" && port.ContainerPort > 0 && port.ContainerPort <= 65535 {
@@ -456,10 +466,13 @@ func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox S
 	return pvc, nil
 }
 
-func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, expected PersistentHome, template corev1.PersistentVolumeClaim, allowedSandboxUID string) error {
+func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, name string, expected PersistentHome, template corev1.PersistentVolumeClaim, allowedSandboxUID string) error {
 	pvc, err := k.homePVC(ctx, target, expected)
 	if err != nil {
 		return err
+	}
+	if expected.Name != template.Name+"-"+name {
+		return fmt.Errorf("retained home %s does not match template claim name %s", pvc.Name, template.Name)
 	}
 	if pvc.Spec.StorageClassName == nil || template.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != *template.Spec.StorageClassName {
 		return fmt.Errorf("retained home %s uses storage class %q, not template storage class %q", pvc.Name, ptr.Deref(pvc.Spec.StorageClassName, ""), ptr.Deref(template.Spec.StorageClassName, ""))
@@ -477,8 +490,7 @@ func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget
 	if ptr.Deref(pvc.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != ptr.Deref(template.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) {
 		return fmt.Errorf("retained home %s has an incompatible volume mode", pvc.Name)
 	}
-	if len(pvc.OwnerReferences) != 0 && (allowedSandboxUID == "" || len(pvc.OwnerReferences) != 1 || !controlledBy(pvc.OwnerReferences, types.UID(allowedSandboxUID))) {
-		owner := pvc.OwnerReferences[0]
+	if owner, conflict := foreignOwner(pvc.OwnerReferences, types.UID(allowedSandboxUID)); conflict {
 		return fmt.Errorf("retained home %s is owned by %s/%s", pvc.Name, owner.Kind, owner.Name)
 	}
 	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{})
@@ -500,11 +512,7 @@ func (k *kubeClient) authorizeHomeAdoption(ctx context.Context, target KubeTarge
 	if err != nil {
 		return err
 	}
-	if len(pvc.OwnerReferences) != 0 {
-		if allowedSandboxUID != "" && len(pvc.OwnerReferences) == 1 && controlledBy(pvc.OwnerReferences, types.UID(allowedSandboxUID)) {
-			return nil
-		}
-		owner := pvc.OwnerReferences[0]
+	if owner, conflict := foreignOwner(pvc.OwnerReferences, types.UID(allowedSandboxUID)); conflict {
 		return fmt.Errorf("retained home %s became owned by %s/%s before allocation", pvc.Name, owner.Kind, owner.Name)
 	}
 	patch := []map[string]any{

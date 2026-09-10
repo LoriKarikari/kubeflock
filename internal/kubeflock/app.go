@@ -234,7 +234,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createSelected(command.Context(), target, args[0], homeUID, createOptions{
+			created, err := a.createOrRestore(command.Context(), target, args[0], homeUID, createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      timeout,
@@ -493,16 +493,16 @@ func createActionCommand(pane string) *cobra.Command {
 	}
 }
 
-func (a *App) createSelected(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (createdSandbox, error) {
+func (a *App) createOrRestore(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (createdSandbox, error) {
 	if homeUID == "" {
-		return createSandbox(ctx, target, name, options)
+		return createSandbox(ctx, target, name, nil, options)
 	}
 	selection, err := inspectRestore(ctx, target, name, homeUID, options)
 	if err != nil {
 		return createdSandbox{}, err
 	}
 	fmt.Fprintf(a.Err, "restoring home %s (UID %s) as %s/%s with template %s image %s\n", selection.Retained.Home.Name, selection.Retained.Home.UID, target.Namespace, name, selection.Approved.Name, selection.Approved.Image)
-	return restoreSandbox(ctx, target, name, selection, options)
+	return createSandbox(ctx, target, name, &selection, options)
 }
 
 func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
@@ -536,7 +536,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createSelected(command.Context(), target, name, "", createOptions{
+			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      5 * time.Minute,
@@ -592,7 +592,7 @@ func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil
 			}
-			created, err := restoreSandbox(command.Context(), target, name, selection, create)
+			created, err := createSandbox(command.Context(), target, name, &selection, create)
 			if err != nil {
 				return err
 			}
