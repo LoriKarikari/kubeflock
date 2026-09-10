@@ -55,9 +55,7 @@ kubeflock cluster check       [--timeout 60s] [--output text|json]
 
 The saved context persists across `kubectl` context switches.
 
-### Sandboxes
-
-Create a sandbox and connect it to Herdr:
+### Create
 
 ```bash
 kubeflock sandbox create NAME --template NAME --identity PATH [flags]
@@ -71,21 +69,55 @@ kubeflock sandbox create NAME --template NAME --identity PATH [flags]
 | `--home PVC_UID` | Restore a retained home |
 | `--timeout DURATION` | Default `5m` |
 
-Lifecycle:
+### List
 
 ```bash
-kubeflock sandbox list        [--output text|json]
-kubeflock sandbox connect     NAME --identity PATH
-kubeflock sandbox reconnect   [NAME]
-kubeflock sandbox disconnect  [NAME]
-kubeflock sandbox stop        [NAME] [--timeout 5m]
-kubeflock sandbox resume      [NAME] [--timeout 5m]
-kubeflock sandbox delete      [NAME] [--timeout 5m]
+kubeflock sandbox list [--output text|json]
 ```
 
-- `stop` keeps the persistent home. `resume` starts a new Pod and reconnects with the saved host key.
-- `delete` retains the PVC as a home you can restore or permanently delete.
-- `reconnect` refuses a changed host key.
+### Connect
+
+```bash
+kubeflock sandbox connect NAME --identity PATH
+```
+
+### Reconnect
+
+```bash
+kubeflock sandbox reconnect [NAME]
+```
+
+Refuses a changed host key.
+
+### Disconnect
+
+```bash
+kubeflock sandbox disconnect [NAME]
+```
+
+### Stop
+
+```bash
+kubeflock sandbox stop [NAME] [--timeout 5m]
+```
+
+Keeps the persistent home.
+
+### Resume
+
+```bash
+kubeflock sandbox resume [NAME] [--timeout 5m]
+```
+
+Starts a new Pod and reconnects with the saved host key.
+
+### Delete
+
+```bash
+kubeflock sandbox delete [NAME] [--timeout 5m]
+```
+
+Retains the PVC as a home you can restore or permanently delete.
 
 ### Credentials
 
