@@ -213,6 +213,7 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.lifecycleCommand("resume", modeRunning, options),
 		a.retainCommand(options),
 		a.homeCommand(options),
+		a.credentialCommand(options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
 		createActionCommand("create"),
@@ -227,6 +228,7 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
 	var template, identity, homeUID, repository, branch string
+	var credentials []string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -243,6 +245,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 				Template:     template,
 				IdentityFile: identity,
 				Project:      requestedProject(repository, branch),
+				Credentials:  credentials,
 				Timeout:      timeout,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -258,6 +261,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
 	command.Flags().StringVar(&repository, "repository", "", "Git repository to clone inside the sandbox")
 	command.Flags().StringVar(&branch, "branch", "", "Git branch to check out")
+	command.Flags().StringArrayVar(&credentials, "credential", nil, "approved credential to attach (repeatable)")
 	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning or checkout timeout")
 	return command
 }
@@ -481,6 +485,37 @@ func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmati
 	return nil
 }
 
+func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
+	credential := &cobra.Command{Use: "credential", Args: cobra.NoArgs}
+	credential.AddCommand(&cobra.Command{
+		Use:  "list",
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			client, err := newKubeClient(command.Context(), target, options.Kubeconfig)
+			if err != nil {
+				return err
+			}
+			references, err := client.credentialReferences(command.Context(), target.Namespace)
+			if err != nil {
+				return err
+			}
+			if len(references) == 0 {
+				fmt.Fprintln(a.Out, "no approved credentials")
+				return nil
+			}
+			for _, reference := range references {
+				fmt.Fprintf(a.Out, "%s\t%s\n", reference.Name, reference.Environment)
+			}
+			return nil
+		},
+	})
+	return credential
+}
+
 func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:  "disconnect [NAME]",
@@ -566,6 +601,23 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			client, err := newKubeClient(command.Context(), target, options.Kubeconfig)
+			if err != nil {
+				return err
+			}
+			references, err := client.credentialReferences(command.Context(), target.Namespace)
+			if err != nil {
+				return err
+			}
+			names := make([]string, len(references))
+			for i, reference := range references {
+				names[i] = reference.Name
+			}
+			fmt.Fprintf(a.Out, "Approved credentials: %s\n", cmp.Or(strings.Join(names, ", "), "none"))
 			scanner := bufio.NewScanner(a.In)
 			prompt := func(label string) (string, error) {
 				fmt.Fprint(a.Out, label)
@@ -586,6 +638,14 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			credentialInput, err := prompt("Credentials (comma-separated, optional): ")
+			if err != nil {
+				return err
+			}
+			credentials := strings.FieldsFunc(credentialInput, func(character rune) bool { return character == ',' })
+			for i := range credentials {
+				credentials[i] = strings.TrimSpace(credentials[i])
+			}
 			repository, err := prompt("Git repository (optional): ")
 			if err != nil {
 				return err
@@ -605,14 +665,11 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil
 			}
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
 			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Project:      requestedProject(repository, branch),
+				Credentials:  credentials,
 				Timeout:      5 * time.Minute,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -637,6 +694,9 @@ func (a *App) reportCreated(created createdSandbox, restored bool) error {
 		fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
 	} else {
 		fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+	}
+	if created.Credentials != 0 {
+		fmt.Fprintf(a.Out, "attached %d approved credential(s)\n", created.Credentials)
 	}
 	if created.Project == nil {
 		return nil

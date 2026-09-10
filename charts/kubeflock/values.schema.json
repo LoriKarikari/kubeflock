@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["namespace", "access", "sandbox", "capacity"],
+  "required": ["namespace", "access", "credentials", "sandbox", "capacity"],
   "properties": {
     "namespace": {
       "type": "object",
@@ -38,6 +38,21 @@
               }
             ]
           }
+        }
+      }
+    },
+    "credentials": {
+      "type": "array",
+      "description": "Credential aliases backed by Secret keys in the developer namespace.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "secretName", "key", "environment"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+          "secretName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+          "key": { "type": "string", "pattern": "^[-._a-zA-Z0-9]+$", "maxLength": 253 },
+          "environment": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" }
         }
       }
     },

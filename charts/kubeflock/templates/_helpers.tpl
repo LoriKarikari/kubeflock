@@ -11,6 +11,18 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- fail (printf "access.subjects %q grants every identity in the cluster; list explicit users, groups, or service accounts" .name) }}
 {{- end }}
 {{- end }}
+{{- $credentialNames := dict -}}
+{{- $credentialEnvironments := dict -}}
+{{- range .Values.credentials -}}
+{{- if hasKey $credentialNames .name -}}
+{{- fail (printf "credentials contains duplicate name %q" .name) -}}
+{{- end -}}
+{{- if hasKey $credentialEnvironments .environment -}}
+{{- fail (printf "credentials contains duplicate environment %q" .environment) -}}
+{{- end -}}
+{{- $_ := set $credentialNames .name true -}}
+{{- $_ := set $credentialEnvironments .environment true -}}
+{{- end -}}
 {{- if gt (int .Values.sandbox.resources.cpuRequestMillicores) (int .Values.sandbox.resources.cpuLimitMillicores) -}}
 {{- fail "sandbox.resources.cpuRequestMillicores cannot exceed cpuLimitMillicores" -}}
 {{- end -}}

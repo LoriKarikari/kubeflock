@@ -69,6 +69,7 @@ type ManagedSandbox struct {
 	Template     string           `json:"template"`
 	WarmPool     string           `json:"warmPool"`
 	IdentityFile string           `json:"identityFile"`
+	Credentials  []string         `json:"credentials,omitzero"`
 	Sandbox      *SandboxIdentity `json:"sandbox,omitzero"`
 	Home         *PersistentHome  `json:"home,omitzero"`
 }

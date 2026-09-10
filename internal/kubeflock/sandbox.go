@@ -78,6 +78,7 @@ type createOptions struct {
 	Template     string
 	IdentityFile string
 	Project      *projectRequest
+	Credentials  []string
 	Timeout      time.Duration
 	Poll         time.Duration
 	Global       globalOptions
@@ -100,13 +101,14 @@ type retainResult struct {
 }
 
 type createdSandbox struct {
-	Name     string
-	Template string
-	WarmPool string
-	SSHAlias string
-	Home     PersistentHome
-	Project  *projectRequest
-	Checkout error
+	Name        string
+	Template    string
+	WarmPool    string
+	SSHAlias    string
+	Home        PersistentHome
+	Project     *projectRequest
+	Checkout    error
+	Credentials int
 }
 
 type restoreSelection struct {
@@ -287,7 +289,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 			return createdSandbox{}, err
 		}
 	}
-	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, approved, options.Global.StateDir)
+	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, options.Credentials, approved, options.Global.StateDir)
 	if err != nil {
 		return createdSandbox{}, err
 	}
@@ -316,6 +318,13 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if err := saveManagedBinding(managed, resolved.Identity, home, options.Global.StateDir, string(claim.Metadata.UID)); err != nil {
 		return createdSandbox{}, err
 	}
+	credentials, err := client.resolveCredentials(ctx, target.Namespace, options.Credentials)
+	if err != nil {
+		return createdSandbox{}, err
+	}
+	if err := installCredentials(ctx, target, resolved, credentials, options.Global); err != nil {
+		return createdSandbox{}, err
+	}
 	connection, err := connect(ctx, target, connectOptions{
 		Name:         name,
 		ExpectedUID:  resolved.Identity.UID,
@@ -330,7 +339,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 			return createdSandbox{}, err
 		}
 	}
-	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}
+	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias, Credentials: len(credentials)}
 	if options.Project != nil {
 		created.Project = options.Project
 		created.Checkout = checkoutProject(ctx, target, resolved, *options.Project, options)
@@ -368,7 +377,7 @@ func saveManagedBinding(managed *ManagedSandbox, sandbox SandboxIdentity, home P
 	return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
 }
 
-func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, approved approvedTemplate, stateDir string) (*ManagedSandbox, *sandboxClaim, error) {
+func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, credentials []string, approved approvedTemplate, stateDir string) (*ManagedSandbox, *sandboxClaim, error) {
 	saved, err := selectManaged(target, name, stateDir)
 	if err != nil {
 		return nil, nil, err
@@ -378,6 +387,11 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 	}
 	if saved != nil && saved.IdentityFile != identity {
 		return nil, nil, fmt.Errorf("saved sandbox %s/%s uses a different SSH identity file", target.Namespace, name)
+	}
+	if saved != nil {
+		if err := sameCredentials(saved.Credentials, credentials); err != nil {
+			return nil, nil, fmt.Errorf("saved sandbox %s/%s: %w", target.Namespace, name, err)
+		}
 	}
 	claim, err := obtainClaim(ctx, client, target, name, approved.WarmPool)
 	if err != nil {
@@ -401,6 +415,7 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 		Template:     approved.Name,
 		WarmPool:     approved.WarmPool,
 		IdentityFile: identity,
+		Credentials:  slices.Clone(credentials),
 	}
 	if err := saveJSON(managedSandboxPath(stateDir, string(claim.Metadata.UID)), managed); err != nil {
 		return nil, nil, err

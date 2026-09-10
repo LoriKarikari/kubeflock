@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -30,13 +31,14 @@ type globalOptions struct {
 }
 
 type accessCheck struct {
-	Name        string
-	Verb        string
-	Group       string
-	Resource    string
-	Subresource string
-	Namespaced  bool
-	Advisory    bool
+	Name         string
+	Verb         string
+	Group        string
+	Resource     string
+	ResourceName string
+	Subresource  string
+	Namespaced   bool
+	Advisory     bool
 }
 
 func (c accessCheck) resourceArg() string {
@@ -65,6 +67,7 @@ var requiredAccess = []accessCheck{
 	{Name: "perm-list-sandboxwarmpools", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxwarmpools", Namespaced: true},
 	{Name: "perm-list-pods", Verb: "list", Resource: "pods", Namespaced: true},
 	{Name: "perm-create-pods-exec", Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
+	{Name: "perm-get-credential-config", Verb: "get", Resource: "configmaps", ResourceName: credentialConfigName, Namespaced: true},
 	{Name: "perm-get-persistentvolumeclaims", Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
 	{Name: "perm-patch-persistentvolumeclaims", Verb: "patch", Resource: "persistentvolumeclaims", Namespaced: true},
 	{Name: "perm-delete-persistentvolumeclaims", Verb: "delete", Resource: "persistentvolumeclaims", Namespaced: true},
@@ -77,11 +80,15 @@ var requiredAccess = []accessCheck{
 }
 
 func runKubectl(ctx context.Context, options globalOptions, args ...string) (string, error) {
+	return runKubectlInput(ctx, options, nil, args...)
+}
+
+func runKubectlInput(ctx context.Context, options globalOptions, input io.Reader, args ...string) (string, error) {
 	env := []string{}
 	if options.Kubeconfig != "" {
 		env = append(env, "KUBECONFIG="+options.Kubeconfig)
 	}
-	return runCaptured(ctx, options.Kubectl, args, env, nil)
+	return runCaptured(ctx, options.Kubectl, args, env, input)
 }
 
 func baseArgs(target KubeTarget, requestTimeout string, args ...string) []string {
@@ -347,6 +354,9 @@ func permissionCheck(
 ) CheckResult {
 	shown := access.qualified()
 	args := []string{"auth", "can-i", access.Verb, access.resourceArg()}
+	if access.ResourceName != "" {
+		args = append(args, access.ResourceName)
+	}
 	if access.Subresource != "" {
 		args = append(args, "--subresource="+access.Subresource)
 	}
