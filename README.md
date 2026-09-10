@@ -43,149 +43,67 @@ helm upgrade --install kubeflock charts/kubeflock \
 
 The chart creates the developer namespace, access rules, budgets, sandbox template, and warm pool (standbys default to zero). See [Helm chart documentation](charts/kubeflock/README.md) for all values and GitOps use.
 
-## Configure the target cluster
+## Usage
 
-Save the target context and namespace:
+### Cluster
 
 ```bash
 kubeflock cluster config --context NAME --namespace NAME
+kubeflock cluster config show [--output text|json]
+kubeflock cluster check       [--timeout 60s] [--output text|json]
 ```
 
 The saved context persists across `kubectl` context switches.
 
-Show the saved target:
+### Sandboxes
+
+Create a sandbox and connect it to Herdr:
 
 ```bash
-kubeflock cluster config show [--output text|json]
+kubeflock sandbox create NAME --template NAME --identity PATH [flags]
 ```
 
-Check cluster support:
+| Flag | Description |
+|------|-------------|
+| `--repository URL` | Clone into `/home/agent/project` |
+| `--branch NAME` | Branch to clone (requires `--repository`) |
+| `--credential ALIAS` | Attach an approved credential (repeatable) |
+| `--home PVC_UID` | Restore a retained home |
+| `--timeout DURATION` | Default `5m` |
+
+Lifecycle:
 
 ```bash
-kubeflock cluster check [--timeout 60s] [--output text|json]
+kubeflock sandbox list        [--output text|json]
+kubeflock sandbox connect     NAME --identity PATH
+kubeflock sandbox reconnect   [NAME]
+kubeflock sandbox disconnect  [NAME]
+kubeflock sandbox stop        [NAME] [--timeout 5m]
+kubeflock sandbox resume      [NAME] [--timeout 5m]
+kubeflock sandbox delete      [NAME] [--timeout 5m]
 ```
 
-## Manage sandboxes
+- `stop` keeps the persistent home. `resume` starts a new Pod and reconnects with the saved host key.
+- `delete` retains the PVC as a home you can restore or permanently delete.
+- `reconnect` refuses a changed host key.
 
-### Create and connect
-
-```bash
-kubeflock sandbox create my-agent \
-  --template dev-small \
-  --identity ~/.ssh/id_ed25519 \
-  --repository https://github.com/example/project.git \
-  --branch main
-```
-
-Creates the sandbox, connects it to Herdr, and clones the repository into `/home/agent/project`. Omit `--repository` and `--branch` for an empty sandbox.
-
-List approved credentials and attach what the sandbox needs:
+### Credentials
 
 ```bash
 kubeflock sandbox credential list
-kubeflock sandbox create my-agent \
-  --template dev-small \
-  --identity ~/.ssh/id_ed25519 \
-  --credential anthropic
 ```
 
-Each alias maps to a Secret key in the configured namespace. Values transfer over stdin and export as the administrator-defined environment variable. They never enter images, local state, command arguments, or diagnostic output. No cross-namespace references.
+Each alias maps to a Secret key in the configured namespace. Values transfer over stdin and never enter images, local state, or command arguments. Re-running `create` refreshes rotated credentials.
 
-Credentials persist in `~/.config/kubeflock/credentials` (mode `0600`) across stop, resume, and restore. Re-running `create` refreshes rotated credentials. A missing Secret stops credential attachment but leaves the sandbox available.
+Repository URLs with embedded credentials are rejected. No keys, credentials, or agents are copied from your workstation.
 
-Retrying a failed create reuses saved Claim, Sandbox, PVC, and Herdr identities. A failed clone leaves the sandbox available for another attempt without replacing an existing checkout.
-
-Configure Git credentials or SSH keys inside the sandbox. Repository URLs with embedded credentials are rejected. No keys, credentials, or agents are copied from your workstation.
-
-### List sandboxes
+### Retained homes
 
 ```bash
-kubeflock sandbox list [--output text|json]
-```
-
-Reports `provisioning`, `ready`, `failed`, and `disconnected` states.
-
-### Connect
-
-```bash
-kubeflock sandbox connect NAME --identity PATH
-```
-
-The first connection saves the sandbox host key.
-
-### Reconnect
-
-```bash
-kubeflock sandbox reconnect [NAME]
-```
-
-Refuses a changed host key.
-
-### Disconnect
-
-```bash
-kubeflock sandbox disconnect [NAME]
-```
-
-The sandbox keeps running.
-
-### Stop
-
-```bash
-kubeflock sandbox stop [NAME] [--timeout 5m]
-```
-
-Disconnects Herdr, stops compute, and keeps the persistent home.
-
-### Resume
-
-```bash
-kubeflock sandbox resume [NAME] [--timeout 5m]
-```
-
-Starts a new Pod for the existing Sandbox and reconnects with the saved host key.
-
-### Delete
-
-```bash
-kubeflock sandbox delete [NAME] [--timeout 5m]
-```
-
-Stops compute, orphan-deletes the Claim and Sandbox with UID checks, and records the PVC as a retained home.
-
-## Manage retained homes
-
-Deleting a sandbox retains its persistent home. List, restore, or permanently delete retained homes below.
-
-### List retained homes
-
-```bash
-kubeflock sandbox home list [--output text|json]
-```
-
-Shows each home by PVC name and UID, with source sandbox, template, capacity, storage class, and state.
-
-### Restore a retained home
-
-Use the PVC UID from `kubeflock sandbox home list`:
-
-```bash
-kubeflock sandbox create my-agent \
-  --home 330cc485-d9e2-4ddd-8144-fa893496188a \
-  --template dev-small \
-  --identity ~/.ssh/id_ed25519
-```
-
-Use the original sandbox name. Omitting `--home` when a retained home exists prints the PVC UID and refuses the create.
-
-Restore uses the template recorded at deletion and prints the image for approval. It forces a cold Sandbox so the controller reattaches the original PVC. `--repository` is not accepted; clone inside the restored sandbox.
-
-### Permanently delete a retained home
-
-```bash
+kubeflock sandbox home list   [--output text|json]
 kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
 ```
 
-Shows target details and a data-loss warning. Interactive use requires entering the exact PVC UID; scripts pass it with `--confirm`.
+Restore a home by passing `--home PVC_UID` to `sandbox create` with the original sandbox name. Restore uses the template recorded at deletion and prints the image for approval.
 
-The command refuses storage that is allocated, mounted, restoring, replaced, or ambiguously owned. It also refuses a `Retain` reclaim policy. For `Delete` policies, it deletes only the PVC (with a UID check) and succeeds after both PVC and persistent volume disappear.
+`home delete` shows a data-loss warning and requires the exact PVC UID for confirmation (`--confirm` for scripts). It refuses storage that is allocated, mounted, or ambiguously owned.
