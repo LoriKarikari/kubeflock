@@ -918,9 +918,9 @@ func waitForSandboxDeletion(ctx context.Context, client *kubeClient, target Kube
 }
 
 func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTarget, identity SandboxIdentity, mode sandboxOperatingMode, timeout, poll time.Duration) error {
-	conditionType := "Ready"
+	conditionType := string(sandboxapi.SandboxConditionReady)
 	if mode == modeSuspended {
-		conditionType = "Suspended"
+		conditionType = string(sandboxapi.SandboxConditionSuspended)
 	}
 	latest := "waiting for the Sandbox controller"
 	err := wait.PollUntilContextTimeout(ctx, poll, timeout, true, func(ctx context.Context) (bool, error) {

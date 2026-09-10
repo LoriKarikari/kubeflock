@@ -233,9 +233,12 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 	if err != nil {
 		return approvedTemplate{}, err
 	}
-	matches := slices.DeleteFunc(pools.Items, func(pool extensionsapi.SandboxWarmPool) bool {
-		return pool.Spec.TemplateRef.Name != name
-	})
+	var matches []extensionsapi.SandboxWarmPool
+	for _, pool := range pools.Items {
+		if pool.Spec.TemplateRef.Name == name {
+			matches = append(matches, pool)
+		}
+	}
 	if len(matches) != 1 {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must have exactly one SandboxWarmPool; found %d", name, len(matches))
 	}
@@ -248,7 +251,7 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 func validateTemplate(template extensionsapi.SandboxTemplate, warmPool string) (approvedTemplate, error) {
 	name := template.Name
 	pod := template.Spec.PodTemplate.Spec
-	if name == "" || template.Spec.NetworkPolicyManagement == "Unmanaged" || !podHardened(pod) {
+	if name == "" || template.Spec.NetworkPolicyManagement == extensionsapi.NetworkPolicyManagementUnmanaged || !podHardened(pod) {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s does not meet Kubeflock pod hardening requirements", name)
 	}
 	if len(pod.EphemeralContainers) != 0 {
