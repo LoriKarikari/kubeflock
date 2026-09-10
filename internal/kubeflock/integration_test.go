@@ -62,6 +62,8 @@ type fixtureSandbox struct {
 	volumePolicy     string
 	volumeMissing    bool
 	holdVolume       bool
+	holdDelete       bool
+	terminating      bool
 	loseHomeOnDelete bool
 	reads            int
 }
@@ -203,6 +205,18 @@ func (f *fixtureAPI) holdVolumeDeletion(name string, hold bool) {
 	if !hold && s.homeMissing && s.volumePolicy != "Retain" {
 		s.volumeMissing = true
 	}
+}
+
+func (f *fixtureAPI) setVolumeMissing(name string, missing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureSandbox(name).volumeMissing = missing
+}
+
+func (f *fixtureAPI) holdHomeDeletion(name string, hold bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureSandbox(name).holdDelete = hold
 }
 
 func (f *fixtureAPI) setTemplateClaim(name string) {
@@ -485,8 +499,8 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC delete forbidden", "code": 403})
 			return
 		}
-		s.homeMissing = true
-		if s.volumePolicy != "Retain" && !s.holdVolume {
+		s.terminating, s.homeMissing = s.holdDelete, !s.holdDelete
+		if s.homeMissing && s.volumePolicy != "Retain" && !s.holdVolume {
 			s.volumeMissing = true
 		}
 		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
@@ -558,19 +572,23 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 	if s.homeVolumeMode != "" {
 		spec["volumeMode"] = s.homeVolumeMode
 	}
+	metadata := map[string]any{
+		"name":            name,
+		"namespace":       "dev",
+		"uid":             homeUID(name, s),
+		"resourceVersion": "1",
+		"labels":          labels,
+		"ownerReferences": owners,
+	}
+	if s.terminating {
+		metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+	}
 	return map[string]any{
 		"apiVersion": "v1",
 		"kind":       "PersistentVolumeClaim",
-		"metadata": map[string]any{
-			"name":            name,
-			"namespace":       "dev",
-			"uid":             homeUID(name, s),
-			"resourceVersion": "1",
-			"labels":          labels,
-			"ownerReferences": owners,
-		},
-		"spec":   spec,
-		"status": map[string]any{"capacity": map[string]string{"storage": capacity}},
+		"metadata":   metadata,
+		"spec":       spec,
+		"status":     map[string]any{"capacity": map[string]string{"storage": capacity}},
 	}
 }
 
@@ -1227,8 +1245,9 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	assertCLI(t, "create doomed", doomed, 0, "ready sandbox doomed", "")
 	assertCLI(t, "retain doomed", h.run(t, "sandbox", "delete", "doomed", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-doomed", "")
 	declined := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "no", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "declined home deletion", declined, 0, "project files, history, settings, and credentials", "")
-	assertCLI(t, "declined home deletion", declined, 0, "cancelled; no storage was deleted", "")
+	assertCLI(t, "declined home deletion", declined, 2, "project files, history, settings, and credentials", "no storage was deleted")
+	declinedTyped := h.invoke(t, h.binary, h.env, "wrong\n", []string{"sandbox", "home", "delete", "home-doomed-uid", "--kubeconfig", h.kubeconfig})
+	assertCLI(t, "declined interactive deletion", declinedTyped, 2, "Type the PVC UID home-doomed-uid to confirm", "no storage was deleted")
 	if h.api.ensureSandbox("doomed").homeMissing {
 		t.Fatal("declined confirmation deleted the home")
 	}
@@ -1274,6 +1293,32 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	remainingHomes := h.retainedHomes(t)
 	if len(remainingHomes) != 1 || remainingHomes[0].Home.UID != "home-delayed-uid" || h.api.ensureSandbox("delayed").volumeMissing {
 		t.Fatalf("permanent deletion changed unrelated storage: %#v", remainingHomes)
+	}
+
+	gone := h.run(t, "sandbox", "create", "gone", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create gone", gone, 0, "ready sandbox gone", "")
+	assertCLI(t, "retain gone", h.run(t, "sandbox", "delete", "gone", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-gone", "")
+	h.api.setVolumeMissing("gone", true)
+	orphanedVolume := h.run(t, "sandbox", "home", "delete", "home-gone-uid", "--confirm", "home-gone-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "missing volume deletion", orphanedVolume, 0, "permanently deleted retained home home-gone", "")
+	if !h.api.ensureSandbox("gone").homeMissing {
+		t.Fatal("missing volume left the home claim behind")
+	}
+
+	terminating := h.run(t, "sandbox", "create", "terminating", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create terminating", terminating, 0, "ready sandbox terminating", "")
+	assertCLI(t, "retain terminating", h.run(t, "sandbox", "delete", "terminating", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-terminating", "")
+	h.api.holdHomeDeletion("terminating", true)
+	h.api.holdVolumeDeletion("terminating", true)
+	held := h.run(t, "sandbox", "home", "delete", "home-terminating-uid", "--confirm", "home-terminating-uid", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "terminating claim", held, 2, "", "deletion remains pending for PVC home-terminating and PV pv-home-terminating")
+	assertCLI(t, "terminating claim visible", h.run(t, "sandbox", "home", "list"), 0, "deleting", "")
+	h.api.holdHomeDeletion("terminating", false)
+	h.api.holdVolumeDeletion("terminating", false)
+	finished := h.run(t, "sandbox", "home", "delete", "home-terminating-uid", "--confirm", "home-terminating-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "terminating claim retry", finished, 0, "permanently deleted retained home home-terminating", "")
+	if homes := h.retainedHomes(t); len(homes) != 1 || homes[0].Home.UID != "home-delayed-uid" {
+		t.Fatalf("deletion scenarios left retained homes: %#v", homes)
 	}
 
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
