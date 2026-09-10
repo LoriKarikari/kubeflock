@@ -73,6 +73,13 @@ contexts = ["workspace", "pane"]
 command = ["bin/kubeflock", "sandbox", "home", "list"]
 
 [[actions]]
+id = "home-restore"
+title = "Kubeflock: Restore retained home"
+description = "Select a retained home by PVC UID and restore its sandbox and Herdr connection."
+contexts = ["workspace", "pane"]
+command = ["bin/kubeflock", "sandbox", "restore-action"]
+
+[[actions]]
 id = "sandbox-disconnect"
 title = "Kubeflock: Disconnect sandbox"
 description = "Disconnect the saved sandbox while leaving its remote processes running."
@@ -86,3 +93,11 @@ placement = "popup"
 width = "80%"
 height = 12
 command = ["bin/kubeflock", "sandbox", "create-wizard"]
+
+[[panes]]
+id = "restore"
+title = "Restore Kubeflock sandbox"
+placement = "popup"
+width = "80%"
+height = 14
+command = ["bin/kubeflock", "sandbox", "restore-wizard"]

@@ -212,14 +212,16 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.homeCommand(options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
-		createActionCommand(),
+		createActionCommand("create"),
+		createActionCommand("restore"),
 		a.createWizardCommand(options),
+		a.restoreWizardCommand(options),
 	)
 	return sandbox
 }
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
-	var template, identity string
+	var template, identity, homeUID string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -232,7 +234,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := createSandbox(command.Context(), target, args[0], createOptions{
+			created, err := a.createSelected(command.Context(), target, args[0], homeUID, createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      timeout,
@@ -242,12 +244,17 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+			if homeUID == "" {
+				fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+			} else {
+				fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
+			}
 			return nil
 		},
 	}
 	command.Flags().StringVar(&template, "template", "", "approved SandboxTemplate")
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
+	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
 	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning timeout")
 	return command
 }
@@ -393,10 +400,17 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 		Use:  "list",
 		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
 			homes, err := listRetainedHomes(options.StateDir)
 			if err != nil {
 				return err
 			}
+			homes = slices.DeleteFunc(homes, func(home RetainedHome) bool {
+				return home.Origin.Context != target.Context || home.Origin.Namespace != target.Namespace
+			})
 			if output == outputJSON {
 				return writeJSON(a.Out, homes)
 			}
@@ -405,7 +419,7 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 				return nil
 			}
 			for _, retained := range homes {
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\torigin=%s/%s template=%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
 			}
 			return nil
 		},
@@ -458,16 +472,16 @@ func (a *App) proxyCommand() *cobra.Command {
 	return command
 }
 
-func createActionCommand() *cobra.Command {
+func createActionCommand(pane string) *cobra.Command {
 	return &cobra.Command{
-		Use:    "create-action",
+		Use:    pane + "-action",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			args := []string{
 				"plugin", "pane", "open",
 				"--plugin", cmp.Or(os.Getenv("HERDR_PLUGIN_ID"), "kubeflock"),
-				"--entrypoint", "create",
+				"--entrypoint", pane,
 				"--focus",
 			}
 			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
@@ -477,6 +491,18 @@ func createActionCommand() *cobra.Command {
 			return err
 		},
 	}
+}
+
+func (a *App) createSelected(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (createdSandbox, error) {
+	if homeUID == "" {
+		return createSandbox(ctx, target, name, options)
+	}
+	selection, err := inspectRestore(ctx, target, name, homeUID, options)
+	if err != nil {
+		return createdSandbox{}, err
+	}
+	fmt.Fprintf(a.Err, "restoring home %s (UID %s) as %s/%s with template %s image %s\n", selection.Retained.Home.Name, selection.Retained.Home.UID, target.Namespace, name, selection.Approved.Name, selection.Approved.Image)
+	return restoreSandbox(ctx, target, name, selection, options)
 }
 
 func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
@@ -510,7 +536,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := createSandbox(command.Context(), target, name, createOptions{
+			created, err := a.createSelected(command.Context(), target, name, "", createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      5 * time.Minute,
@@ -521,6 +547,56 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+			return nil
+		},
+	}
+}
+
+func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:    "restore-wizard",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			var homeUID, name, template, identity, confirmed string
+			fmt.Fprint(a.Out, "Retained home UID: ")
+			if _, err := fmt.Fscanln(a.In, &homeUID); err != nil {
+				return err
+			}
+			fmt.Fprint(a.Out, "Replacement sandbox name: ")
+			if _, err := fmt.Fscanln(a.In, &name); err != nil {
+				return err
+			}
+			fmt.Fprint(a.Out, "Approved template: ")
+			if _, err := fmt.Fscanln(a.In, &template); err != nil {
+				return err
+			}
+			fmt.Fprint(a.Out, "SSH identity file: ")
+			if _, err := fmt.Fscanln(a.In, &identity); err != nil {
+				return err
+			}
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			create := createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options}
+			selection, err := inspectRestore(command.Context(), target, name, homeUID, create)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "Restore %s as %s with template %s image %s? [y/N] ", selection.Retained.Home.Name, name, selection.Approved.Name, selection.Approved.Image)
+			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
+				return err
+			}
+			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
+				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
+				return nil
+			}
+			created, err := restoreSandbox(command.Context(), target, name, selection, create)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
 			return nil
 		},
 	}

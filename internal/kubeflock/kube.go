@@ -25,7 +25,10 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-const sandboxNameHashLabel = "agents.x-k8s.io/sandbox-name-hash"
+const (
+	sandboxNameHashLabel  = "agents.x-k8s.io/sandbox-name-hash"
+	sandboxAdoptableLabel = "agents.x-k8s.io/adoptable"
+)
 
 var (
 	sandboxResource  = schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxes"}
@@ -79,9 +82,11 @@ type sandboxPool struct {
 }
 
 type approvedTemplate struct {
-	Name         string
-	WarmPool     string
-	HomeTemplate string
+	Name            string
+	WarmPool        string
+	Image           string
+	ResourceVersion string
+	Home            corev1.PersistentVolumeClaim
 }
 
 type resolvedSandbox struct {
@@ -271,8 +276,8 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 			return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s contains an unhardened or unbudgeted container", name)
 		}
 	}
-	if home, ok := homeClaimTemplate(template); ok {
-		return approvedTemplate{Name: name, WarmPool: warmPool, HomeTemplate: home.Name}, nil
+	if home, image, ok := homeClaimTemplate(template); ok {
+		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home}, nil
 	}
 	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", name)
 }
@@ -304,7 +309,7 @@ func containerHardened(container corev1.Container) bool {
 		len(container.Resources.Limits) != 0
 }
 
-func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, bool) {
+func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, string, bool) {
 	pod := template.Spec.PodTemplate.Spec
 	for _, container := range pod.Containers {
 		if findSSHPort(container.Ports) == 0 {
@@ -316,11 +321,11 @@ func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, 
 			}
 			claimName := mountedClaimName(pod.Volumes, mount.Name)
 			if home, ok := validHomeTemplate(template.Spec.VolumeClaimTemplates, claimName); ok {
-				return home, true
+				return home, container.Image, true
 			}
 		}
 	}
-	return corev1.PersistentVolumeClaim{}, false
+	return corev1.PersistentVolumeClaim{}, "", false
 }
 
 func mountedClaimName(volumes []corev1.Volume, mountName string) string {
@@ -451,6 +456,77 @@ func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox S
 	return pvc, nil
 }
 
+func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, expected PersistentHome, template corev1.PersistentVolumeClaim, allowedSandboxUID string) error {
+	pvc, err := k.homePVC(ctx, target, expected)
+	if err != nil {
+		return err
+	}
+	if pvc.Spec.StorageClassName == nil || template.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != *template.Spec.StorageClassName {
+		return fmt.Errorf("retained home %s uses storage class %q, not template storage class %q", pvc.Name, ptr.Deref(pvc.Spec.StorageClassName, ""), ptr.Deref(template.Spec.StorageClassName, ""))
+	}
+	requested := template.Spec.Resources.Requests[corev1.ResourceStorage]
+	capacity := pvc.Status.Capacity[corev1.ResourceStorage]
+	if requested.IsZero() || capacity.IsZero() || capacity.Cmp(requested) < 0 {
+		return fmt.Errorf("retained home %s capacity %s is incompatible with template request %s", pvc.Name, capacity.String(), requested.String())
+	}
+	for _, mode := range template.Spec.AccessModes {
+		if !slices.Contains(pvc.Spec.AccessModes, mode) {
+			return fmt.Errorf("retained home %s does not support template access mode %s", pvc.Name, mode)
+		}
+	}
+	if ptr.Deref(pvc.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != ptr.Deref(template.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) {
+		return fmt.Errorf("retained home %s has an incompatible volume mode", pvc.Name)
+	}
+	if len(pvc.OwnerReferences) != 0 && (allowedSandboxUID == "" || len(pvc.OwnerReferences) != 1 || !controlledBy(pvc.OwnerReferences, types.UID(allowedSandboxUID))) {
+		owner := pvc.OwnerReferences[0]
+		return fmt.Errorf("retained home %s is owned by %s/%s", pvc.Name, owner.Kind, owner.Name)
+	}
+	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods.Items {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == pvc.Name && (allowedSandboxUID == "" || !controlledBy(pod.OwnerReferences, types.UID(allowedSandboxUID))) {
+				return fmt.Errorf("retained home %s is mounted by Pod %s", pvc.Name, pod.Name)
+			}
+		}
+	}
+	return nil
+}
+
+func (k *kubeClient) authorizeHomeAdoption(ctx context.Context, target KubeTarget, expected PersistentHome, allowedSandboxUID string) error {
+	pvc, err := k.homePVC(ctx, target, expected)
+	if err != nil {
+		return err
+	}
+	if len(pvc.OwnerReferences) != 0 {
+		if allowedSandboxUID != "" && len(pvc.OwnerReferences) == 1 && controlledBy(pvc.OwnerReferences, types.UID(allowedSandboxUID)) {
+			return nil
+		}
+		owner := pvc.OwnerReferences[0]
+		return fmt.Errorf("retained home %s became owned by %s/%s before allocation", pvc.Name, owner.Kind, owner.Name)
+	}
+	patch := []map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
+	}
+	if pvc.Labels == nil {
+		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{sandboxAdoptableLabel: "true"}})
+	} else if pvc.Labels[sandboxAdoptableLabel] != "true" {
+		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels/agents.x-k8s.io~1adoptable", "value": "true"})
+	}
+	if len(patch) == 2 {
+		return nil
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = k.core.PersistentVolumeClaims(target.Namespace).Patch(ctx, pvc.Name, types.JSONPatchType, data, metav1.PatchOptions{})
+	return err
+}
+
 func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
 	pvc, err := k.ownedHome(ctx, target, sandbox, expected)
 	if err != nil {
@@ -460,7 +536,7 @@ func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarge
 		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
 		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
 	}
-	for _, label := range []string{sandboxNameHashLabel, "agents.x-k8s.io/adoptable"} {
+	for _, label := range []string{sandboxNameHashLabel, sandboxAdoptableLabel} {
 		if _, exists := pvc.Labels[label]; exists {
 			patch = append(patch, map[string]any{"op": "remove", "path": "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
 		}

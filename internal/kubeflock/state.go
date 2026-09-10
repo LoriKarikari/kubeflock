@@ -156,6 +156,37 @@ func validateRetainedHome(retained RetainedHome) error {
 	return nil
 }
 
+func selectRetainedHome(target KubeTarget, uid, stateDir string) (*RetainedHome, error) {
+	homes, err := listRetainedHomes(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range homes {
+		if homes[i].Home.UID != uid {
+			continue
+		}
+		if homes[i].Origin.Context != target.Context || homes[i].Origin.Namespace != target.Namespace {
+			return nil, fmt.Errorf("retained home %s belongs to target %s/%s", uid, homes[i].Origin.Context, homes[i].Origin.Namespace)
+		}
+		return &homes[i], nil
+	}
+	return nil, fmt.Errorf("no retained home has UID %s", uid)
+}
+
+func retainedHomeForOrigin(target KubeTarget, name, stateDir string) (*RetainedHome, error) {
+	homes, err := listRetainedHomes(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	for i := range homes {
+		origin := homes[i].Origin
+		if origin.Context == target.Context && origin.Namespace == target.Namespace && origin.Name == name {
+			return &homes[i], nil
+		}
+	}
+	return nil, nil
+}
+
 func listRetainedHomes(stateDir string) ([]RetainedHome, error) {
 	paths, err := stateFiles(retainedHomeDir(stateDir))
 	if err != nil {
