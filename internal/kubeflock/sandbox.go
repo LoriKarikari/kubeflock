@@ -106,16 +106,34 @@ func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, e
 	}
 	var match *ManagedSandbox
 	for i := range saved {
-		claim := saved[i].Sandbox.Claim
+		claim := saved[i].Claim
 		if claim.Context != target.Context || claim.Namespace != target.Namespace || (name != "" && claim.Name != name) {
 			continue
 		}
 		if match != nil {
 			return nil, fmt.Errorf("multiple saved sandboxes match %s/%s", target.Namespace, name)
 		}
-		match = &saved[i].Sandbox
+		match = &saved[i]
 	}
 	return match, nil
+}
+
+func verifyBound(target KubeTarget, managed *ManagedSandbox) error {
+	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
+		return fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
+	}
+	return nil
+}
+
+func savedConnectionFor(target KubeTarget, stateDir string, sandbox SandboxIdentity) (*savedConnection, error) {
+	connection, err := selectConnection(&target, stateDir, sandbox.Name)
+	if err != nil {
+		return nil, err
+	}
+	if connection != nil && connection.Connection.Sandbox.UID != sandbox.UID {
+		return nil, errors.New("saved connection uses a different sandbox identity")
+	}
+	return connection, nil
 }
 
 func verifyClaim(claim *sandboxClaim, target KubeTarget, name, warmPool string, saved *ManagedSandbox) error {
@@ -327,8 +345,8 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if managed == nil {
 		return lifecycleResult{}, errors.New("no saved Kubeflock sandbox matches this target")
 	}
-	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
-		return lifecycleResult{}, fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
+	if err := verifyBound(target, managed); err != nil {
+		return lifecycleResult{}, err
 	}
 	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
 	if err != nil {
@@ -354,12 +372,9 @@ func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode
 	if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
 		return lifecycleResult{}, err
 	}
-	connection, err := selectConnection(&target, options.Global.StateDir, managed.Sandbox.Name)
+	connection, err := savedConnectionFor(target, options.Global.StateDir, *managed.Sandbox)
 	if err != nil {
 		return lifecycleResult{}, err
-	}
-	if connection != nil && connection.Connection.Sandbox.UID != managed.Sandbox.UID {
-		return lifecycleResult{}, errors.New("saved connection uses a different sandbox identity")
 	}
 	if mode == modeSuspended && connection != nil {
 		if err := disableMachine(ctx, connection.Connection); err != nil {
@@ -399,8 +414,8 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 	if managed == nil {
 		return retainResult{}, errors.New("no saved Kubeflock sandbox matches this target")
 	}
-	if managed.Phase != "bound" || managed.Sandbox == nil || managed.Home == nil {
-		return retainResult{}, fmt.Errorf("sandbox %s/%s has no complete saved resource identity", target.Namespace, managed.Claim.Name)
+	if err := verifyBound(target, managed); err != nil {
+		return retainResult{}, err
 	}
 	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
 	if err != nil {
@@ -422,12 +437,9 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 			return retainResult{}, errors.New("saved SandboxClaim no longer owns the expected Sandbox")
 		}
 	}
-	connection, err := selectConnection(&target, options.Global.StateDir, managed.Sandbox.Name)
+	connection, err := savedConnectionFor(target, options.Global.StateDir, *managed.Sandbox)
 	if err != nil {
 		return retainResult{}, err
-	}
-	if connection != nil && connection.Connection.Sandbox.UID != managed.Sandbox.UID {
-		return retainResult{}, errors.New("saved connection uses a different sandbox identity")
 	}
 	if sandbox != nil {
 		if err := client.verifyHome(ctx, target, *managed.Sandbox, *managed.Home); err != nil {
@@ -587,9 +599,9 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	}
 	managed := make([]ManagedSandbox, 0, len(managedFiles))
 	for _, item := range managedFiles {
-		claim := item.Sandbox.Claim
+		claim := item.Claim
 		if claim.Context == target.Context && claim.Namespace == target.Namespace {
-			managed = append(managed, item.Sandbox)
+			managed = append(managed, item)
 		}
 	}
 	client, err := newKubeClient(ctx, target, options.Kubeconfig)

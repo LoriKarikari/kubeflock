@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	"github.com/google/renameio/v2"
 )
@@ -64,15 +62,7 @@ func validateConnection(connection Connection) error {
 	return nil
 }
 
-func loadConnection(path string) (Connection, error) {
-	var connection Connection
-	if err := loadJSON(path, &connection); err != nil {
-		return Connection{}, err
-	}
-	return connection, validateConnection(connection)
-}
-
-func listConnections(dir string) ([]savedConnection, error) {
+func stateFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -80,19 +70,42 @@ func listConnections(dir string) ([]savedConnection, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []savedConnection
+	var paths []string
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	return paths, nil
+}
+
+func loadState[T any](path string, validate func(T) error) (T, error) {
+	var value T
+	if err := loadJSON(path, &value); err != nil {
+		return value, err
+	}
+	if err := validate(value); err != nil {
+		return value, fmt.Errorf("decode %q: %w", path, err)
+	}
+	return value, nil
+}
+
+func loadConnection(path string) (Connection, error) { return loadState(path, validateConnection) }
+
+func listConnections(dir string) ([]savedConnection, error) {
+	paths, err := stateFiles(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []savedConnection
+	for _, path := range paths {
 		connection, err := loadConnection(path)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, savedConnection{File: path, Connection: connection})
 	}
-	slices.SortFunc(out, func(a, b savedConnection) int { return strings.Compare(a.File, b.File) })
 	return out, nil
 }
 
@@ -114,37 +127,20 @@ func validateManaged(sandbox ManagedSandbox) error {
 	return nil
 }
 
-func listManagedSandboxes(stateDir string) ([]savedSandbox, error) {
-	dir := managedSandboxDir(stateDir)
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
+	paths, err := stateFiles(managedSandboxDir(stateDir))
 	if err != nil {
 		return nil, err
 	}
-	var out []savedSandbox
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		var sandbox ManagedSandbox
-		if err := loadJSON(path, &sandbox); err != nil {
+	var out []ManagedSandbox
+	for _, path := range paths {
+		sandbox, err := loadState(path, validateManaged)
+		if err != nil {
 			return nil, err
 		}
-		if err := validateManaged(sandbox); err != nil {
-			return nil, fmt.Errorf("decode %q: %w", path, err)
-		}
-		out = append(out, savedSandbox{File: path, Sandbox: sandbox})
+		out = append(out, sandbox)
 	}
-	slices.SortFunc(out, func(a, b savedSandbox) int { return strings.Compare(a.File, b.File) })
 	return out, nil
-}
-
-type savedSandbox struct {
-	File    string
-	Sandbox ManagedSandbox
 }
 
 func validateRetainedHome(home RetainedHome) error {
@@ -155,28 +151,17 @@ func validateRetainedHome(home RetainedHome) error {
 }
 
 func listRetainedHomes(stateDir string) ([]RetainedHome, error) {
-	entries, err := os.ReadDir(retainedHomeDir(stateDir))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	paths, err := stateFiles(retainedHomeDir(stateDir))
 	if err != nil {
 		return nil, err
 	}
-	var homes []RetainedHome
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		var home RetainedHome
-		path := filepath.Join(retainedHomeDir(stateDir), entry.Name())
-		if err := loadJSON(path, &home); err != nil {
+	var out []RetainedHome
+	for _, path := range paths {
+		home, err := loadState(path, validateRetainedHome)
+		if err != nil {
 			return nil, err
 		}
-		if err := validateRetainedHome(home); err != nil {
-			return nil, fmt.Errorf("decode %q: %w", path, err)
-		}
-		homes = append(homes, home)
+		out = append(out, home)
 	}
-	slices.SortFunc(homes, func(a, b RetainedHome) int { return strings.Compare(a.Home.UID, b.Home.UID) })
-	return homes, nil
+	return out, nil
 }

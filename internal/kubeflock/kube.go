@@ -429,24 +429,37 @@ func (k *kubeClient) ownedPods(ctx context.Context, target KubeTarget, sandbox *
 	return owned, nil
 }
 
-func (k *kubeClient) verifyHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
+func (k *kubeClient) homePVC(ctx context.Context, target KubeTarget, expected PersistentHome) (*corev1.PersistentVolumeClaim, error) {
 	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if string(pvc.UID) != expected.UID || !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
-		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
+	if string(pvc.UID) != expected.UID {
+		return nil, fmt.Errorf("sandbox home %s was replaced", expected.Name)
 	}
-	return nil
+	return pvc, nil
+}
+
+func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) (*corev1.PersistentVolumeClaim, error) {
+	pvc, err := k.homePVC(ctx, target, expected)
+	if err != nil {
+		return nil, err
+	}
+	if !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
+		return nil, fmt.Errorf("sandbox home %s was replaced", expected.Name)
+	}
+	return pvc, nil
+}
+
+func (k *kubeClient) verifyHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
+	_, err := k.ownedHome(ctx, target, sandbox, expected)
+	return err
 }
 
 func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
-	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	pvc, err := k.ownedHome(ctx, target, sandbox, expected)
 	if err != nil {
 		return err
-	}
-	if string(pvc.UID) != expected.UID || !controlledBy(pvc.OwnerReferences, types.UID(sandbox.UID)) {
-		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
 	}
 	patch := []map[string]any{
 		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
@@ -469,15 +482,12 @@ func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarge
 }
 
 func (k *kubeClient) verifyRetainedHome(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
-	pvc, err := k.core.PersistentVolumeClaims(target.Namespace).Get(ctx, expected.Name, metav1.GetOptions{})
+	pvc, err := k.homePVC(ctx, target, expected)
 	if apierrors.IsNotFound(err) {
 		return fmt.Errorf("sandbox home %s is missing from the cluster; no retained home was recorded", expected.Name)
 	}
 	if err != nil {
 		return err
-	}
-	if string(pvc.UID) != expected.UID {
-		return fmt.Errorf("sandbox home %s was replaced", expected.Name)
 	}
 	if slices.ContainsFunc(pvc.OwnerReferences, func(owner metav1.OwnerReference) bool { return owner.UID == types.UID(sandbox.UID) }) {
 		return fmt.Errorf("sandbox home %s is still owned by Sandbox UID %s", expected.Name, sandbox.UID)
