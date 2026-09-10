@@ -28,6 +28,7 @@ type herdrMachine struct {
 
 type connectOptions struct {
 	Name         string
+	Label        string
 	ExpectedUID  string
 	IdentityFile string
 	Global       globalOptions
@@ -392,7 +393,7 @@ func prepareConnection(options connectOptions, sandbox SandboxIdentity, kubectl,
 			HostKey:        hostKey,
 		},
 		Herdr: HerdrState{
-			Label:   sandbox.Name,
+			Label:   cmp.Or(options.Label, sandbox.Name),
 			Session: "agent",
 		},
 	}

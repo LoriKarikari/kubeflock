@@ -20,5 +20,6 @@ sandbox:
     className: standard
 
 capacity:
+  warmStandbys: 0
   maxActiveSandboxes: 2
   maxRetainedHomes: 4

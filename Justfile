@@ -27,7 +27,10 @@ build:
 
 helm:
     helm lint charts/kubeflock --values charts/kubeflock/values.example.yaml
-    helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 > /dev/null
+    helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set sandbox.sshPort=2200 | grep -q 'replicas: 0'
+    helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set capacity.warmStandbys=1 | grep -q 'type: Recreate'
+    helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml | grep -q 'volumeClaimTemplatesPolicy: Overrides'
+    ! helm template kubeflock charts/kubeflock --namespace developer --values charts/kubeflock/values.example.yaml --set capacity.warmStandbys=3 > /dev/null 2>&1
 
 image:
     docker build --tag kubeflock-sandbox:test sandbox-image

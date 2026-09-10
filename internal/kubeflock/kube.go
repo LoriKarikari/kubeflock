@@ -45,7 +45,8 @@ type kubeClient struct {
 type sandboxClaim struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		WarmPoolRef corev1.LocalObjectReference `json:"warmPoolRef"`
+		WarmPoolRef          corev1.LocalObjectReference    `json:"warmPoolRef"`
+		VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
 	} `json:"spec"`
 	Status struct {
 		Conditions []metav1.Condition          `json:"conditions"`
@@ -67,9 +68,10 @@ type sandboxObject struct {
 type sandboxTemplate struct {
 	Metadata metav1.ObjectMeta `json:"metadata"`
 	Spec     struct {
-		NetworkPolicyManagement string                         `json:"networkPolicyManagement"`
-		PodTemplate             corev1.PodTemplateSpec         `json:"podTemplate"`
-		VolumeClaimTemplates    []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
+		NetworkPolicyManagement    string                         `json:"networkPolicyManagement"`
+		PodTemplate                corev1.PodTemplateSpec         `json:"podTemplate"`
+		VolumeClaimTemplatesPolicy string                         `json:"volumeClaimTemplatesPolicy"`
+		VolumeClaimTemplates       []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
 	} `json:"spec"`
 }
 
@@ -87,6 +89,7 @@ type approvedTemplate struct {
 	Image           string
 	ResourceVersion string
 	Home            corev1.PersistentVolumeClaim
+	HomeOverrides   bool
 }
 
 type resolvedSandbox struct {
@@ -199,11 +202,19 @@ func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*san
 	return &claim, nil
 }
 
-func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string) (*sandboxClaim, error) {
+func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*sandboxClaim, error) {
+	spec := map[string]any{"warmPoolRef": map[string]any{"name": warmPool}}
+	if home != nil {
+		claimSpec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&home.Spec)
+		if err != nil {
+			return nil, err
+		}
+		spec["volumeClaimTemplates"] = []any{map[string]any{"metadata": map[string]any{"name": home.Name}, "spec": claimSpec}}
+	}
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim",
 		"metadata": map[string]any{"name": name, "namespace": target.Namespace, "labels": map[string]any{managedByLabel: managedByValue}},
-		"spec":     map[string]any{"warmPoolRef": map[string]any{"name": warmPool}},
+		"spec":     spec,
 	}}
 	created, err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Create(
 		ctx,
@@ -260,8 +271,8 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 	if len(matches) != 1 {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must have exactly one SandboxWarmPool; found %d", name, len(matches))
 	}
-	if matches[0].Spec.Replicas == nil || *matches[0].Spec.Replicas != 0 {
-		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s must have zero warm standbys for cold creation", matches[0].Metadata.Name)
+	if matches[0].Spec.Replicas == nil {
+		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s has no replica count", matches[0].Metadata.Name)
 	}
 	return validateTemplate(template, matches[0].Metadata.Name)
 }
@@ -284,7 +295,7 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s mounts a volume that is not one of its claim templates", name)
 	}
 	if home, image, ok := homeClaimTemplate(template); ok {
-		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home}, nil
+		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home, HomeOverrides: template.Spec.VolumeClaimTemplatesPolicy == "Overrides"}, nil
 	}
 	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", name)
 }
@@ -612,7 +623,7 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 	if len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
 		return nil, fmt.Errorf("retained home %s has uncertain ownership or is reserved for restore", pvc.Name)
 	}
-	claim, err := k.getClaim(ctx, target.Namespace, retained.Origin.Name)
+	claim, err := k.getClaim(ctx, target.Namespace, retained.claimIdentity().Name)
 	if err != nil {
 		return nil, err
 	}

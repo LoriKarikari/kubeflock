@@ -117,6 +117,13 @@ type savedConnection struct {
 	Connection Connection
 }
 
+func (sandbox ManagedSandbox) allocationName() string {
+	if sandbox.Name != "" {
+		return sandbox.Name
+	}
+	return sandbox.Claim.Name
+}
+
 func validateManaged(sandbox ManagedSandbox) error {
 	if sandbox.Version != 1 || (sandbox.Phase != "claimed" && sandbox.Phase != "bound") {
 		return errors.New("invalid managed sandbox version or phase")
@@ -144,6 +151,20 @@ func listManagedSandboxes(stateDir string) ([]ManagedSandbox, error) {
 		out = append(out, sandbox)
 	}
 	return out, nil
+}
+
+func (retained RetainedHome) allocationName() string {
+	if retained.Name != "" {
+		return retained.Name
+	}
+	return retained.Origin.Name
+}
+
+func (retained RetainedHome) claimIdentity() SandboxIdentity {
+	if retained.Claim.complete() {
+		return retained.Claim
+	}
+	return retained.Origin
 }
 
 func validateRetainedHome(retained RetainedHome) error {

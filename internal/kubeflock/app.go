@@ -431,7 +431,7 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 				if retained.Deletion != nil {
 					residual = fmt.Sprintf(" pv=%s pvUID=%s", retained.Deletion.Name, retained.Deletion.UID)
 				}
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.Origin.Name, retained.Template, residual)
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.allocationName(), retained.Template, residual)
 			}
 			return nil
 		},

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
@@ -29,6 +31,20 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 		t.Fatalf("retry did not acquire the allocation lock: %v", err)
 	} else if err := retry.Unlock(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
+	claim := sandboxClaim{}
+	claim.Status.Conditions = []metav1.Condition{{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "ReconcilerError",
+		Message: "pod is forbidden: exceeded quota",
+	}}
+	got := progress(claim)
+	if got.State != "failed" || !strings.Contains(got.Message, "quota") {
+		t.Fatalf("quota progress = %#v", got)
 	}
 }
 

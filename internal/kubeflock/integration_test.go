@@ -46,6 +46,7 @@ type fixtureClaim struct {
 		WarmPoolRef struct {
 			Name string `json:"name"`
 		} `json:"warmPoolRef"`
+		VolumeClaimTemplates []map[string]any `json:"volumeClaimTemplates,omitempty"`
 	} `json:"spec"`
 	Status struct {
 		Conditions []metav1.Condition `json:"conditions"`
@@ -736,13 +737,25 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	}
 	f.creates++
 	s.incarnation++
-	s.sandboxUID = fixtureUID("sandbox", name, s.incarnation)
+	sandboxName := name
+	if name == "warm" {
+		sandboxName = "dev-small-standby"
+		f.sandboxes[sandboxName] = s
+	}
+	s.sandboxUID = fixtureUID("sandbox", sandboxName, s.incarnation)
 	claim := claimFixture(name, pool)
+	if templates, ok := spec["volumeClaimTemplates"].([]any); ok {
+		for _, template := range templates {
+			if value, ok := template.(map[string]any); ok {
+				claim.Spec.VolumeClaimTemplates = append(claim.Spec.VolumeClaimTemplates, value)
+			}
+		}
+	}
 	claim.Metadata.UID = types.UID(fixtureUID("claim", name, s.incarnation))
 	adopted := s.incarnation == 1 || s.homeAdoptable
 	if adopted && name != "delayed" && name != "waiting" {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-		claim.Status.Sandbox.Name = name
+		claim.Status.Sandbox.Name = sandboxName
 	} else if !adopted {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "InvalidPVC", Message: "retained home is not adoptable", LastTransitionTime: metav1.Now()}}
 	}
@@ -846,7 +859,7 @@ func poolFixture(template string) map[string]any {
 		"kind":       "SandboxWarmPool",
 		"metadata":   metadataFixture(template+"-pool", template+"-pool-uid"),
 		"spec": map[string]any{
-			"replicas":           0,
+			"replicas":           1,
 			"sandboxTemplateRef": map[string]string{"name": template},
 		},
 	}
@@ -922,8 +935,9 @@ func templateFixture(name string, secure bool, homeClaim string) map[string]any 
 		"kind":       "SandboxTemplate",
 		"metadata":   metadataFixture(name, name+"-uid"),
 		"spec": map[string]any{
-			"networkPolicyManagement": "Managed",
-			"podTemplate":             map[string]any{"spec": podSpec},
+			"networkPolicyManagement":    "Managed",
+			"volumeClaimTemplatesPolicy": "Overrides",
+			"podTemplate":                map[string]any{"spec": podSpec},
 			"volumeClaimTemplates": []any{map[string]any{
 				"metadata": map[string]string{"name": homeClaim},
 				"spec": map[string]any{
@@ -1398,6 +1412,37 @@ func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
 
 	repeated := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "same selection retry", repeated, 0, "attached 1 approved credential", "")
+}
+
+func TestCLIWarmStandbyRetainsAndRestoresItsExclusiveHome(t *testing.T) {
+	h := newHarness(t)
+
+	created := h.run(t, "sandbox", "create", "warm", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm create", created, 0, "ready sandbox warm", "")
+	var herdr herdrFixture
+	data, _ := os.ReadFile(h.herdrState)
+	_ = json.Unmarshal(data, &herdr)
+	if !slices.ContainsFunc(herdr.Machines, func(machine herdrMachine) bool { return machine.Label == "warm" }) {
+		t.Fatalf("Herdr did not keep the requested allocation name: %#v", herdr.Machines)
+	}
+	listed := h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm list", listed, 0, `"name": "warm"`, "")
+	if !strings.Contains(listed.stdout, `"sandboxUid": "sandbox-dev-small-standby"`) {
+		t.Fatalf("warm allocation did not retain adopted Sandbox identity: %s", listed.stdout)
+	}
+
+	deleted := h.run(t, "sandbox", "delete", "warm", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm delete", deleted, 0, "retained home home-dev-small-standby", "")
+	homes := h.retainedHomes(t)
+	if len(homes) != 1 || homes[0].Name != "warm" || homes[0].Claim.Name != "warm" || homes[0].Origin.Name != "dev-small-standby" {
+		t.Fatalf("warm retained home provenance = %#v", homes)
+	}
+
+	restored := h.run(t, "sandbox", "create", "warm", "--home", "home-dev-small-standby-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm restore", restored, 0, "ready sandbox warm; restored home home-dev-small-standby", "")
+	if homes := h.retainedHomes(t); len(homes) != 0 {
+		t.Fatalf("restored home remains retained: %#v", homes)
+	}
 }
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {

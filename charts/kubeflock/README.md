@@ -1,6 +1,6 @@
 # Kubeflock Helm chart
 
-This chart prepares one developer namespace for Kubeflock. It creates the namespace labels, access rules, budgets, starter template, zero-replica warm pool, SSH public-key configuration, and ingress policy.
+This chart prepares one developer namespace for Kubeflock. It creates the namespace labels, access rules, budgets, starter template, configurable warm pool, SSH public-key configuration, and ingress policy.
 
 The chart does not install gVisor, a StorageClass, or the Agent Sandbox controller. It does not adopt an existing controller or change active Sandboxes.
 
@@ -22,7 +22,7 @@ Compatible images must contain the remote Herdr server at version 0.9.0 or newer
 
 The Herdr application installed on the workstation is separate from the remote Herdr server in the Sandbox image. The private SSH key also remains on the workstation. Only its public key belongs in values.
 
-Capacity is explicit. `maxActiveSandboxes` determines namespace Pod, CPU, and memory quotas. `maxRetainedHomes` determines PVC and storage quotas. A retained home consumes storage after its Sandbox stops using compute.
+Capacity is explicit. `warmStandbys` defaults to zero and reserves that many slots within the Pod, CPU, memory, PVC, and storage budgets. It cannot exceed either budget. `maxActiveSandboxes` is the total compute budget shared by claimed sandboxes and standbys. `maxRetainedHomes` is the total storage budget shared by claimed, standby, and retained homes. A retained home consumes storage after its Sandbox stops using compute.
 
 ## Approved credentials
 
@@ -103,6 +103,6 @@ The Sandbox Pod receives no automatic service-account token. The chart does not 
 
 ## Upgrade behavior
 
-A chart upgrade updates chart-owned policy, budgets, templates, and unclaimed warm-pool configuration. Agent Sandbox applies template changes to new Sandboxes. Existing Sandboxes and their PVCs are not chart resources, so Helm does not restart or delete them.
+A chart upgrade updates chart-owned policy, budgets, templates, and unclaimed warm-pool configuration. The pool uses the `Recreate` strategy, so template blueprint changes replace stale unclaimed standbys. Claimed Sandboxes and their PVCs are no longer pool resources, so Helm and the pool do not restart or delete them.
 
 The Agent Sandbox controller remains independently managed. Upgrading this chart does not upgrade or replace it.

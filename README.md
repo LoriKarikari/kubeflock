@@ -41,7 +41,7 @@ helm upgrade --install kubeflock charts/kubeflock \
   --wait
 ```
 
-The chart creates the developer namespace, access rules, budgets, sandbox template, and empty warm pool. The [Helm chart documentation](charts/kubeflock/README.md) covers all values, controller installation, and GitOps use.
+The chart creates the developer namespace, access rules, budgets, sandbox template, and warm pool. Standbys default to zero. The [Helm chart documentation](charts/kubeflock/README.md) covers all values, controller installation, and GitOps use.
 
 ## Configure the target cluster
 
@@ -180,7 +180,7 @@ kubeflock sandbox create my-agent \
 
 Use the original sandbox name. Agent Sandbox derives the PVC name from it. If you run `create` with that name but omit `--home`, Kubeflock refuses the retained data and prints the PVC UID to use.
 
-Kubeflock uses the template recorded when you deleted the sandbox. Before it attaches the home, it prints the template image for approval. Restore does not accept `--repository`. Clone the repository inside the restored sandbox instead.
+Kubeflock uses the template recorded when you deleted the sandbox. Before it attaches the home, it prints the template image for approval. Restore forces a cold Sandbox with the original resource name so the controller reattaches the retained PVC instead of handing out a different standby home. Restore does not accept `--repository`. Clone the repository inside the restored sandbox instead.
 
 ### Permanently delete a retained home
 
