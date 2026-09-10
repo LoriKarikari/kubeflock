@@ -11,7 +11,7 @@ rules:
     verbs: ["get", "patch", "delete"]
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxclaims"]
-    verbs: ["list", "create", "delete"]
+    verbs: ["get", "list", "create", "delete"]
   - apiGroups: ["extensions.agents.x-k8s.io"]
     resources: ["sandboxtemplates"]
     verbs: ["get"]

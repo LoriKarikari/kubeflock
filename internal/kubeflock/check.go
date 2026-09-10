@@ -63,6 +63,7 @@ var requiredAccess = []accessCheck{
 	{Name: "perm-get-sandboxes", Verb: "get", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
 	{Name: "perm-patch-sandboxes", Verb: "patch", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
 	{Name: "perm-delete-sandboxes", Verb: "delete", Group: "agents.x-k8s.io", Resource: "sandboxes", Namespaced: true},
+	{Name: "perm-get-sandboxclaims", Verb: "get", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
 	{Name: "perm-list-sandboxclaims", Verb: "list", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
 	{Name: "perm-create-sandboxclaims", Verb: "create", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
 	{Name: "perm-delete-sandboxclaims", Verb: "delete", Group: extensionsAPIGroup, Resource: "sandboxclaims", Namespaced: true},
