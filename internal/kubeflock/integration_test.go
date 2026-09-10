@@ -1,7 +1,10 @@
 package kubeflock
 
 import (
+	"archive/tar"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,6 +95,24 @@ type fixtureAPI struct {
 	methods         []string
 	paths           []string
 	auth            []string
+	credentials     map[string]credentialConfig
+	secrets         map[string]map[string][]byte
+	forbiddenSecret string
+}
+
+func (f *fixtureAPI) approveCredential(name, secret, key, environment string, value []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credentials[name] = credentialConfig{Secret: secret, Key: key, Environment: environment}
+	if value != nil {
+		f.secrets[secret] = map[string][]byte{key: value}
+	}
+}
+
+func (f *fixtureAPI) forbidSecret(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forbiddenSecret = name
 }
 
 func (f *fixtureAPI) ensureSandbox(name string) *fixtureSandbox {
@@ -305,6 +326,10 @@ func (f *fixtureAPI) record(request *http.Request) {
 func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) {
 	path := request.URL.Path
 	switch {
+	case strings.Contains(path, "/configmaps/"+credentialConfigName):
+		f.handleCredentialConfig(response)
+	case strings.Contains(path, "/secrets/"):
+		f.handleSecret(response, path)
 	case strings.Contains(path, "/sandboxtemplates/"):
 		f.handleTemplate(response, path)
 	case strings.HasSuffix(path, "/sandboxwarmpools"):
@@ -322,6 +347,30 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 	default:
 		writeNotFound(response)
 	}
+}
+
+func (f *fixtureAPI) handleCredentialConfig(response http.ResponseWriter) {
+	data := map[string]string{}
+	for name, reference := range f.credentials {
+		encoded, _ := json.Marshal(reference)
+		data[name] = string(encoded)
+	}
+	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadataFixture(credentialConfigName, credentialConfigName+"-uid"), "data": data})
+}
+
+func (f *fixtureAPI) handleSecret(response http.ResponseWriter, path string) {
+	_, name, _ := strings.CutLast(path, "/")
+	if name == f.forbiddenSecret {
+		response.WriteHeader(http.StatusForbidden)
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "secret access forbidden", "code": 403})
+		return
+	}
+	data, ok := f.secrets[name]
+	if !ok {
+		writeNotFound(response)
+		return
+	}
+	writeFixture(response, map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": metadataFixture(name, name+"-uid"), "data": data})
 }
 
 func writeNotFound(response http.ResponseWriter) {
@@ -926,6 +975,44 @@ func helperKubectl(args []string) {
 		_, _ = io.Copy(os.Stdout, os.Stdin)
 		return
 	}
+	if separator := slices.Index(args, "--"); separator >= 0 && separator+3 < len(args) && args[separator+1] == "sh" && strings.Contains(args[separator+3], ".config/kubeflock/credentials") {
+		if os.Getenv("FAKE_KUBECTL_FAIL_CREDENTIALS") == "1" {
+			_, _ = io.Copy(os.Stderr, os.Stdin)
+			os.Exit(1)
+		}
+		home := os.Getenv("FAKE_SANDBOX_HOME")
+		archive := tar.NewReader(os.Stdin)
+		for {
+			header, err := archive.Next()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				os.Exit(1)
+			}
+			path := filepath.Join(home, header.Name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				os.Exit(1)
+			}
+			file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			if err != nil {
+				os.Exit(1)
+			}
+			_, copyErr := io.Copy(file, archive)
+			closeErr := file.Close()
+			if copyErr != nil || closeErr != nil {
+				os.Exit(1)
+			}
+		}
+		bashrc := filepath.Join(home, ".bashrc")
+		file, err := os.OpenFile(bashrc, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			os.Exit(1)
+		}
+		fmt.Fprintln(file, `. "$HOME/.config/kubeflock/credentials/env.sh"`)
+		file.Close()
+		return
+	}
 	if separator := slices.Index(args, "--"); separator >= 0 && separator+2 < len(args) && args[separator+1] == "git" {
 		remote := slices.Clone(args[separator+1:])
 		home := os.Getenv("FAKE_SANDBOX_HOME")
@@ -1111,7 +1198,7 @@ type harness struct {
 func newHarness(t *testing.T) harness {
 	t.Helper()
 	dir := t.TempDir()
-	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}}
+	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}, credentials: map[string]credentialConfig{}, secrets: map[string]map[string][]byte{}}
 	server := httptest.NewServer(api)
 	t.Cleanup(server.Close)
 	binary := buildCLI(t, dir)
@@ -1198,7 +1285,7 @@ func TestCLICreatesSandboxWithProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	wizardEnv := append(slices.Clone(h.env), "FAKE_SANDBOX_HOME="+wizardHome)
-	input := strings.Join([]string{"project-wizard", "dev-small", h.identity, bare, "feature", "y", ""}, "\n")
+	input := strings.Join([]string{"project-wizard", "dev-small", h.identity, "", bare, "feature", "y", ""}, "\n")
 	wizard := h.invoke(t, h.binary, wizardEnv, input, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
 	assertCLI(t, "Herdr project create", wizard, 0, "checked out branch feature", "")
 
@@ -1207,7 +1294,7 @@ func TestCLICreatesSandboxWithProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	emptyEnv := append(slices.Clone(h.env), "FAKE_SANDBOX_HOME="+emptyHome)
-	emptyInput := strings.Join([]string{"project-wizard-empty", "dev-small", h.identity, "", "y", ""}, "\n")
+	emptyInput := strings.Join([]string{"project-wizard-empty", "dev-small", h.identity, "", "", "y", ""}, "\n")
 	emptyWizard := h.invoke(t, h.binary, emptyEnv, emptyInput, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
 	assertCLI(t, "Herdr empty project create", emptyWizard, 0, "ready sandbox project-wizard-empty", "")
 	if strings.Contains(emptyWizard.stdout, "checked out") {
@@ -1216,6 +1303,101 @@ func TestCLICreatesSandboxWithProject(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(emptyHome, "project")); !os.IsNotExist(err) {
 		t.Fatalf("blank repository wizard created a checkout: %v", err)
 	}
+}
+
+func TestCLIAttachesOnlyApprovedCredentials(t *testing.T) {
+	h := newHarness(t)
+	value := make([]byte, 24)
+	if _, err := rand.Read(value); err != nil {
+		t.Fatal(err)
+	}
+	value = []byte(hex.EncodeToString(value))
+	h.api.approveCredential("provider", "provider-token", "token", "APPROVED_TOKEN", value)
+
+	listed := h.run(t, "sandbox", "credential", "list", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential list", listed, 0, "provider\tAPPROVED_TOKEN", "")
+	if strings.Contains(listed.stdout, "provider-token") || strings.Contains(listed.stdout, string(value)) {
+		t.Fatalf("credential list exposed Secret details: %s", listed.stdout)
+	}
+
+	home := t.TempDir()
+	created := h.runWith(t, "FAKE_SANDBOX_HOME="+home, "sandbox", "create", "credentialed", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential create", created, 0, "ready sandbox credentialed", "")
+	tool := exec.Command("bash", "--noprofile", "--rcfile", filepath.Join(home, ".bashrc"), "-ic", `test -n "$APPROVED_TOKEN"`)
+	tool.Env = append(os.Environ(), "HOME="+home)
+	if output, err := tool.CombinedOutput(); err != nil {
+		t.Fatalf("tool did not receive approved credential: %v %s", err, output)
+	}
+
+	denied := h.run(t, "sandbox", "create", "denied-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "other-user/provider-token", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "cross-user credential", denied, 2, "", "credential \"other-user/provider-token\" is not approved")
+	if h.api.hasClaim("denied-credential") {
+		t.Fatal("rejected credential created the sandbox claim")
+	}
+
+	typo := h.run(t, "sandbox", "create", "typo-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provder", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "mistyped credential", typo, 2, "", "credential \"provder\" is not approved")
+	if h.api.hasClaim("typo-credential") {
+		t.Fatal("mistyped credential created the sandbox claim")
+	}
+	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "typo-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential retry after rejection", retried, 0, "attached 1 approved credential", "")
+
+	h.api.approveCredential("missing", "missing-token", "token", "MISSING_TOKEN", nil)
+	missing := h.run(t, "sandbox", "create", "missing-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "missing", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "missing credential", missing, 2, "", "read approved credential \"missing\" from Secret dev/missing-token")
+	if !h.api.hasClaim("missing-credential") {
+		t.Fatal("missing Secret deleted the sandbox claim")
+	}
+
+	h.api.approveCredential("forbidden", "forbidden-token", "token", "FORBIDDEN_TOKEN", value)
+	h.api.forbidSecret("forbidden-token")
+	forbidden := h.run(t, "sandbox", "create", "forbidden-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "forbidden", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "forbidden credential", forbidden, 2, "", "forbidden")
+
+	failed := h.runWith(t, "FAKE_KUBECTL_FAIL_CREDENTIALS=1", "sandbox", "create", "redacted-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential subprocess failure", failed, 2, "", "install approved credentials")
+	if strings.Contains(failed.stdout+failed.stderr, string(value)) {
+		t.Fatal("credential value leaked through subprocess failure")
+	}
+	if !h.api.hasClaim("redacted-credential") {
+		t.Fatal("credential subprocess failure deleted the sandbox claim")
+	}
+
+	registrationHome := t.TempDir()
+	registrationEnv := append(slices.Clone(h.env), "FAKE_HERDR_FAIL_ADD=1", "FAKE_SANDBOX_HOME="+registrationHome)
+	registration := h.invoke(t, h.binary, registrationEnv, "", []string{"sandbox", "create", "registration-failure", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig})
+	assertCLI(t, "credential registration failure", registration, 2, "", "herdr exited")
+	if strings.Contains(registration.stdout+registration.stderr, string(value)) {
+		t.Fatal("credential value leaked through registration failure")
+	}
+	if !h.api.hasClaim("registration-failure") {
+		t.Fatal("registration failure deleted the sandbox claim")
+	}
+}
+
+func TestCLIRestoreKeepsCredentialSelection(t *testing.T) {
+	h := newHarness(t)
+	h.api.approveCredential("provider", "provider-token", "token", "APPROVED_TOKEN", []byte("value"))
+	h.api.approveCredential("other", "other-token", "token", "OTHER_TOKEN", []byte("other"))
+
+	created := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "credential create", created, 0, "attached 1 approved credential", "")
+	assertCLI(t, "retain credentialed sandbox", h.run(t, "sandbox", "delete", "kept-credential", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-kept-credential", "")
+
+	homes := h.retainedHomes(t)
+	if len(homes) != 1 || !slices.Equal(homes[0].Credentials, []string{"provider"}) {
+		t.Fatalf("retained homes = %#v", homes)
+	}
+
+	restored := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--home", "home-kept-credential-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "restore keeps credentials", restored, 0, "attached 1 approved credential", "")
+
+	changed := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "other", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "changed selection", changed, 2, "", "uses a different credential selection")
+
+	repeated := h.runWith(t, "FAKE_SANDBOX_HOME="+t.TempDir(), "sandbox", "create", "kept-credential", "--template", "dev-small", "--identity", h.identity, "--credential", "provider", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "same selection retry", repeated, 0, "attached 1 approved credential", "")
 }
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -78,6 +79,7 @@ type createOptions struct {
 	Template     string
 	IdentityFile string
 	Project      *projectRequest
+	Credentials  []string
 	Timeout      time.Duration
 	Poll         time.Duration
 	Global       globalOptions
@@ -100,13 +102,14 @@ type retainResult struct {
 }
 
 type createdSandbox struct {
-	Name     string
-	Template string
-	WarmPool string
-	SSHAlias string
-	Home     PersistentHome
-	Project  *projectRequest
-	Checkout error
+	Name        string
+	Template    string
+	WarmPool    string
+	SSHAlias    string
+	Home        PersistentHome
+	Project     *projectRequest
+	Checkout    error
+	Credentials int
 }
 
 type restoreSelection struct {
@@ -262,10 +265,25 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 		if err != nil {
 			return createdSandbox{}, err
 		}
-		if *found != restore.Retained {
+		if !reflect.DeepEqual(*found, restore.Retained) {
 			return createdSandbox{}, errors.New("selected retained home changed before attachment; review it and retry")
 		}
 		retained = found
+	}
+	if restore != nil {
+		switch {
+		case len(options.Credentials) == 0:
+			options.Credentials = slices.Clone(restore.Retained.Credentials)
+		case len(restore.Retained.Credentials) > 0 && !sameCredentials(restore.Retained.Credentials, options.Credentials):
+			return createdSandbox{}, fmt.Errorf("retained home %s keeps credentials %s; restore it with the same selection", restore.Retained.Home.Name, strings.Join(restore.Retained.Credentials, ", "))
+		}
+	}
+	selected, err := client.selectCredentials(ctx, target.Namespace, options.Credentials)
+	if err != nil {
+		if restore != nil && len(restore.Retained.Credentials) > 0 {
+			return createdSandbox{}, fmt.Errorf("retained home %s keeps credentials %s: %w", restore.Retained.Home.Name, strings.Join(restore.Retained.Credentials, ", "), err)
+		}
+		return createdSandbox{}, err
 	}
 	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
 	if err != nil {
@@ -287,7 +305,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 			return createdSandbox{}, err
 		}
 	}
-	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, approved, options.Global.StateDir)
+	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, options.Credentials, approved, options.Global.StateDir)
 	if err != nil {
 		return createdSandbox{}, err
 	}
@@ -316,6 +334,13 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if err := saveManagedBinding(managed, resolved.Identity, home, options.Global.StateDir, string(claim.Metadata.UID)); err != nil {
 		return createdSandbox{}, err
 	}
+	credentials, err := client.readCredentials(ctx, target.Namespace, selected)
+	if err != nil {
+		return createdSandbox{}, err
+	}
+	if err := installCredentials(ctx, target, resolved, credentials, options); err != nil {
+		return createdSandbox{}, err
+	}
 	connection, err := connect(ctx, target, connectOptions{
 		Name:         name,
 		ExpectedUID:  resolved.Identity.UID,
@@ -330,7 +355,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 			return createdSandbox{}, err
 		}
 	}
-	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}
+	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias, Credentials: len(credentials)}
 	if options.Project != nil {
 		created.Project = options.Project
 		created.Checkout = checkoutProject(ctx, target, resolved, *options.Project, options)
@@ -368,7 +393,7 @@ func saveManagedBinding(managed *ManagedSandbox, sandbox SandboxIdentity, home P
 	return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
 }
 
-func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, approved approvedTemplate, stateDir string) (*ManagedSandbox, *sandboxClaim, error) {
+func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, credentials []string, approved approvedTemplate, stateDir string) (*ManagedSandbox, *sandboxClaim, error) {
 	saved, err := selectManaged(target, name, stateDir)
 	if err != nil {
 		return nil, nil, err
@@ -378,6 +403,9 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 	}
 	if saved != nil && saved.IdentityFile != identity {
 		return nil, nil, fmt.Errorf("saved sandbox %s/%s uses a different SSH identity file", target.Namespace, name)
+	}
+	if saved != nil && !sameCredentials(saved.Credentials, credentials) {
+		return nil, nil, fmt.Errorf("saved sandbox %s/%s uses a different credential selection", target.Namespace, name)
 	}
 	claim, err := obtainClaim(ctx, client, target, name, approved.WarmPool)
 	if err != nil {
@@ -401,6 +429,7 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 		Template:     approved.Name,
 		WarmPool:     approved.WarmPool,
 		IdentityFile: identity,
+		Credentials:  slices.Clone(credentials),
 	}
 	if err := saveJSON(managedSandboxPath(stateDir, string(claim.Metadata.UID)), managed); err != nil {
 		return nil, nil, err
@@ -768,12 +797,13 @@ func retainSandboxHome(ctx context.Context, target KubeTarget, name string, opti
 		return retainResult{}, err
 	}
 	retained := RetainedHome{
-		Version:  1,
-		State:    retainedHomeAvailable,
-		Template: managed.Template,
-		WarmPool: managed.WarmPool,
-		Origin:   *managed.Sandbox,
-		Home:     *managed.Home,
+		Version:     1,
+		State:       retainedHomeAvailable,
+		Template:    managed.Template,
+		WarmPool:    managed.WarmPool,
+		Origin:      *managed.Sandbox,
+		Home:        *managed.Home,
+		Credentials: slices.Clone(managed.Credentials),
 	}
 	if err := saveJSON(retainedHomePath(options.Global.StateDir, managed.Home.UID), retained); err != nil {
 		return retainResult{}, err

@@ -69,6 +69,7 @@ type ManagedSandbox struct {
 	Template     string           `json:"template"`
 	WarmPool     string           `json:"warmPool"`
 	IdentityFile string           `json:"identityFile"`
+	Credentials  []string         `json:"credentials,omitzero"`
 	Sandbox      *SandboxIdentity `json:"sandbox,omitzero"`
 	Home         *PersistentHome  `json:"home,omitzero"`
 }
@@ -80,13 +81,14 @@ type PersistentVolume struct {
 }
 
 type RetainedHome struct {
-	Version  int               `json:"version"`
-	State    retainedHomeState `json:"state"`
-	Template string            `json:"template"`
-	WarmPool string            `json:"warmPool"`
-	Origin   SandboxIdentity   `json:"origin"`
-	Home     PersistentHome    `json:"home"`
-	Deletion *PersistentVolume `json:"deletion,omitzero"`
+	Version     int               `json:"version"`
+	State       retainedHomeState `json:"state"`
+	Template    string            `json:"template"`
+	WarmPool    string            `json:"warmPool"`
+	Origin      SandboxIdentity   `json:"origin"`
+	Home        PersistentHome    `json:"home"`
+	Credentials []string          `json:"credentials,omitzero"`
+	Deletion    *PersistentVolume `json:"deletion,omitzero"`
 }
 
 type retainedHomeState string

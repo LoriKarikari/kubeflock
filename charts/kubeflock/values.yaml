@@ -5,6 +5,8 @@ namespace:
 access:
   subjects: []
 
+credentials: []
+
 sandbox:
   templateName: dev-small
   image: ""
