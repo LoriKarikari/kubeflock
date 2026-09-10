@@ -1,6 +1,6 @@
 # Kubeflock
 
-Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr through the Kubernetes API. Sandboxes need no public SSH service or direct route from your workstation.
+A Herdr plugin that provisions Agent Sandbox environments on Kubernetes and connects them through the Kubernetes API.
 
 ![Kubeflock creates a sandbox, launches Pi in Herdr, and reconnects without stopping Pi](docs/demo.gif)
 
@@ -9,7 +9,7 @@ Kubeflock creates personal Kubernetes sandboxes and connects them to Herdr throu
 - Go 1.27 or newer
 - Herdr 0.9.0 or newer
 - Helm 3
-- A kubeconfig for a cluster with Agent Sandbox `v1beta1`, gVisor, and persistent storage
+- A Kubernetes cluster with Agent Sandbox `v1beta1`, gVisor, and persistent storage
 
 ## Install
 
@@ -53,7 +53,7 @@ kubeflock cluster config show [--output text|json]
 kubeflock cluster check       [--timeout 60s] [--output text|json]
 ```
 
-The saved context persists across `kubectl` context switches.
+The saved context sticks even if you switch `kubectl` contexts.
 
 ### Create
 
@@ -75,11 +75,15 @@ kubeflock sandbox create NAME --template NAME --identity PATH [flags]
 kubeflock sandbox list [--output text|json]
 ```
 
+Shows all sandboxes and their current state.
+
 ### Connect
 
 ```bash
 kubeflock sandbox connect NAME --identity PATH
 ```
+
+Saves the sandbox host key on first use.
 
 ### Reconnect
 
@@ -87,7 +91,7 @@ kubeflock sandbox connect NAME --identity PATH
 kubeflock sandbox reconnect [NAME]
 ```
 
-Refuses a changed host key.
+Reuses the saved identity and host key.
 
 ### Disconnect
 
@@ -95,13 +99,15 @@ Refuses a changed host key.
 kubeflock sandbox disconnect [NAME]
 ```
 
+Detaches Herdr but leaves the sandbox running.
+
 ### Stop
 
 ```bash
 kubeflock sandbox stop [NAME] [--timeout 5m]
 ```
 
-Keeps the persistent home.
+Stops compute but keeps the persistent home.
 
 ### Resume
 
@@ -109,7 +115,7 @@ Keeps the persistent home.
 kubeflock sandbox resume [NAME] [--timeout 5m]
 ```
 
-Starts a new Pod and reconnects with the saved host key.
+Spins up a new Pod with the existing home and reconnects.
 
 ### Delete
 
@@ -117,7 +123,7 @@ Starts a new Pod and reconnects with the saved host key.
 kubeflock sandbox delete [NAME] [--timeout 5m]
 ```
 
-Retains the PVC as a home you can restore or permanently delete.
+Tears down compute and keeps the PVC. Restore or permanently delete it under [Retained homes](#retained-homes).
 
 ### Credentials
 
@@ -125,9 +131,7 @@ Retains the PVC as a home you can restore or permanently delete.
 kubeflock sandbox credential list
 ```
 
-Each alias maps to a Secret key in the configured namespace. Values transfer over stdin and never enter images, local state, or command arguments. Re-running `create` refreshes rotated credentials.
-
-Repository URLs with embedded credentials are rejected. No keys, credentials, or agents are copied from your workstation.
+Each alias maps to a Secret in the configured namespace. Values are passed over stdin and never touch images, local state, or command arguments. Re-running `create` refreshes rotated credentials. No keys or agents are copied from your workstation.
 
 ### Retained homes
 
@@ -136,6 +140,6 @@ kubeflock sandbox home list   [--output text|json]
 kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
 ```
 
-Restore a home by passing `--home PVC_UID` to `sandbox create` with the original sandbox name. Restore uses the template recorded at deletion and prints the image for approval.
+Restore a home by passing `--home PVC_UID` to `sandbox create` with the original name.
 
-`home delete` shows a data-loss warning and requires the exact PVC UID for confirmation (`--confirm` for scripts). It refuses storage that is allocated, mounted, or ambiguously owned.
+`home delete` requires the exact PVC UID for confirmation (`--confirm` for scripts).
