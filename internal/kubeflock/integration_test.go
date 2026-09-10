@@ -964,7 +964,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("the controller re-adopted the home %d times after orphaning", adopted)
 	}
 	deleted := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "delete and retain", deleted, 0, "retained home home-delayed-uid", "stopping compute")
+	assertCLI(t, "delete and retain", deleted, 0, "retained home home-delayed (10Gi)", "")
 	if state := h.api.state("delayed"); state.claim || state.sandbox || state.homeOwned {
 		t.Fatalf("retention state: %#v", state)
 	}
@@ -981,7 +981,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		homes[0].Template != "dev-small" || homes[0].WarmPool != "dev-small-pool" || homes[0].State != "available" {
 		t.Fatalf("retained homes = %#v", homes)
 	}
-	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "template=dev-small", "")
+	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "home-delayed\tavailable", "")
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("connection state still exists: %v", err)
 	}

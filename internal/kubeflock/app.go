@@ -370,7 +370,6 @@ func (a *App) retainCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(a.Err, "stopping compute before retaining the sandbox home")
 			retained, err := retainSandboxHome(command.Context(), target, name, lifecycleOptions{
 				Timeout: timeout,
 				Poll:    2 * time.Second,
@@ -379,7 +378,7 @@ func (a *App) retainCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "deleted sandbox %s/%s; retained home %s (%s)\n", target.Namespace, retained.Name, retained.Home.UID, retained.Home.Capacity)
+			fmt.Fprintf(a.Out, "deleted sandbox %s/%s; retained home %s (%s)\n", target.Namespace, retained.Name, retained.Home.Name, retained.Home.Capacity)
 			return nil
 		},
 	}
@@ -406,7 +405,7 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 				return nil
 			}
 			for _, retained := range homes {
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\torigin=%s/%s template=%s\n", retained.Home.UID, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\torigin=%s/%s template=%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
 			}
 			return nil
 		},
