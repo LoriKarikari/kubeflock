@@ -67,6 +67,8 @@ var requiredAccess = []accessCheck{
 	{Name: "perm-create-pods-exec", Verb: "create", Resource: "pods", Subresource: "exec", Namespaced: true},
 	{Name: "perm-get-persistentvolumeclaims", Verb: "get", Resource: "persistentvolumeclaims", Namespaced: true},
 	{Name: "perm-patch-persistentvolumeclaims", Verb: "patch", Resource: "persistentvolumeclaims", Namespaced: true},
+	{Name: "perm-delete-persistentvolumeclaims", Verb: "delete", Resource: "persistentvolumeclaims", Namespaced: true},
+	{Name: "perm-get-persistentvolumes", Verb: "get", Resource: "persistentvolumes"},
 	{Name: "perm-list-resourcequotas", Verb: "list", Resource: "resourcequotas", Namespaced: true},
 	{Name: "perm-list-limitranges", Verb: "list", Resource: "limitranges", Namespaced: true},
 	{Name: "perm-list-storageclasses", Verb: "list", Group: "storage.k8s.io", Resource: "storageclasses"},

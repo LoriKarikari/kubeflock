@@ -73,6 +73,12 @@ type ManagedSandbox struct {
 	Home         *PersistentHome  `json:"home,omitzero"`
 }
 
+type PersistentVolume struct {
+	Name          string `json:"name"`
+	UID           string `json:"uid"`
+	ReclaimPolicy string `json:"reclaimPolicy"`
+}
+
 type RetainedHome struct {
 	Version  int               `json:"version"`
 	State    retainedHomeState `json:"state"`
@@ -80,6 +86,7 @@ type RetainedHome struct {
 	WarmPool string            `json:"warmPool"`
 	Origin   SandboxIdentity   `json:"origin"`
 	Home     PersistentHome    `json:"home"`
+	Deletion *PersistentVolume `json:"deletion,omitzero"`
 }
 
 type retainedHomeState string
@@ -87,6 +94,7 @@ type retainedHomeState string
 const (
 	retainedHomeAvailable retainedHomeState = "available"
 	retainedHomeRestoring retainedHomeState = "restoring"
+	retainedHomeDeleting  retainedHomeState = "deleting"
 )
 
 type CheckResult struct {

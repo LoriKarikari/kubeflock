@@ -57,7 +57,11 @@ type fixtureSandbox struct {
 	homeCapacity     string
 	homeAccessModes  []string
 	homeVolumeMode   string
+	homeUID          string
 	homeMissing      bool
+	volumePolicy     string
+	volumeMissing    bool
+	holdVolume       bool
 	loseHomeOnDelete bool
 	reads            int
 }
@@ -140,6 +144,18 @@ func (f *fixtureAPI) setHomeOwned(name string, owned bool) {
 	s.homeOwned, s.homeOwner = owned, ""
 }
 
+func (f *fixtureAPI) setClaim(name string, present bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.ensureSandbox(name)
+	if !present {
+		s.claim = nil
+		return
+	}
+	claim := claimFixture(name, "dev-small-pool")
+	s.claim = &claim
+}
+
 func (f *fixtureAPI) setForeignHomeOwner(name, owner string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -165,6 +181,28 @@ func (f *fixtureAPI) setHomeLayout(name string, accessModes []string, volumeMode
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
 	s.homeAccessModes, s.homeVolumeMode = accessModes, volumeMode
+}
+
+func (f *fixtureAPI) setHomeUID(name, uid string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureSandbox(name).homeUID = uid
+}
+
+func (f *fixtureAPI) setVolumePolicy(name, policy string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureSandbox(name).volumePolicy = policy
+}
+
+func (f *fixtureAPI) holdVolumeDeletion(name string, hold bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := f.ensureSandbox(name)
+	s.holdVolume = hold
+	if !hold && s.homeMissing && s.volumePolicy != "Retain" {
+		s.volumeMissing = true
+	}
 }
 
 func (f *fixtureAPI) setTemplateClaim(name string) {
@@ -255,6 +293,8 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 		f.handlePods(response, request)
 	case strings.Contains(path, "/persistentvolumeclaims/home-"):
 		f.handleHome(response, request, path)
+	case strings.Contains(path, "/persistentvolumes/pv-home-"):
+		f.handleVolume(response, path)
 	default:
 		writeNotFound(response)
 	}
@@ -431,11 +471,61 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "message": "persistentvolumeclaim not found", "code": 404})
 		return
 	}
+	if request.Method == http.MethodDelete {
+		uid := types.UID(homeUID(name, s))
+		var options metav1.DeleteOptions
+		if json.NewDecoder(request.Body).Decode(&options) != nil || options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != uid {
+			response.WriteHeader(http.StatusConflict)
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Conflict", "message": fmt.Sprintf("PVC UID precondition did not match %s", uid), "code": 409})
+			return
+		}
+		if f.failDelete["pvc"] > 0 {
+			f.failDelete["pvc"]--
+			response.WriteHeader(http.StatusForbidden)
+			writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "Forbidden", "message": "PVC delete forbidden", "code": 403})
+			return
+		}
+		s.homeMissing = true
+		if s.volumePolicy != "Retain" && !s.holdVolume {
+			s.volumeMissing = true
+		}
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Success", "code": 200})
+		return
+	}
 	if request.Method == http.MethodPatch {
 		f.patchHome(response, request, name, sandbox, s)
 		return
 	}
 	writeFixture(response, homeFixture(name, sandbox, s))
+}
+
+func (f *fixtureAPI) handleVolume(response http.ResponseWriter, path string) {
+	_, name, _ := strings.CutLast(path, "/")
+	sandbox := strings.TrimPrefix(name, "pv-home-")
+	s := f.ensureSandbox(sandbox)
+	if s.volumeMissing {
+		writeNotFound(response)
+		return
+	}
+	policy := s.volumePolicy
+	if policy == "" {
+		policy = "Delete"
+	}
+	writeFixture(response, map[string]any{
+		"apiVersion": "v1", "kind": "PersistentVolume",
+		"metadata": map[string]any{"name": name, "uid": name + "-uid"},
+		"spec": map[string]any{
+			"persistentVolumeReclaimPolicy": policy,
+			"claimRef":                      map[string]any{"namespace": "dev", "name": "home-" + sandbox, "uid": homeUID("home-"+sandbox, s)},
+		},
+	})
+}
+
+func homeUID(name string, s *fixtureSandbox) string {
+	if s.homeUID != "" {
+		return s.homeUID
+	}
+	return name + "-uid"
 }
 
 func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
@@ -464,7 +554,7 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 	if accessModes == nil {
 		accessModes = []string{"ReadWriteOnce"}
 	}
-	spec := map[string]any{"storageClassName": storageClass, "accessModes": accessModes}
+	spec := map[string]any{"storageClassName": storageClass, "accessModes": accessModes, "volumeName": "pv-" + name}
 	if s.homeVolumeMode != "" {
 		spec["volumeMode"] = s.homeVolumeMode
 	}
@@ -474,7 +564,7 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) map[string]any {
 		"metadata": map[string]any{
 			"name":            name,
 			"namespace":       "dev",
-			"uid":             name + "-uid",
+			"uid":             homeUID(name, s),
 			"resourceVersion": "1",
 			"labels":          labels,
 			"ownerReferences": owners,
@@ -996,6 +1086,12 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	if !slices.Contains(actionState.PaneArgs, "restore") {
 		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
 	}
+	assertCLI(t, "delete home action", h.run(t, "sandbox", "delete-home-action"), 0, "", "")
+	data, _ = os.ReadFile(h.herdrState)
+	_ = json.Unmarshal(data, &actionState)
+	if !slices.Contains(actionState.PaneArgs, "delete-home") {
+		t.Fatalf("delete home action did not open its Herdr pane: %#v", actionState.PaneArgs)
+	}
 
 	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "failed create", failed, 2, "", "herdr exited")
@@ -1126,6 +1222,60 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("retained homes = %#v", homes)
 	}
 	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "uid=home-delayed-uid", "")
+
+	doomed := h.run(t, "sandbox", "create", "doomed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create doomed", doomed, 0, "ready sandbox doomed", "")
+	assertCLI(t, "retain doomed", h.run(t, "sandbox", "delete", "doomed", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-doomed", "")
+	declined := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "no", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "declined home deletion", declined, 0, "project files, history, settings, and credentials", "")
+	assertCLI(t, "declined home deletion", declined, 0, "cancelled; no storage was deleted", "")
+	if h.api.ensureSandbox("doomed").homeMissing {
+		t.Fatal("declined confirmation deleted the home")
+	}
+	h.api.setClaim("doomed", true)
+	activeDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "active allocation deletion", activeDelete, 2, "", "active or uncertain sandbox allocation")
+	h.api.setClaim("doomed", false)
+	h.api.mountHome("home-doomed")
+	mountedDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "mounted home deletion", mountedDelete, 2, "", "mounted by Pod foreign-mount")
+	h.api.mountHome("")
+	h.api.setForeignHomeOwner("doomed", "sandbox-foreign")
+	ownedDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "owned home deletion", ownedDelete, 2, "", "uncertain ownership")
+	h.api.setHomeOwned("doomed", false)
+	h.api.setVolumePolicy("doomed", "Retain")
+	retainedVolume := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "Retain policy deletion", retainedVolume, 2, "", "uses Retain reclaim policy")
+	if h.api.ensureSandbox("doomed").homeMissing {
+		t.Fatal("Retain policy deleted the PVC")
+	}
+	h.api.setHomeUID("doomed", "replacement-uid")
+	staleDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "stale home identity", staleDelete, 2, "", "was replaced")
+	h.api.setHomeUID("doomed", "")
+	h.api.setVolumePolicy("doomed", "Delete")
+	h.api.failNextDelete("pvc")
+	forbiddenDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "forbidden home deletion", forbiddenDelete, 2, "", "deletion remains pending for PVC home-doomed and PV pv-home-doomed")
+	assertCLI(t, "pending home visible", h.run(t, "sandbox", "home", "list"), 0, "deleting", "")
+	h.api.mountHome("home-doomed")
+	concurrentAttachment := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "concurrent attachment", concurrentAttachment, 2, "", "mounted by Pod foreign-mount")
+	h.api.mountHome("")
+	h.api.holdVolumeDeletion("doomed", true)
+	residualVolume := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "residual volume", residualVolume, 2, "", "deletion remains pending for PVC home-doomed and PV pv-home-doomed")
+	assertCLI(t, "residual volume visible", h.run(t, "sandbox", "home", "list"), 0, "pv=pv-home-doomed", "")
+	h.api.holdVolumeDeletion("doomed", false)
+	deletedHome := h.invoke(t, h.binary, h.env, "home-doomed-uid\n", []string{"sandbox", "home", "delete", "home-doomed-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig})
+	assertCLI(t, "interactive permanent home deletion", deletedHome, 0, "Type the PVC UID home-doomed-uid to confirm", "")
+	assertCLI(t, "interactive permanent home deletion", deletedHome, 0, "permanently deleted retained home home-doomed", "")
+	remainingHomes := h.retainedHomes(t)
+	if len(remainingHomes) != 1 || remainingHomes[0].Home.UID != "home-delayed-uid" || h.api.ensureSandbox("delayed").volumeMissing {
+		t.Fatalf("permanent deletion changed unrelated storage: %#v", remainingHomes)
+	}
+
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("connection state still exists: %v", err)
 	}

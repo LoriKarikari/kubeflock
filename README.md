@@ -141,7 +141,15 @@ Deleting stops compute, orphan-deletes the Claim and Sandbox with UID preconditi
 kubeflock sandbox home list [--output text|json]
 ```
 
-Homes are listed by PVC name and UID, with their origin, template, capacity, storage class, and state. The list covers the configured target only, so homes recorded for another context or namespace stay hidden. A home shows `restoring` when an interrupted restore left its record behind, and a retry finishes the attachment.
+Homes are listed by PVC name and UID, with their origin, template, capacity, storage class, and state. The list covers the configured target only, so homes recorded for another context or namespace stay hidden. A home shows `restoring` when an interrupted restore left its record behind, and a retry finishes the attachment. A `deleting` home also shows the exact residual PV identity.
+
+### Permanently delete a retained home
+
+```bash
+kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
+```
+
+Kubeflock shows the target, PVC identity, capacity, storage class, PV, and data-loss warning before requiring the exact PVC UID. Scripts must pass the same UID through `--confirm`. The command refuses allocated, mounted, restoring, replaced, or ambiguously owned storage. It also refuses a `Retain` reclaim policy because Kubernetes cannot confirm deletion of the underlying storage asset. For `Delete`, Kubeflock records the exact PVC and PV identities, deletes only that PVC with a UID precondition, and reports success only after both objects disappear. A failed attempt remains listed as `deleting` with its residual PV for a safe retry.
 
 ### Disconnect
 
@@ -151,4 +159,4 @@ kubeflock sandbox disconnect [NAME]
 
 Disconnecting leaves the Sandbox and its remote processes running.
 
-Herdr provides matching lifecycle, restore, and listing actions.
+Herdr provides matching lifecycle, restore, listing, and permanent home deletion actions.

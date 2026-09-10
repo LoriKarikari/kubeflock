@@ -104,6 +104,11 @@ type restoreSelection struct {
 	Approved approvedTemplate
 }
 
+type homeDeletionSelection struct {
+	Retained RetainedHome
+	Volume   PersistentVolume
+}
+
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
 	saved, err := listManagedSandboxes(stateDir)
 	if err != nil {
@@ -378,6 +383,9 @@ func inspectRestore(ctx context.Context, target KubeTarget, name, homeUID string
 	if err != nil {
 		return restoreSelection{}, err
 	}
+	if retained.State == retainedHomeDeleting {
+		return restoreSelection{}, fmt.Errorf("retained home %s is being permanently deleted", retained.Home.Name)
+	}
 	if name != retained.Origin.Name {
 		return restoreSelection{}, fmt.Errorf("retained home %s can only be restored as sandbox %s", retained.Home.Name, retained.Origin.Name)
 	}
@@ -466,20 +474,99 @@ func prepareCreation(target KubeTarget, name string, options createOptions) (str
 	if err != nil {
 		return "", nil, err
 	}
-	locks := filepath.Join(options.Global.StateDir, "locks")
+	lock, err := acquireSandboxLock(target, name, options.Global.StateDir)
+	return identity, lock, err
+}
+
+func acquireSandboxLock(target KubeTarget, name, stateDir string) (*flock.Flock, error) {
+	locks := filepath.Join(stateDir, "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	key := sha256.Sum256([]byte(target.Context + "\x00" + target.Namespace + "\x00" + name))
-	creationLock := flock.New(filepath.Join(locks, hex.EncodeToString(key[:])))
-	locked, err := creationLock.TryLock()
+	lock := flock.New(filepath.Join(locks, hex.EncodeToString(key[:])))
+	locked, err := lock.TryLock()
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if !locked {
-		return "", nil, fmt.Errorf("sandbox %s/%s is already being created", target.Namespace, name)
+		return nil, fmt.Errorf("sandbox %s/%s already has a storage operation in progress", target.Namespace, name)
 	}
-	return identity, creationLock, nil
+	return lock, nil
+}
+
+func inspectRetainedHomeDeletion(ctx context.Context, target KubeTarget, uid string, options lifecycleOptions) (homeDeletionSelection, error) {
+	retained, err := selectRetainedHome(target, uid, options.Global.StateDir)
+	if err != nil {
+		return homeDeletionSelection{}, err
+	}
+	if retained.State == retainedHomeRestoring {
+		return homeDeletionSelection{}, fmt.Errorf("retained home %s is being restored", retained.Home.Name)
+	}
+	if retained.State == retainedHomeDeleting {
+		return homeDeletionSelection{Retained: *retained, Volume: *retained.Deletion}, nil
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return homeDeletionSelection{}, err
+	}
+	volume, err := client.inspectHomeDeletion(ctx, target, *retained)
+	if err != nil {
+		return homeDeletionSelection{}, err
+	}
+	return homeDeletionSelection{Retained: *retained, Volume: volume}, nil
+}
+
+func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, options lifecycleOptions) error {
+	retained, err := selectRetainedHome(target, uid, options.Global.StateDir)
+	if err != nil {
+		return err
+	}
+	lock, err := acquireSandboxLock(target, retained.Origin.Name, options.Global.StateDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+	retained, err = selectRetainedHome(target, uid, options.Global.StateDir)
+	if err != nil {
+		return err
+	}
+	if retained.State == retainedHomeRestoring {
+		return fmt.Errorf("retained home %s is being restored", retained.Home.Name)
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return err
+	}
+	if retained.State == retainedHomeAvailable {
+		volume, err := client.inspectHomeDeletion(ctx, target, *retained)
+		if err != nil {
+			return err
+		}
+		if volume.ReclaimPolicy != "Delete" {
+			return fmt.Errorf("persistent volume %s uses %s reclaim policy; refusing because Kubernetes cannot confirm permanent storage deletion", volume.Name, volume.ReclaimPolicy)
+		}
+		retained.State, retained.Deletion = retainedHomeDeleting, &volume
+		if err := saveJSON(retainedHomePath(options.Global.StateDir, uid), retained); err != nil {
+			return err
+		}
+	}
+	if retained.State != retainedHomeDeleting || retained.Deletion == nil || retained.Deletion.ReclaimPolicy != "Delete" {
+		return fmt.Errorf("retained home %s has invalid deletion state", retained.Home.Name)
+	}
+	if err := client.verifyPendingHomeDeletion(ctx, target, *retained); err != nil {
+		return err
+	}
+	if err := client.deleteHomePVC(ctx, target, retained.Home); err != nil {
+		return fmt.Errorf("delete retained home PVC: %w; deletion remains pending for PVC %s and PV %s", err, retained.Home.Name, retained.Deletion.Name)
+	}
+	err = wait.PollUntilContextTimeout(ctx, options.Poll, options.Timeout, true, func(ctx context.Context) (bool, error) {
+		return client.homeDeletionComplete(ctx, target, retained.Home, *retained.Deletion)
+	})
+	if err != nil {
+		return fmt.Errorf("deletion remains pending for PVC %s and PV %s: %w", retained.Home.Name, retained.Deletion.Name, err)
+	}
+	return os.Remove(retainedHomePath(options.Global.StateDir, uid))
 }
 
 func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode sandboxOperatingMode, options lifecycleOptions) (lifecycleResult, error) {

@@ -79,9 +79,9 @@ kubeflock cluster check
 
 ## Access model
 
-`access.subjects` accepts Kubernetes `User`, `Group`, and `ServiceAccount` subjects. The chart grants sandbox lifecycle access only in the developer namespace. Cluster-wide access is read-only and limited to the namespace, StorageClass, and `gvisor` RuntimeClass checks.
+`access.subjects` accepts Kubernetes `User`, `Group`, and `ServiceAccount` subjects. The chart grants sandbox lifecycle access only in the developer namespace. Cluster-wide access is read-only and limited to Namespace, StorageClass, RuntimeClass, and PersistentVolume checks.
 
-Every subject shares one trust domain. The role grants `pods/exec` create and PersistentVolumeClaim patch in the namespace, so any subject can read and write every Sandbox, the home mounted into it, and any retained home recorded from it. Use one namespace per user, or per group that may already read each other's files. Per-user isolation needs a namespace per user, because `pods/exec` alone defeats separation inside one namespace. The chart refuses the broad `system:authenticated`, `system:unauthenticated`, and `system:serviceaccounts` groups for the same reason.
+Every subject shares one trust domain. The role grants `pods/exec` create plus PersistentVolumeClaim patch and delete in the namespace, so any subject can read, write, or delete every Sandbox home there. The cluster role grants read access to PersistentVolumes so Kubeflock can verify reclaim policy and final deletion. Use one namespace per user, or per group that may already read each other's files. Per-user isolation needs a namespace per user, because `pods/exec` alone defeats separation inside one namespace. The chart refuses the broad `system:authenticated`, `system:unauthenticated`, and `system:serviceaccounts` groups for the same reason.
 
 The Sandbox Pod receives no automatic service-account token. The chart does not create a service account for Sandboxes or place private keys, repository credentials, or model credentials in the cluster.
 

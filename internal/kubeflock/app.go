@@ -214,8 +214,10 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.proxyCommand(),
 		createActionCommand("create"),
 		createActionCommand("restore"),
+		createActionCommand("delete-home"),
 		a.createWizardCommand(options),
 		a.restoreWizardCommand(options),
+		a.deleteHomeWizardCommand(options),
 	)
 	return sandbox
 }
@@ -419,14 +421,57 @@ func (a *App) homeCommand(options *globalOptions) *cobra.Command {
 				return nil
 			}
 			for _, retained := range homes {
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.Origin.Name, retained.Template)
+				residual := ""
+				if retained.Deletion != nil {
+					residual = fmt.Sprintf(" pv=%s pvUID=%s", retained.Deletion.Name, retained.Deletion.UID)
+				}
+				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.Origin.Name, retained.Template, residual)
 			}
 			return nil
 		},
 	}
 	output.declare(list)
-	home.AddCommand(list)
+	var confirmation string
+	var timeout time.Duration
+	remove := &cobra.Command{
+		Use:  "delete UID",
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			return a.deleteHome(command.Context(), target, args[0], confirmation, timeout, *options)
+		},
+	}
+	remove.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating the PVC UID")
+	remove.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "storage deletion timeout")
+	home.AddCommand(list, remove)
 	return home
+}
+
+func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmation string, timeout time.Duration, options globalOptions) error {
+	selection, err := inspectRetainedHomeDeletion(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options})
+	if err != nil {
+		return err
+	}
+	home := selection.Retained.Home
+	fmt.Fprintf(a.Out, "Permanent storage deletion\n  target: %s/%s\n  home: %s\n  PVC UID: %s\n  capacity: %s\n  storage class: %s\n  persistent volume: %s\nThis deletes project files, history, settings, and credentials saved in this home.\n", target.Context, target.Namespace, home.Name, home.UID, home.Capacity, home.StorageClass, selection.Volume.Name)
+	if confirmation == "" {
+		fmt.Fprintf(a.Out, "Type the PVC UID %s to confirm: ", uid)
+		if _, err := fmt.Fscanln(a.In, &confirmation); err != nil {
+			confirmation = ""
+		}
+	}
+	if confirmation != uid {
+		fmt.Fprintln(a.Out, "cancelled; no storage was deleted")
+		return nil
+	}
+	if err := deleteRetainedHome(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.Out, "permanently deleted retained home %s (PVC UID %s)\n", home.Name, home.UID)
+	return nil
 }
 
 func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
@@ -598,6 +643,26 @@ func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
 			}
 			fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
 			return nil
+		},
+	}
+}
+
+func (a *App) deleteHomeWizardCommand(options *globalOptions) *cobra.Command {
+	return &cobra.Command{
+		Use:    "delete-home-wizard",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(command *cobra.Command, _ []string) error {
+			var uid string
+			fmt.Fprint(a.Out, "Retained home PVC UID: ")
+			if _, err := fmt.Fscanln(a.In, &uid); err != nil {
+				return err
+			}
+			target, err := loadConfig(options.ConfigPath)
+			if err != nil {
+				return err
+			}
+			return a.deleteHome(command.Context(), target, uid, "", 5*time.Minute, *options)
 		},
 	}
 }
