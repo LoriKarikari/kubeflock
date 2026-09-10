@@ -71,10 +71,16 @@ kubeflock cluster check [--timeout 60s] [--output text|json]
 ```bash
 kubeflock sandbox create my-agent \
   --template dev-small \
-  --identity ~/.ssh/id_ed25519
+  --identity ~/.ssh/id_ed25519 \
+  --repository https://github.com/example/project.git \
+  --branch main
 ```
 
-Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities.
+Omit `--repository` and `--branch` to create an empty sandbox. Creation retries reuse the saved Claim, Sandbox, PVC, and Herdr identities.
+
+Kubeflock clones the repository to `/home/agent/project` after the sandbox is ready and connected. A clone failure leaves the sandbox available for login and retry. Kubeflock never replaces an existing checkout.
+
+Configure repository authentication inside the sandbox through Git's credential or SSH configuration. Kubeflock rejects credential-bearing repository URLs. It does not copy workstation Git credentials or forward the workstation SSH agent.
 
 ### Restore a retained home
 

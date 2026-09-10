@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
@@ -225,7 +226,7 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 }
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
-	var template, identity, homeUID string
+	var template, identity, homeUID, repository, branch string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -241,6 +242,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			created, err := a.createOrRestore(command.Context(), target, args[0], homeUID, createOptions{
 				Template:     template,
 				IdentityFile: identity,
+				Project:      requestedProject(repository, branch),
 				Timeout:      timeout,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -248,18 +250,15 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if homeUID == "" {
-				fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
-			} else {
-				fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
-			}
-			return nil
+			return a.reportCreated(created, homeUID != "")
 		},
 	}
 	command.Flags().StringVar(&template, "template", "", "approved SandboxTemplate")
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
 	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
-	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning timeout")
+	command.Flags().StringVar(&repository, "repository", "", "Git repository to clone inside the sandbox")
+	command.Flags().StringVar(&branch, "branch", "", "Git branch to check out")
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning or checkout timeout")
 	return command
 }
 
@@ -564,21 +563,39 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			var name, template, identity, confirmed string
-			fmt.Fprint(a.Out, "Sandbox name: ")
-			if _, err := fmt.Fscanln(a.In, &name); err != nil {
+			scanner := bufio.NewScanner(a.In)
+			prompt := func(label string) (string, error) {
+				fmt.Fprint(a.Out, label)
+				if !scanner.Scan() {
+					return "", cmp.Or(scanner.Err(), io.EOF)
+				}
+				return strings.TrimSpace(scanner.Text()), nil
+			}
+			name, err := prompt("Sandbox name: ")
+			if err != nil {
 				return err
 			}
-			fmt.Fprint(a.Out, "Approved template: ")
-			if _, err := fmt.Fscanln(a.In, &template); err != nil {
+			template, err := prompt("Approved template: ")
+			if err != nil {
 				return err
 			}
-			fmt.Fprint(a.Out, "SSH identity file: ")
-			if _, err := fmt.Fscanln(a.In, &identity); err != nil {
+			identity, err := prompt("SSH identity file: ")
+			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "Create %s from %s with persistent home storage? [y/N] ", name, template)
-			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
+			repository, err := prompt("Git repository (optional): ")
+			if err != nil {
+				return err
+			}
+			branch := ""
+			if repository != "" {
+				branch, err = prompt("Git branch (optional): ")
+				if err != nil {
+					return err
+				}
+			}
+			confirmed, err := prompt(fmt.Sprintf("Create %s from %s with persistent home storage? [y/N] ", name, template))
+			if err != nil {
 				return err
 			}
 			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
@@ -592,6 +609,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
 				Template:     template,
 				IdentityFile: identity,
+				Project:      requestedProject(repository, branch),
 				Timeout:      5 * time.Minute,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -599,10 +617,37 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
-			return nil
+			return a.reportCreated(created, false)
 		},
 	}
+}
+
+func requestedProject(repository, branch string) *projectRequest {
+	if repository == "" && branch == "" {
+		return nil
+	}
+	return &projectRequest{Repository: repository, Branch: branch}
+}
+
+func (a *App) reportCreated(created createdSandbox, restored bool) error {
+	if restored {
+		fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
+	} else {
+		fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+	}
+	if created.Project == nil {
+		return nil
+	}
+	if created.Project.Error != nil {
+		fmt.Fprintf(a.Err, "kubeflock: checkout failed; sandbox %s remains ready for login and retry: %v\n", created.Name, created.Project.Error)
+		return exitError{code: 1}
+	}
+	if created.Project.Branch == "" {
+		fmt.Fprintln(a.Out, "checked out the repository's default branch in /home/agent/project")
+	} else {
+		fmt.Fprintf(a.Out, "checked out branch %s in /home/agent/project\n", created.Project.Branch)
+	}
+	return nil
 }
 
 func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
