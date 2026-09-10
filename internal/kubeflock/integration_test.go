@@ -527,7 +527,7 @@ func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Re
 	_, name, _ := strings.CutLast(path, "/")
 	if request.Method != http.MethodGet {
 		response.WriteHeader(http.StatusMethodNotAllowed)
-		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "MethodNotAllowed", "message": fmt.Sprintf("persistent volumes do not accept %s", request.Method), "code": 405})
+		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "MethodNotAllowed", "message": "persistent volumes do not accept " + request.Method, "code": 405})
 		return
 	}
 	sandbox := strings.TrimPrefix(name, "pv-home-")
