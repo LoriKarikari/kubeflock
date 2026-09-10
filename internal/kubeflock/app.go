@@ -456,7 +456,11 @@ func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmati
 		return err
 	}
 	home := selection.Retained.Home
-	fmt.Fprintf(a.Out, "Permanent storage deletion\n  target: %s/%s\n  home: %s\n  PVC UID: %s\n  capacity: %s\n  storage class: %s\n  persistent volume: %s\nThis deletes project files, history, settings, and credentials saved in this home.\n", target.Context, target.Namespace, home.Name, home.UID, home.Capacity, home.StorageClass, selection.Volume.Name)
+	fmt.Fprintf(a.Out, "Permanent storage deletion\n  target: %s/%s\n  home: %s\n  PVC UID: %s\n  capacity: %s\n  storage class: %s\n", target.Context, target.Namespace, home.Name, home.UID, home.Capacity, home.StorageClass)
+	if selection.Volume != nil {
+		fmt.Fprintf(a.Out, "  persistent volume: %s\n", selection.Volume.Name)
+	}
+	fmt.Fprint(a.Out, "This deletes project files, history, settings, and credentials saved in this home.\n")
 	if confirmation == "" {
 		fmt.Fprintf(a.Out, "Type the PVC UID %s to confirm: ", uid)
 		if _, err := fmt.Fscanln(a.In, &confirmation); err != nil {

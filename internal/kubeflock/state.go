@@ -156,8 +156,8 @@ func validateRetainedHome(retained RetainedHome) error {
 	if retained.Home.Name == "" || retained.Home.UID == "" || retained.Home.Capacity == "" {
 		return errors.New("retained home contains incomplete storage identity")
 	}
-	if retained.State == retainedHomeDeleting && (retained.Deletion == nil || retained.Deletion.Name == "" || retained.Deletion.UID == "" || retained.Deletion.ReclaimPolicy == "") {
-		return errors.New("deleting retained home requires persistent volume identity")
+	if retained.State == retainedHomeDeleting && retained.Deletion != nil && (retained.Deletion.Name == "" || retained.Deletion.UID == "" || retained.Deletion.ReclaimPolicy == "") {
+		return errors.New("deleting retained home has incomplete persistent volume identity")
 	}
 	if retained.State != retainedHomeDeleting && retained.Deletion != nil {
 		return errors.New("persistent volume deletion identity requires deleting state")

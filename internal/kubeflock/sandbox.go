@@ -106,7 +106,7 @@ type restoreSelection struct {
 
 type homeDeletionSelection struct {
 	Retained RetainedHome
-	Volume   PersistentVolume
+	Volume   *PersistentVolume
 }
 
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
@@ -504,7 +504,7 @@ func inspectRetainedHomeDeletion(ctx context.Context, target KubeTarget, uid str
 		return homeDeletionSelection{}, fmt.Errorf("retained home %s is being restored", retained.Home.Name)
 	}
 	if retained.State == retainedHomeDeleting {
-		return homeDeletionSelection{Retained: *retained, Volume: *retained.Deletion}, nil
+		return homeDeletionSelection{Retained: *retained, Volume: retained.Deletion}, nil
 	}
 	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
 	if err != nil {
@@ -543,30 +543,37 @@ func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, opti
 		if err != nil {
 			return err
 		}
-		if volume.ReclaimPolicy != "Delete" {
+		if volume != nil && volume.ReclaimPolicy != "Delete" {
 			return fmt.Errorf("persistent volume %s uses %s reclaim policy; refusing because Kubernetes cannot confirm permanent storage deletion", volume.Name, volume.ReclaimPolicy)
 		}
-		retained.State, retained.Deletion = retainedHomeDeleting, &volume
+		retained.State, retained.Deletion = retainedHomeDeleting, volume
 		if err := saveJSON(retainedHomePath(options.Global.StateDir, uid), retained); err != nil {
 			return err
 		}
 	}
-	if retained.State != retainedHomeDeleting || retained.Deletion == nil || retained.Deletion.ReclaimPolicy != "Delete" {
+	if retained.State != retainedHomeDeleting || (retained.Deletion != nil && retained.Deletion.ReclaimPolicy != "Delete") {
 		return fmt.Errorf("retained home %s has invalid deletion state", retained.Home.Name)
 	}
 	if err := client.verifyPendingHomeDeletion(ctx, target, *retained); err != nil {
 		return err
 	}
 	if err := client.deleteHomePVC(ctx, target, retained.Home); err != nil {
-		return fmt.Errorf("delete retained home PVC: %w; deletion remains pending for PVC %s and PV %s", err, retained.Home.Name, retained.Deletion.Name)
+		return fmt.Errorf("delete retained home PVC: %w; deletion remains pending for %s", err, deletionTarget(retained.Home, retained.Deletion))
 	}
 	err = wait.PollUntilContextTimeout(ctx, options.Poll, options.Timeout, true, func(ctx context.Context) (bool, error) {
-		return client.homeDeletionComplete(ctx, target, retained.Home, *retained.Deletion)
+		return client.homeDeletionComplete(ctx, target, retained.Home, retained.Deletion)
 	})
 	if err != nil {
-		return fmt.Errorf("deletion remains pending for PVC %s and PV %s: %w", retained.Home.Name, retained.Deletion.Name, err)
+		return fmt.Errorf("deletion remains pending for %s: %w", deletionTarget(retained.Home, retained.Deletion), err)
 	}
 	return os.Remove(retainedHomePath(options.Global.StateDir, uid))
+}
+
+func deletionTarget(home PersistentHome, volume *PersistentVolume) string {
+	if volume == nil {
+		return "PVC " + home.Name
+	}
+	return fmt.Sprintf("PVC %s and PV %s", home.Name, volume.Name)
 }
 
 func changeSandboxMode(ctx context.Context, target KubeTarget, name string, mode sandboxOperatingMode, options lifecycleOptions) (lifecycleResult, error) {
