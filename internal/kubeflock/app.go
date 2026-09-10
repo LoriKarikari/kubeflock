@@ -573,9 +573,6 @@ func createActionCommand(pane string) *cobra.Command {
 				"--entrypoint", pane,
 				"--focus",
 			}
-			if workspace := os.Getenv("HERDR_WORKSPACE_ID"); workspace != "" {
-				args = append(args, "--workspace", workspace)
-			}
 			_, err := runHerdr(command.Context(), args...)
 			return err
 		},

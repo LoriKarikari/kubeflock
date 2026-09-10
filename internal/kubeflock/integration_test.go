@@ -1449,12 +1449,15 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	const sandboxUID = "sandbox-delayed"
 	h := newHarness(t)
 
-	assertCLI(t, "restore action", h.run(t, "sandbox", "restore-action"), 0, "", "")
+	assertCLI(t, "restore action", h.runWith(t, "HERDR_WORKSPACE_ID=w3", "sandbox", "restore-action"), 0, "", "")
 	var actionState herdrFixture
 	data, _ := os.ReadFile(h.herdrState)
 	_ = json.Unmarshal(data, &actionState)
 	if !slices.Contains(actionState.PaneArgs, "restore") {
 		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
+	}
+	if slices.Contains(actionState.PaneArgs, "--workspace") {
+		t.Fatalf("popup action passed an invalid workspace target: %#v", actionState.PaneArgs)
 	}
 	assertCLI(t, "delete home action", h.run(t, "sandbox", "delete-home-action"), 0, "", "")
 	data, _ = os.ReadFile(h.herdrState)
