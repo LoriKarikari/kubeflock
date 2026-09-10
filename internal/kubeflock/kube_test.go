@@ -16,16 +16,14 @@ import (
 func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 	clientset := extensionsfake.NewSimpleClientset()
 	client := kubeClient{extensions: clientset.ExtensionsV1beta1()}
-	home := corev1.PersistentVolumeClaim{
-		Name: "home",
-		Spec: corev1.PersistentVolumeClaimSpec{
-			StorageClassName: new("longhorn"),
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-			},
-		},
+	template := gateTemplate()
+	template.Spec.VolumeClaimTemplates[0].Labels = map[string]string{"template-label": "value"}
+	template.Spec.VolumeClaimTemplates[0].Annotations = map[string]string{"template-annotation": "value"}
+	approved, err := validateTemplate(template, "dev-pool")
+	if err != nil {
+		t.Fatal(err)
 	}
-
+	home := approved.Home
 	claim, err := client.createClaim(context.Background(), KubeTarget{Namespace: "dev"}, "named", "dev-pool", &home)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +37,16 @@ func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 	override := claim.Spec.VolumeClaimTemplates[0]
 	if override.Name != home.Name || override.Spec.StorageClassName == nil || *override.Spec.StorageClassName != "longhorn" || override.Spec.Resources.Requests.Storage().Cmp(resource.MustParse("10Gi")) != 0 {
 		t.Fatalf("home override = %#v", override)
+	}
+	if len(override.Labels) != 0 || len(override.Annotations) != 0 {
+		t.Fatalf("home override copied template metadata: %#v", override)
+	}
+	claim, err = client.createClaim(context.Background(), KubeTarget{Namespace: "dev"}, "without-home", "dev-pool", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claim.Spec.VolumeClaimTemplates) != 0 {
+		t.Fatalf("unexpected home override: %#v", claim.Spec.VolumeClaimTemplates)
 	}
 }
 

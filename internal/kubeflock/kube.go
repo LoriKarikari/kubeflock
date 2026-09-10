@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/v2"
@@ -38,7 +39,7 @@ type approvedTemplate struct {
 	WarmPool        string
 	Image           string
 	ResourceVersion string
-	Home            corev1.PersistentVolumeClaim
+	Home            sandboxapi.PersistentVolumeClaimTemplate
 	HomeOverrides   bool
 }
 
@@ -202,16 +203,13 @@ func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*ext
 	return claim, nil
 }
 
-func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*extensionsapi.SandboxClaim, error) {
+func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *sandboxapi.PersistentVolumeClaimTemplate) (*extensionsapi.SandboxClaim, error) {
 	claim := &extensionsapi.SandboxClaim{
 		Name: name, Namespace: target.Namespace, Labels: map[string]string{managedByLabel: managedByValue},
 		Spec: extensionsapi.SandboxClaimSpec{WarmPoolRef: extensionsapi.SandboxWarmPoolRef{Name: warmPool}},
 	}
 	if home != nil {
-		claim.Spec.VolumeClaimTemplates = []sandboxapi.PersistentVolumeClaimTemplate{{
-			Name: home.Name,
-			Spec: *home.Spec.DeepCopy(),
-		}}
+		claim.Spec.VolumeClaimTemplates = []sandboxapi.PersistentVolumeClaimTemplate{*home}
 	}
 	return k.extensions.SandboxClaims(target.Namespace).Create(ctx, claim, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
 }
@@ -318,7 +316,7 @@ func volumesHardened(volumes []corev1.Volume, templates []sandboxapi.PersistentV
 	return true
 }
 
-func homeClaimTemplate(template extensionsapi.SandboxTemplate) (corev1.PersistentVolumeClaim, string, bool) {
+func homeClaimTemplate(template extensionsapi.SandboxTemplate) (sandboxapi.PersistentVolumeClaimTemplate, string, bool) {
 	pod := template.Spec.PodTemplate.Spec
 	for _, container := range pod.Containers {
 		if findSSHPort(container.Ports) == 0 {
@@ -334,7 +332,7 @@ func homeClaimTemplate(template extensionsapi.SandboxTemplate) (corev1.Persisten
 			}
 		}
 	}
-	return corev1.PersistentVolumeClaim{}, "", false
+	return sandboxapi.PersistentVolumeClaimTemplate{}, "", false
 }
 
 func mountedClaimName(volumes []corev1.Volume, mountName string) string {
@@ -346,13 +344,13 @@ func mountedClaimName(volumes []corev1.Volume, mountName string) string {
 	return ""
 }
 
-func validHomeTemplate(templates []sandboxapi.PersistentVolumeClaimTemplate, claimName string) (corev1.PersistentVolumeClaim, bool) {
+func validHomeTemplate(templates []sandboxapi.PersistentVolumeClaimTemplate, claimName string) (sandboxapi.PersistentVolumeClaimTemplate, bool) {
 	for _, home := range templates {
 		if home.Name == claimName && home.Spec.StorageClassName != nil && !home.Spec.Resources.Requests.Storage().IsZero() {
-			return corev1.PersistentVolumeClaim{Name: home.Name, Spec: *home.Spec.DeepCopy()}, true
+			return sandboxapi.PersistentVolumeClaimTemplate{Name: home.Name, Spec: home.Spec}, true
 		}
 	}
-	return corev1.PersistentVolumeClaim{}, false
+	return sandboxapi.PersistentVolumeClaimTemplate{}, false
 }
 
 func controlledBy(owners []metav1.OwnerReference, uid types.UID) bool {
@@ -411,7 +409,7 @@ func (k *kubeClient) getSandboxIfExists(ctx context.Context, target KubeTarget, 
 }
 
 func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sandbox *sandboxapi.Sandbox, mode sandboxOperatingMode) error {
-	if normalizedMode(sandbox.Spec.OperatingMode) == mode {
+	if cmp.Or(sandbox.Spec.OperatingMode, modeRunning) == mode {
 		return nil
 	}
 	patch, err := json.Marshal([]map[string]any{
@@ -471,7 +469,7 @@ func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox S
 	return pvc, nil
 }
 
-func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, name string, expected PersistentHome, template corev1.PersistentVolumeClaim, allowedSandboxUID string) error {
+func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, name string, expected PersistentHome, template sandboxapi.PersistentVolumeClaimTemplate, allowedSandboxUID string) error {
 	pvc, err := k.homePVC(ctx, target, expected)
 	if err != nil {
 		return err
@@ -729,7 +727,7 @@ func (k *kubeClient) suspendedSandboxes(ctx context.Context, target KubeTarget, 
 		if sandbox == nil || string(sandbox.UID) != saved.Sandbox.UID {
 			continue
 		}
-		if normalizedMode(sandbox.Spec.OperatingMode) == modeSuspended {
+		if sandbox.Spec.OperatingMode == modeSuspended {
 			suspended[saved.Sandbox.UID] = true
 		}
 	}

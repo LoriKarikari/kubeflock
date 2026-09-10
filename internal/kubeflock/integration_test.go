@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
 var deleteOptionsCodec = func() runtime.Decoder {
@@ -39,26 +40,8 @@ const (
 	keyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 )
 
-type fixtureClaim struct {
-	APIVersion string            `json:"apiVersion"`
-	Kind       string            `json:"kind"`
-	Metadata   metav1.ObjectMeta `json:"metadata"`
-	Spec       struct {
-		WarmPoolRef struct {
-			Name string `json:"name"`
-		} `json:"warmPoolRef"`
-		VolumeClaimTemplates []map[string]any `json:"volumeClaimTemplates,omitempty"`
-	} `json:"spec"`
-	Status struct {
-		Conditions []metav1.Condition `json:"conditions"`
-		Sandbox    struct {
-			Name string `json:"name"`
-		} `json:"sandbox"`
-	} `json:"status"`
-}
-
 type fixtureSandbox struct {
-	claim            *fixtureClaim
+	claim            *extensionsapi.SandboxClaim
 	mode             sandboxOperatingMode
 	generation       int
 	incarnation      int
@@ -429,7 +412,7 @@ func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Re
 
 func (f *fixtureAPI) deleteClaim(response http.ResponseWriter, request *http.Request, name string) {
 	s := f.ensureSandbox(name)
-	if s.claim == nil || !validOrphanDelete(request, string(s.claim.Metadata.UID)) {
+	if s.claim == nil || !validOrphanDelete(request, string(s.claim.UID)) {
 		response.WriteHeader(http.StatusConflict)
 		return
 	}
@@ -731,28 +714,12 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		writeFixture(response, map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": "claim create interrupted", "code": 500})
 		return
 	}
-	var body map[string]any
-	if json.NewDecoder(request.Body).Decode(&body) != nil {
+	var body extensionsapi.SandboxClaim
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Name == "" || body.Spec.WarmPoolRef.Name == "" {
 		response.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	metadata, metadataOK := body["metadata"].(map[string]any)
-	spec, specOK := body["spec"].(map[string]any)
-	if !metadataOK || !specOK {
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	ref, refOK := spec["warmPoolRef"].(map[string]any)
-	name, nameOK := metadata["name"].(string)
-	if !refOK || !nameOK {
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	pool, ok := ref["name"].(string)
-	if !ok {
-		response.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	name := body.Name
 	s := f.ensureSandbox(name)
 	if s.claim != nil {
 		response.WriteHeader(http.StatusConflict)
@@ -767,19 +734,13 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		f.sandboxes[sandboxName] = s
 	}
 	s.sandboxUID = fixtureUID("sandbox", sandboxName, s.incarnation)
-	claim := claimFixture(name, pool)
-	if templates, ok := spec["volumeClaimTemplates"].([]any); ok {
-		for _, template := range templates {
-			if value, ok := template.(map[string]any); ok {
-				claim.Spec.VolumeClaimTemplates = append(claim.Spec.VolumeClaimTemplates, value)
-			}
-		}
-	}
-	claim.Metadata.UID = types.UID(fixtureUID("claim", name, s.incarnation))
+	claim := claimFixture(name, body.Spec.WarmPoolRef.Name)
+	claim.Spec.VolumeClaimTemplates = body.Spec.VolumeClaimTemplates
+	claim.UID = types.UID(fixtureUID("claim", name, s.incarnation))
 	adopted := s.incarnation == 1 || s.homeAdoptable
 	if adopted && name != "delayed" && name != "waiting" {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-		claim.Status.Sandbox.Name = sandboxName
+		claim.Status.SandboxStatus.Name = sandboxName
 	} else if !adopted {
 		claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "InvalidPVC", Message: "retained home is not adoptable", LastTransitionTime: metav1.Now()}}
 	}
@@ -804,15 +765,15 @@ func (f *fixtureAPI) getClaim(response http.ResponseWriter, name string) {
 	s.reads++
 	if name == "delayed" && s.reads >= 2 && s.homeOwned && s.mode != modeSuspended {
 		s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
-		s.claim.Status.Sandbox.Name = name
+		s.claim.Status.SandboxStatus.Name = name
 	}
 	writeFixture(response, s.claim)
 }
 
 func (f *fixtureAPI) listClaims(response http.ResponseWriter) {
-	items := []fixtureClaim{}
+	items := []extensionsapi.SandboxClaim{}
 	for _, s := range f.sandboxes {
-		if s.claim != nil && s.claim.Metadata.Labels[managedByLabel] == managedByValue {
+		if s.claim != nil && s.claim.Labels[managedByLabel] == managedByValue {
 			items = append(items, *s.claim)
 		}
 	}
@@ -843,7 +804,7 @@ func (f *fixtureAPI) sandboxFixture(name string, mode sandboxOperatingMode) map[
 	owners := []any{}
 	if s.claim != nil {
 		owners = append(owners, map[string]any{
-			"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim", "name": name, "uid": s.claim.Metadata.UID, "controller": true,
+			"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim", "name": name, "uid": s.claim.UID, "controller": true,
 		})
 	}
 	return map[string]any{
@@ -888,19 +849,16 @@ func poolFixture(template string) map[string]any {
 	}
 }
 
-func claimFixture(name, pool string) fixtureClaim {
-	claim := fixtureClaim{
+func claimFixture(name, pool string) extensionsapi.SandboxClaim {
+	return extensionsapi.SandboxClaim{
 		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
 		Kind:       "SandboxClaim",
-		Metadata: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "dev",
-			UID:       types.UID("claim-" + name),
-			Labels:    map[string]string{managedByLabel: managedByValue},
-		},
+		Name:       name,
+		Namespace:  "dev",
+		UID:        types.UID("claim-" + name),
+		Labels:     map[string]string{managedByLabel: managedByValue},
+		Spec:       extensionsapi.SandboxClaimSpec{WarmPoolRef: extensionsapi.SandboxWarmPoolRef{Name: pool}},
 	}
-	claim.Spec.WarmPoolRef.Name = pool
-	return claim
 }
 
 func (f *fixtureAPI) templateClaimName() string {

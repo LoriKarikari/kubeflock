@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -37,19 +37,7 @@ type claimProgress struct {
 
 func progress(claim extensionsapi.SandboxClaim) claimProgress {
 	ready := meta.FindStatusCondition(claim.Status.Conditions, "Ready")
-	detail := "waiting for the Sandbox controller"
-	if ready != nil {
-		detail = ready.Reason
-		if ready.Message != "" {
-			if detail != "" {
-				detail += ": "
-			}
-			detail += ready.Message
-		}
-		if detail == "" {
-			detail = "waiting for the Sandbox controller"
-		}
-	}
+	detail := conditionDetail(ready)
 	if ready != nil && ready.Status == metav1.ConditionTrue && claim.Status.SandboxStatus.Name != "" {
 		return claimProgress{State: "ready", SandboxName: claim.Status.SandboxStatus.Name}
 	}
@@ -65,13 +53,6 @@ const (
 	modeRunning   = sandboxapi.SandboxOperatingModeRunning
 	modeSuspended = sandboxapi.SandboxOperatingModeSuspended
 )
-
-func normalizedMode(mode sandboxOperatingMode) sandboxOperatingMode {
-	if mode == "" {
-		return modeRunning
-	}
-	return mode
-}
 
 type projectRequest struct {
 	Repository string
@@ -155,7 +136,7 @@ func verifySandboxRunning(ctx context.Context, client *kubeClient, target KubeTa
 	if sandbox == nil || !controlledBy(sandbox.OwnerReferences, claim.UID) {
 		return nil
 	}
-	if normalizedMode(sandbox.Spec.OperatingMode) == modeSuspended {
+	if sandbox.Spec.OperatingMode == modeSuspended {
 		return fmt.Errorf("sandbox %s/%s is stopped; run: kubeflock sandbox resume %s", target.Namespace, name, name)
 	}
 	return nil
@@ -243,7 +224,7 @@ func verifyClaim(claim *extensionsapi.SandboxClaim, target KubeTarget, name, war
 	return nil
 }
 
-func verifyClaimHome(claim *extensionsapi.SandboxClaim, home *corev1.PersistentVolumeClaim) error {
+func verifyClaimHome(claim *extensionsapi.SandboxClaim, home *sandboxapi.PersistentVolumeClaimTemplate) error {
 	if home == nil {
 		return nil
 	}
@@ -254,7 +235,7 @@ func verifyClaimHome(claim *extensionsapi.SandboxClaim, home *corev1.PersistentV
 	return fmt.Errorf("SandboxClaim %s/%s uses unexpected home templates", claim.Namespace, claim.Name)
 }
 
-func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*extensionsapi.SandboxClaim, error) {
+func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string, home *sandboxapi.PersistentVolumeClaimTemplate) (*extensionsapi.SandboxClaim, error) {
 	claim, err := client.getClaim(ctx, target.Namespace, name)
 	if err != nil {
 		return nil, err
@@ -358,7 +339,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 		return createdSandbox{}, err
 	}
 	claimName := name
-	var claimHome *corev1.PersistentVolumeClaim
+	var claimHome *sandboxapi.PersistentVolumeClaimTemplate
 	if restore != nil {
 		if approved.ResourceVersion != restore.Approved.ResourceVersion || approved.Image != restore.Approved.Image {
 			return createdSandbox{}, errors.New("selected SandboxTemplate changed before attachment; review it and retry")
@@ -466,7 +447,7 @@ func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox Sandbo
 	return saveJSON(managedSandboxPath(stateDir, claimUID), managed)
 }
 
-func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, credentials []string, approved approvedTemplate, home *corev1.PersistentVolumeClaim, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
+func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, credentials []string, approved approvedTemplate, home *sandboxapi.PersistentVolumeClaimTemplate, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
 	saved, err := selectManaged(target, name, stateDir)
 	if err != nil {
 		return nil, nil, err
@@ -928,8 +909,8 @@ func waitForOperatingMode(ctx context.Context, client *kubeClient, target KubeTa
 		if err != nil {
 			return false, err
 		}
-		if normalizedMode(sandbox.Spec.OperatingMode) != mode {
-			return false, fmt.Errorf("sandbox %s/%s operating mode changed to %s", target.Namespace, identity.Name, normalizedMode(sandbox.Spec.OperatingMode))
+		if current := cmp.Or(sandbox.Spec.OperatingMode, modeRunning); current != mode {
+			return false, fmt.Errorf("sandbox %s/%s operating mode changed to %s", target.Namespace, identity.Name, current)
 		}
 		condition := meta.FindStatusCondition(sandbox.Status.Conditions, conditionType)
 		latest = conditionDetail(condition)

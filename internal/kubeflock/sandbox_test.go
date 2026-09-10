@@ -49,6 +49,31 @@ func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
 	}
 }
 
+func TestProgressConditionDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		condition *metav1.Condition
+		want      string
+	}{
+		{"missing", nil, "waiting for the Sandbox controller"},
+		{"empty", &metav1.Condition{}, "waiting for the Sandbox controller"},
+		{"reason", &metav1.Condition{Reason: "Pending"}, "Pending"},
+		{"message", &metav1.Condition{Message: "allocating"}, "allocating"},
+		{"both", &metav1.Condition{Reason: "Pending", Message: "allocating"}, "Pending: allocating"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			claim := extensionsapi.SandboxClaim{}
+			if tt.condition != nil {
+				tt.condition.Type = "Ready"
+				claim.Status.Conditions = []metav1.Condition{*tt.condition}
+			}
+			if got := progress(claim); got.State != "provisioning" || got.Step != "readiness" || got.Message != tt.want {
+				t.Fatalf("progress = %#v, want message %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 	saved := ManagedSandbox{
 		Version:      1,
