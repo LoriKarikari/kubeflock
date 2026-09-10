@@ -611,8 +611,8 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 	if err != nil {
 		return nil, err
 	}
-	if pvc.DeletionTimestamp != nil || len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
-		return nil, fmt.Errorf("retained home %s is allocated, being restored, or has uncertain ownership", pvc.Name)
+	if len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
+		return nil, fmt.Errorf("retained home %s has uncertain ownership or is reserved for restore", pvc.Name)
 	}
 	claim, err := k.getClaim(ctx, target.Namespace, retained.Origin.Name)
 	if err != nil {
