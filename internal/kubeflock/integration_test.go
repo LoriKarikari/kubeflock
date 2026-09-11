@@ -3,6 +3,7 @@ package kubeflock
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -70,6 +71,7 @@ type fixtureSandbox struct {
 }
 
 type fixtureAPI struct {
+	t               *testing.T
 	mu              sync.Mutex
 	sandboxes       map[string]*fixtureSandbox
 	failDelete      map[string]int
@@ -340,50 +342,55 @@ func (f *fixtureAPI) route(response http.ResponseWriter, request *http.Request) 
 	case strings.Contains(path, "/persistentvolumes/pv-home-"):
 		f.handleVolume(response, request, path)
 	default:
-		writeNotFound(response)
+		f.writeNotFound(response)
 	}
 }
 
 func (f *fixtureAPI) handleCredentialConfig(response http.ResponseWriter) {
 	if f.noConfigMap {
-		writeNotFound(response)
+		f.writeNotFound(response)
 		return
 	}
 	data := map[string]string{}
 	for name, reference := range f.credentials {
-		encoded, _ := json.Marshal(reference)
+		encoded, err := json.Marshal(reference)
+		if err != nil {
+			f.t.Errorf("encode credential fixture %s: %v", name, err)
+			response.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		data[name] = string(encoded)
 	}
-	writeFixture(response, corev1.ConfigMap{APIVersion: "v1", Kind: "ConfigMap", Name: credentialConfigName, Namespace: "dev", UID: types.UID(credentialConfigName + "-uid"), Data: data})
+	f.writeFixture(response, corev1.ConfigMap{APIVersion: "v1", Kind: "ConfigMap", Name: credentialConfigName, Namespace: "dev", UID: types.UID(credentialConfigName + "-uid"), Data: data})
 }
 
 func (f *fixtureAPI) handleSecret(response http.ResponseWriter, path string) {
 	_, name, _ := strings.CutLast(path, "/")
 	if name == f.forbiddenSecret {
 		response.WriteHeader(http.StatusForbidden)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "secret access forbidden", Code: 403})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "secret access forbidden", Code: 403})
 		return
 	}
 	data, ok := f.secrets[name]
 	if !ok {
-		writeNotFound(response)
+		f.writeNotFound(response)
 		return
 	}
-	writeFixture(response, corev1.Secret{APIVersion: "v1", Kind: "Secret", Name: name, Namespace: "dev", UID: types.UID(name + "-uid"), Data: data})
+	f.writeFixture(response, corev1.Secret{APIVersion: "v1", Kind: "Secret", Name: name, Namespace: "dev", UID: types.UID(name + "-uid"), Data: data})
 }
 
-func writeNotFound(response http.ResponseWriter) {
+func (f *fixtureAPI) writeNotFound(response http.ResponseWriter) {
 	response.WriteHeader(http.StatusNotFound)
-	writeFixture(response, map[string]string{"message": "not found"})
+	f.writeFixture(response, map[string]string{"message": "not found"})
 }
 
 func (f *fixtureAPI) handleTemplate(response http.ResponseWriter, path string) {
 	_, name, _ := strings.CutLast(path, "/")
-	writeFixture(response, templateFixture(name, name != "insecure", f.templateClaimName()))
+	f.writeFixture(response, templateFixture(name, name != "insecure", cmp.Or(f.templateClaim, "home")))
 }
 
 func (f *fixtureAPI) handlePools(response http.ResponseWriter) {
-	writeFixture(response, extensionsapi.SandboxWarmPoolList{
+	f.writeFixture(response, extensionsapi.SandboxWarmPoolList{
 		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
 		Kind:       "SandboxWarmPoolList",
 		Items: []extensionsapi.SandboxWarmPool{
@@ -409,7 +416,7 @@ func (f *fixtureAPI) handleClaims(response http.ResponseWriter, request *http.Re
 	case name == "":
 		f.listClaims(response)
 	default:
-		writeNotFound(response)
+		f.writeNotFound(response)
 	}
 }
 
@@ -422,33 +429,33 @@ func (f *fixtureAPI) deleteClaim(response http.ResponseWriter, request *http.Req
 	if f.failDelete["claim"] > 0 {
 		f.failDelete["claim"]--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim delete failed", Code: 500})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim delete failed", Code: 500})
 		return
 	}
 	s.claim = nil
-	writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
+	f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 }
 
 func (f *fixtureAPI) handleSandboxes(response http.ResponseWriter, request *http.Request, path string) {
 	_, name, _ := strings.CutLast(path, "/")
 	s := f.ensureSandbox(name)
 	if request.Method == http.MethodDelete {
-		f.deleteSandbox(response, request, name, s)
+		f.deleteSandbox(response, request, s)
 		return
 	}
 	if !s.present {
 		response.WriteHeader(http.StatusNotFound)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "sandbox not found", Code: 404})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "sandbox not found", Code: 404})
 		return
 	}
 	if request.Method == http.MethodPatch {
 		f.patchMode(response, request, name, s)
 		return
 	}
-	writeFixture(response, f.sandboxFixture(name, s.mode))
+	f.writeFixture(response, f.sandboxFixture(name, s.mode))
 }
 
-func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
+func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.Request, s *fixtureSandbox) {
 	if !validOrphanDelete(request, s.sandboxUID) {
 		response.WriteHeader(http.StatusConflict)
 		return
@@ -456,7 +463,7 @@ func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.R
 	if f.failDelete["sandbox"] > 0 {
 		f.failDelete["sandbox"]--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "sandbox delete failed", Code: 500})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "sandbox delete failed", Code: 500})
 		return
 	}
 	s.present = false
@@ -465,7 +472,7 @@ func (f *fixtureAPI) deleteSandbox(response http.ResponseWriter, request *http.R
 	if s.loseHomeOnDelete {
 		s.homeMissing = true
 	}
-	writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
+	f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 }
 
 func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Request, name string, s *fixtureSandbox) {
@@ -494,7 +501,7 @@ func (f *fixtureAPI) patchMode(response http.ResponseWriter, request *http.Reque
 	if s.claim != nil {
 		s.claim.Status.Conditions = []metav1.Condition{claimCondition(mode)}
 	}
-	writeFixture(response, f.sandboxFixture(name, s.mode))
+	f.writeFixture(response, f.sandboxFixture(name, s.mode))
 }
 
 func claimCondition(mode sandboxOperatingMode) metav1.Condition {
@@ -516,7 +523,7 @@ func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Requ
 				}}},
 			})
 		}
-		writeFixture(response, pods)
+		f.writeFixture(response, pods)
 		return
 	}
 	name := strings.TrimPrefix(selector, "agents.x-k8s.io/sandbox=")
@@ -531,7 +538,7 @@ func (f *fixtureAPI) handlePods(response http.ResponseWriter, request *http.Requ
 			}}},
 		})
 	}
-	writeFixture(response, pods)
+	f.writeFixture(response, pods)
 }
 
 func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Request, path string) {
@@ -540,7 +547,7 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 	s := f.ensureSandbox(sandbox)
 	if s.homeMissing {
 		response.WriteHeader(http.StatusNotFound)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "persistentvolumeclaim not found", Code: 404})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonNotFound, Message: "persistentvolumeclaim not found", Code: 404})
 		return
 	}
 	if request.Method == http.MethodDelete {
@@ -548,47 +555,47 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 		options, ok := deleteOptions(request.Body)
 		if !ok || options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != uid {
 			response.WriteHeader(http.StatusConflict)
-			writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonConflict, Message: fmt.Sprintf("PVC UID precondition did not match %s", uid), Code: 409})
+			f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonConflict, Message: fmt.Sprintf("PVC UID precondition did not match %s", uid), Code: 409})
 			return
 		}
 		if f.failDelete["pvc"] > 0 {
 			f.failDelete["pvc"]--
 			response.WriteHeader(http.StatusForbidden)
-			writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC delete forbidden", Code: 403})
+			f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC delete forbidden", Code: 403})
 			return
 		}
 		s.terminating, s.homeMissing = s.holdDelete, !s.holdDelete
 		if s.homeMissing && s.volumePolicy != corev1.PersistentVolumeReclaimRetain && !s.holdVolume {
 			s.volumeMissing = true
 		}
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
 		return
 	}
 	if request.Method == http.MethodPatch {
 		f.patchHome(response, request, name, sandbox, s)
 		return
 	}
-	writeFixture(response, homeFixture(name, sandbox, s))
+	f.writeFixture(response, homeFixture(name, sandbox, s))
 }
 
 func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Request, path string) {
 	_, name, _ := strings.CutLast(path, "/")
 	if request.Method != http.MethodGet {
 		response.WriteHeader(http.StatusMethodNotAllowed)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonMethodNotAllowed, Message: "persistent volumes do not accept " + request.Method, Code: 405})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonMethodNotAllowed, Message: "persistent volumes do not accept " + request.Method, Code: 405})
 		return
 	}
 	sandbox := strings.TrimPrefix(name, "pv-home-")
 	s := f.ensureSandbox(sandbox)
 	if s.volumeMissing {
-		writeNotFound(response)
+		f.writeNotFound(response)
 		return
 	}
 	policy := s.volumePolicy
 	if policy == "" {
 		policy = corev1.PersistentVolumeReclaimDelete
 	}
-	writeFixture(response, corev1.PersistentVolume{
+	f.writeFixture(response, corev1.PersistentVolume{
 		APIVersion: "v1", Kind: "PersistentVolume", Name: name, UID: types.UID(name + "-uid"),
 		Spec: corev1.PersistentVolumeSpec{
 			PersistentVolumeReclaimPolicy: policy,
@@ -661,11 +668,15 @@ func homeFixture(name, sandbox string, s *fixtureSandbox) corev1.PersistentVolum
 }
 
 func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Request, name, sandbox string, s *fixtureSandbox) {
-	data, _ := io.ReadAll(request.Body)
+	data, err := io.ReadAll(request.Body)
+	if err != nil {
+		response.WriteHeader(http.StatusBadRequest)
+		return
+	}
 	if f.failHomePatch > 0 {
 		f.failHomePatch--
 		response.WriteHeader(http.StatusForbidden)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC patch forbidden", Code: 403})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Reason: metav1.StatusReasonForbidden, Message: "PVC patch forbidden", Code: 403})
 		return
 	}
 	if bytes.Contains(data, []byte("ownerReferences")) {
@@ -685,14 +696,14 @@ func (f *fixtureAPI) patchHome(response http.ResponseWriter, request *http.Reque
 		response.WriteHeader(http.StatusUnprocessableEntity)
 		return
 	}
-	writeFixture(response, homeFixture(name, sandbox, s))
+	f.writeFixture(response, homeFixture(name, sandbox, s))
 }
 
 func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Request) {
 	if f.failClaimCreate > 0 {
 		f.failClaimCreate--
 		response.WriteHeader(http.StatusInternalServerError)
-		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim create interrupted", Code: 500})
+		f.writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Failure", Message: "claim create interrupted", Code: 500})
 		return
 	}
 	var body extensionsapi.SandboxClaim
@@ -704,7 +715,7 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 	s := f.ensureSandbox(name)
 	if s.claim != nil {
 		response.WriteHeader(http.StatusConflict)
-		writeFixture(response, map[string]string{"message": "already exists"})
+		f.writeFixture(response, map[string]string{"message": "already exists"})
 		return
 	}
 	f.creates++
@@ -734,13 +745,13 @@ func (f *fixtureAPI) createClaim(response http.ResponseWriter, request *http.Req
 		s.homeLabeled = true
 	}
 	response.WriteHeader(http.StatusCreated)
-	writeFixture(response, claim)
+	f.writeFixture(response, claim)
 }
 
 func (f *fixtureAPI) getClaim(response http.ResponseWriter, name string) {
 	s := f.ensureSandbox(name)
 	if s.claim == nil {
-		writeNotFound(response)
+		f.writeNotFound(response)
 		return
 	}
 	s.reads++
@@ -748,7 +759,7 @@ func (f *fixtureAPI) getClaim(response http.ResponseWriter, name string) {
 		s.claim.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", LastTransitionTime: metav1.Now()}}
 		s.claim.Status.SandboxStatus.Name = name
 	}
-	writeFixture(response, s.claim)
+	f.writeFixture(response, s.claim)
 }
 
 func (f *fixtureAPI) listClaims(response http.ResponseWriter) {
@@ -758,7 +769,7 @@ func (f *fixtureAPI) listClaims(response http.ResponseWriter) {
 			items = append(items, *s.claim)
 		}
 	}
-	writeFixture(response, extensionsapi.SandboxClaimList{APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaimList", Items: items})
+	f.writeFixture(response, extensionsapi.SandboxClaimList{APIVersion: "extensions.agents.x-k8s.io/v1beta1", Kind: "SandboxClaimList", Items: items})
 }
 
 func fixtureUID(kind, name string, incarnation int) string {
@@ -806,7 +817,12 @@ func validOrphanDelete(request *http.Request, uid string) bool {
 		options.Preconditions != nil && options.Preconditions.UID != nil && string(*options.Preconditions.UID) == uid
 }
 
-func writeFixture(writer io.Writer, value any) { _ = json.NewEncoder(writer).Encode(value) }
+func (f *fixtureAPI) writeFixture(writer io.Writer, value any) {
+	f.t.Helper()
+	if err := json.NewEncoder(writer).Encode(value); err != nil {
+		f.t.Errorf("write API fixture: %v", err)
+	}
+}
 func poolFixture(template string) extensionsapi.SandboxWarmPool {
 	return extensionsapi.SandboxWarmPool{
 		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
@@ -831,13 +847,6 @@ func claimFixture(name, pool string) extensionsapi.SandboxClaim {
 		Labels:     map[string]string{managedByLabel: managedByValue},
 		Spec:       extensionsapi.SandboxClaimSpec{WarmPoolRef: extensionsapi.SandboxWarmPoolRef{Name: pool}},
 	}
-}
-
-func (f *fixtureAPI) templateClaimName() string {
-	if f.templateClaim == "" {
-		return "home"
-	}
-	return f.templateClaim
 }
 
 func templateFixture(name string, secure bool, homeClaim string) extensionsapi.SandboxTemplate {
@@ -881,7 +890,7 @@ func TestHelperProcess(t *testing.T) {
 	case "kubectl":
 		helperKubectl(args)
 	case "herdr":
-		helperHerdr(args)
+		helperHerdr(t, args)
 	default:
 		os.Exit(2)
 	}
@@ -971,15 +980,32 @@ type herdrFixture struct {
 	PaneArgs []string       `json:"paneArgs,omitempty"`
 }
 
-func helperHerdr(args []string) {
-	path := os.Getenv("FAKE_HERDR_STATE")
-	data, _ := os.ReadFile(path)
+func readHerdrFixture(t *testing.T, path string) herdrFixture {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var state herdrFixture
-	_ = json.Unmarshal(data, &state)
-	save := func() { data, _ := json.Marshal(state); _ = os.WriteFile(path, data, 0o600) }
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func helperHerdr(t *testing.T, args []string) {
+	path := os.Getenv("FAKE_HERDR_STATE")
+	state := readHerdrFixture(t, path)
+	save := func() {
+		if err := saveJSON(path, state); err != nil {
+			t.Fatal(err)
+		}
+	}
 	joined := strings.Join(args, " ")
 	if joined == "machine list --json" {
-		writeFixture(os.Stdout, state.Machines)
+		if err := json.NewEncoder(os.Stdout).Encode(state.Machines); err != nil {
+			t.Fatal(err)
+		}
 		return
 	}
 	if len(args) >= 2 && args[0] == "machine" && args[1] == "add" {
@@ -1127,7 +1153,7 @@ type harness struct {
 func newHarness(t *testing.T) harness {
 	t.Helper()
 	dir := t.TempDir()
-	api := &fixtureAPI{sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}, credentials: map[string]credentialConfig{}, secrets: map[string]map[string][]byte{}}
+	api := &fixtureAPI{t: t, sandboxes: map[string]*fixtureSandbox{}, failDelete: map[string]int{}, credentials: map[string]credentialConfig{}, secrets: map[string]map[string][]byte{}}
 	server := httptest.NewServer(api)
 	t.Cleanup(server.Close)
 	binary := buildCLI(t, dir)
@@ -1391,9 +1417,7 @@ func TestCLIWarmStandbyRetainsAndRestoresItsExclusiveHome(t *testing.T) {
 
 	created := h.run(t, "sandbox", "create", "warm", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "warm create", created, 0, "ready sandbox warm", "")
-	var herdr herdrFixture
-	data, _ := os.ReadFile(h.herdrState)
-	_ = json.Unmarshal(data, &herdr)
+	herdr := readHerdrFixture(t, h.herdrState)
 	if !slices.ContainsFunc(herdr.Machines, func(machine herdrMachine) bool { return machine.Label == "warm" }) {
 		t.Fatalf("Herdr did not keep the requested allocation name: %#v", herdr.Machines)
 	}
@@ -1420,11 +1444,18 @@ func TestCLIWarmStandbyRetainsAndRestoresItsExclusiveHome(t *testing.T) {
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	const sandboxUID = "sandbox-delayed"
 	h := newHarness(t)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeStateDir, err := filepath.Rel(workingDir, h.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.env = append(h.env, "KUBEFLOCK_STATE_DIR="+relativeStateDir)
 
 	assertCLI(t, "restore action", h.runWith(t, "HERDR_WORKSPACE_ID=w3", "sandbox", "restore-action"), 0, "", "")
-	var actionState herdrFixture
-	data, _ := os.ReadFile(h.herdrState)
-	_ = json.Unmarshal(data, &actionState)
+	actionState := readHerdrFixture(t, h.herdrState)
 	if !slices.Contains(actionState.PaneArgs, "restore") {
 		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
 	}
@@ -1432,8 +1463,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("popup action passed an invalid workspace target: %#v", actionState.PaneArgs)
 	}
 	assertCLI(t, "delete home action", h.run(t, "sandbox", "delete-home-action"), 0, "", "")
-	data, _ = os.ReadFile(h.herdrState)
-	_ = json.Unmarshal(data, &actionState)
+	actionState = readHerdrFixture(t, h.herdrState)
 	if !slices.Contains(actionState.PaneArgs, "delete-home") {
 		t.Fatalf("delete home action did not open its Herdr pane: %#v", actionState.PaneArgs)
 	}
@@ -1451,7 +1481,19 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("duplicate created %d claims", creates)
 	}
 	assertConnectionPhase(t, connectionFile, connectionConnected)
-	sshData, _ := os.ReadFile(h.sshConfig)
+	connection, err := loadConnection(connectionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{connection.SSH.KnownHostsFile, connection.SSH.EntryFile, connection.SSH.ProxyFile} {
+		if !filepath.IsAbs(path) {
+			t.Fatalf("relative state directory produced a relative SSH path %q", path)
+		}
+	}
+	sshData, err := os.ReadFile(h.sshConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(sshData), "Include ") || !strings.Contains(string(sshData), "Host unrelated") {
 		t.Fatalf("SSH config lost content: %s", sshData)
 	}
@@ -1459,7 +1501,10 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	if proxied.status != 0 || proxied.stdout != "through-api" {
 		t.Fatalf("proxy = %#v", proxied)
 	}
-	log, _ := os.ReadFile(h.kubectlLog)
+	log, err := os.ReadFile(h.kubectlLog)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(log), "TCP:127.0.0.1:2200") {
 		t.Fatalf("proxy log = %s", log)
 	}
@@ -1470,9 +1515,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	assertCLI(t, "list", listed, 0, `"state": "disconnected"`, "")
 	reconnected := h.run(t, "sandbox", "reconnect", "delayed", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "reconnect", reconnected, 0, "", "")
-	var herdrData herdrFixture
-	data, _ = os.ReadFile(h.herdrState)
-	_ = json.Unmarshal(data, &herdrData)
+	herdrData := readHerdrFixture(t, h.herdrState)
 	if herdrData.AddCount != 1 {
 		t.Fatalf("Herdr add count = %d", herdrData.AddCount)
 	}
@@ -1654,12 +1697,14 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("connection state still exists: %v", err)
 	}
-	data, _ = os.ReadFile(h.herdrState)
-	_ = json.Unmarshal(data, &herdrData)
+	herdrData = readHerdrFixture(t, h.herdrState)
 	if len(herdrData.Machines) != 1 || herdrData.Machines[0].Target != "unrelated" {
 		t.Fatalf("managed Herdr profile was not removed: %#v", herdrData.Machines)
 	}
-	sshData, _ = os.ReadFile(h.sshConfig)
+	sshData, err = os.ReadFile(h.sshConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(sshData), "kubeflock-") || !strings.Contains(string(sshData), "Host unrelated") {
 		t.Fatalf("managed SSH entry was not removed safely: %s", sshData)
 	}

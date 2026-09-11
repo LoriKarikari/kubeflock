@@ -8,8 +8,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
+	ktesting "k8s.io/client-go/testing"
 	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
 	extensionsfake "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/fake"
 	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
@@ -39,8 +40,45 @@ func TestJSONPatchOperationEncoding(t *testing.T) {
 	}
 }
 
+func TestClaimResponsesRequireIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*extensionsapi.SandboxClaim)
+	}{
+		{"missing name", func(claim *extensionsapi.SandboxClaim) { claim.Name = "" }},
+		{"missing UID", func(claim *extensionsapi.SandboxClaim) { claim.UID = "" }},
+		{"missing warm pool", func(claim *extensionsapi.SandboxClaim) { claim.Spec.WarmPoolRef.Name = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			claim := claimFixture("named", "dev-pool")
+			test.mutate(&claim)
+			clientset := extensionsfake.NewSimpleClientset()
+			clientset.PrependReactor("*", "sandboxclaims", func(ktesting.Action) (bool, runtime.Object, error) {
+				return true, claim.DeepCopy(), nil
+			})
+			client := kubeClient{extensions: clientset.ExtensionsV1beta1()}
+			if _, err := client.getClaim(t.Context(), "dev", "named"); err == nil || !strings.Contains(err.Error(), "invalid SandboxClaim") {
+				t.Fatalf("lookup with incomplete identity = %v", err)
+			}
+			if _, err := client.createClaim(t.Context(), KubeTarget{Namespace: "dev"}, "named", "dev-pool", nil); err == nil || !strings.Contains(err.Error(), "invalid SandboxClaim") {
+				t.Fatalf("creation with incomplete identity = %v", err)
+			}
+		})
+	}
+}
+
 func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 	clientset := extensionsfake.NewSimpleClientset()
+	clientset.PrependReactor("create", "sandboxclaims", func(action ktesting.Action) (bool, runtime.Object, error) {
+		create := action.(ktesting.CreateActionImpl)
+		options := create.GetCreateOptions()
+		if options.FieldManager != "kubeflock" || options.FieldValidation != "Strict" {
+			t.Errorf("claim create options = %#v", options)
+		}
+		claim := create.GetObject().(*extensionsapi.SandboxClaim)
+		claim.UID = types.UID("claim-" + claim.Name)
+		return false, nil, nil
+	})
 	client := kubeClient{extensions: clientset.ExtensionsV1beta1()}
 	template := gateTemplate()
 	template.Spec.VolumeClaimTemplates[0].Labels = map[string]string{"template-label": "value"}
@@ -164,7 +202,7 @@ func TestValidateTemplateHardeningGate(t *testing.T) {
 			template.Spec.PodTemplate.Spec.Containers[0].SecurityContext.Capabilities.Add = []corev1.Capability{"NET_ADMIN"}
 		}, want: "unhardened or unbudgeted container agent"},
 		{name: "unmasked proc mount", mutate: func(template *extensionsapi.SandboxTemplate) {
-			template.Spec.PodTemplate.Spec.Containers[0].SecurityContext.ProcMount = ptr.To(corev1.UnmaskedProcMount)
+			template.Spec.PodTemplate.Spec.Containers[0].SecurityContext.ProcMount = new(corev1.UnmaskedProcMount)
 		}, want: "unhardened or unbudgeted container agent"},
 		{name: "host network", mutate: func(template *extensionsapi.SandboxTemplate) {
 			template.Spec.PodTemplate.Spec.HostNetwork = true

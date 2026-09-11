@@ -981,7 +981,7 @@ func listSandboxStatus(ctx context.Context, target KubeTarget, options globalOpt
 	if err != nil {
 		return nil, err
 	}
-	machines := []herdrMachine{}
+	var machines []herdrMachine
 	if slices.ContainsFunc(connections, func(connection savedConnection) bool {
 		return connection.Connection.Phase == connectionConnected
 	}) {

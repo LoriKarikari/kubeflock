@@ -203,10 +203,17 @@ func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*ext
 	if err != nil {
 		return nil, err
 	}
-	if claim.Name == "" || claim.UID == "" || claim.Spec.WarmPoolRef.Name == "" {
-		return nil, errors.New("invalid SandboxClaim returned by Kubernetes")
+	if err := validateClaimIdentity(claim); err != nil {
+		return nil, err
 	}
 	return claim, nil
+}
+
+func validateClaimIdentity(claim *extensionsapi.SandboxClaim) error {
+	if claim.Name == "" || claim.UID == "" || claim.Spec.WarmPoolRef.Name == "" {
+		return errors.New("invalid SandboxClaim returned by Kubernetes")
+	}
+	return nil
 }
 
 func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *sandboxapi.PersistentVolumeClaimTemplate) (*extensionsapi.SandboxClaim, error) {
@@ -217,7 +224,14 @@ func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, w
 	if home != nil {
 		claim.Spec.VolumeClaimTemplates = []sandboxapi.PersistentVolumeClaimTemplate{*home}
 	}
-	return k.extensions.SandboxClaims(target.Namespace).Create(ctx, claim, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
+	created, err := k.extensions.SandboxClaims(target.Namespace).Create(ctx, claim, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateClaimIdentity(created); err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, name string) (approvedTemplate, error) {
@@ -436,7 +450,7 @@ func (k *kubeClient) ownedPods(ctx context.Context, target KubeTarget, sandbox *
 	if err != nil {
 		return nil, err
 	}
-	owned := []corev1.Pod{}
+	var owned []corev1.Pod
 	for _, pod := range pods.Items {
 		if controlledBy(pod.OwnerReferences, sandbox.UID) {
 			owned = append(owned, pod)
