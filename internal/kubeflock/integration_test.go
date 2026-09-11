@@ -955,7 +955,7 @@ func TestCLIWarmStandbyDeletesItsExclusiveHome(t *testing.T) {
 	h := newHarness(t)
 	created := h.run(t, "sandbox", "create", "warm", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "warm create", created, 0, "ready sandbox warm", "")
-	deleted := h.run(t, "sandbox", "delete", "warm", "--confirm", "warm", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	deleted := h.run(t, "sandbox", "delete", "warm", "--confirm", "DELETE", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "warm delete", deleted, 0, "permanently deleted sandbox dev/warm", "")
 	if homes := h.retainedHomes(t); len(homes) != 0 {
 		t.Fatalf("deleted workspace remains retained: %#v", homes)
@@ -989,17 +989,17 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	assertCLI(t, "resume", resumed, 0, "connected as kubeflock-sandbox-delayed", "")
 
 	declined := h.run(t, "sandbox", "delete", "delayed", "--confirm", "wrong", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "declined delete", declined, 2, "Permanently delete sandbox dev/delayed", "nothing was deleted")
+	assertCLI(t, "declined delete", declined, 2, "Permanently delete sandbox dev/delayed", "confirmation was not DELETE")
 	if state := h.api.state("delayed"); !state.claim || !state.sandbox || state.homeMissing {
 		t.Fatalf("declined deletion changed workspace: %#v", state)
 	}
 
 	h.api.setHomeOwned("delayed", false)
-	unknownOwner := h.run(t, "sandbox", "delete", "delayed", "--confirm", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	unknownOwner := h.run(t, "sandbox", "delete", "delayed", "--confirm", "DELETE", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "unknown home owner", unknownOwner, 2, "", "sandbox home home-delayed was replaced")
 	h.api.setHomeOwned("delayed", true)
 
-	deleted := h.run(t, "sandbox", "delete", "delayed", "--confirm", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	deleted := h.run(t, "sandbox", "delete", "delayed", "--confirm", "DELETE", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "permanent delete", deleted, 0, "permanently deleted sandbox dev/delayed and its workspace data", "")
 	state := h.api.state("delayed")
 	if state.claim || state.sandbox || !state.homeMissing || !state.volumeMissing {

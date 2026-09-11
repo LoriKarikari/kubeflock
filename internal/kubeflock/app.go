@@ -383,7 +383,7 @@ func (a *App) deleteCommand(options *globalOptions) *cobra.Command {
 			return a.deleteWorkspace(command.Context(), target, args[0], confirmation, timeout, *options)
 		},
 	}
-	command.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating NAME")
+	command.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion with DELETE")
 	command.Flags().DurationVar(&timeout, "timeout", workspaceDeleteTimeout, "deletion timeout")
 	return command
 }
@@ -391,13 +391,13 @@ func (a *App) deleteCommand(options *globalOptions) *cobra.Command {
 func (a *App) deleteWorkspace(ctx context.Context, target KubeTarget, name, confirmation string, timeout time.Duration, options globalOptions) error {
 	fmt.Fprintf(a.Out, "Permanently delete sandbox %s/%s and its workspace data.\n", target.Namespace, name)
 	if confirmation == "" {
-		fmt.Fprintf(a.Out, "Type the sandbox name %s to confirm: ", name)
+		fmt.Fprint(a.Out, "Type DELETE to confirm: ")
 		if _, err := fmt.Fscanln(a.In, &confirmation); err != nil {
 			confirmation = ""
 		}
 	}
-	if confirmation != name {
-		return errors.New("confirmation did not match the sandbox name; nothing was deleted")
+	if confirmation != "DELETE" {
+		return errors.New("confirmation was not DELETE; nothing was deleted")
 	}
 	if err := permanentlyDeleteWorkspace(ctx, target, name, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
 		return err

@@ -116,7 +116,7 @@ Spins up a new Pod with the existing home and reconnects.
 ### Delete
 
 ```bash
-kubeflock sandbox delete NAME [--confirm NAME] [--timeout 5m]
+kubeflock sandbox delete NAME [--confirm DELETE] [--timeout 5m]
 ```
 
-Permanently deletes the sandbox and its workspace storage. Interactive use requires typing the sandbox name; scripts can pass the exact name with `--confirm`.
+Permanently deletes the sandbox and its workspace storage. Interactive use requires typing `DELETE`; scripts can pass `--confirm DELETE`.
