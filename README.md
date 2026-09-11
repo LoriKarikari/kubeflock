@@ -57,6 +57,12 @@ The saved context sticks even if you switch `kubectl` contexts.
 
 ### Create
 
+In Herdr, choose **Kubeflock: Create sandbox** to open the creation form. It shows the saved context and namespace, lists templates from configured warm pools, and asks for a sandbox name and workstation SSH identity. Use Tab to move between fields, arrow keys to select a template, and Escape to cancel before creation. The confirmation defaults to Cancel.
+
+Creation still validates the selected template. The popup keeps the result visible until you close it. Closing the popup after submission does not delete allocated resources. If creation fails, retry with the same name, template, and identity to recover.
+
+For scripts, use the CLI directly:
+
 ```bash
 kubeflock sandbox create NAME --template NAME --identity PATH [flags]
 ```
