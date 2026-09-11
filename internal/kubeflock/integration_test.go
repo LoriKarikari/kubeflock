@@ -253,16 +253,18 @@ func (f *fixtureAPI) reconcileHome(s *fixtureSandbox) {
 }
 
 type fixtureState struct {
-	claim     bool
-	sandbox   bool
-	homeOwned bool
+	claim         bool
+	sandbox       bool
+	homeOwned     bool
+	homeMissing   bool
+	volumeMissing bool
 }
 
 func (f *fixtureAPI) state(name string) fixtureState {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
-	return fixtureState{claim: s.claim != nil, sandbox: s.present, homeOwned: s.homeOwned}
+	return fixtureState{claim: s.claim != nil, sandbox: s.present, homeOwned: s.homeOwned, homeMissing: s.homeMissing, volumeMissing: s.volumeMissing}
 }
 
 func (f *fixtureAPI) lifecycleSnapshot(name string) (sandboxOperatingMode, string) {
