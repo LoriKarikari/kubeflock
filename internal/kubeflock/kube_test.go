@@ -70,12 +70,18 @@ func TestClaimResponsesRequireIdentity(t *testing.T) {
 func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 	clientset := extensionsfake.NewSimpleClientset()
 	clientset.PrependReactor("create", "sandboxclaims", func(action ktesting.Action) (bool, runtime.Object, error) {
-		create := action.(ktesting.CreateActionImpl)
+		create, ok := action.(ktesting.CreateActionImpl)
+		if !ok {
+			t.Fatalf("unexpected create action %T", action)
+		}
 		options := create.GetCreateOptions()
 		if options.FieldManager != "kubeflock" || options.FieldValidation != "Strict" {
 			t.Errorf("claim create options = %#v", options)
 		}
-		claim := create.GetObject().(*extensionsapi.SandboxClaim)
+		claim, ok := create.GetObject().(*extensionsapi.SandboxClaim)
+		if !ok {
+			t.Fatalf("unexpected create object %T", create.GetObject())
+		}
 		claim.UID = types.UID("claim-" + claim.Name)
 		return false, nil, nil
 	})

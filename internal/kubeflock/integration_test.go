@@ -823,6 +823,7 @@ func (f *fixtureAPI) writeFixture(writer io.Writer, value any) {
 		f.t.Errorf("write API fixture: %v", err)
 	}
 }
+
 func poolFixture(template string) extensionsapi.SandboxWarmPool {
 	return extensionsapi.SandboxWarmPool{
 		APIVersion: "extensions.agents.x-k8s.io/v1beta1",
