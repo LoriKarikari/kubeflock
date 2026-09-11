@@ -60,7 +60,7 @@ type fixtureSandbox struct {
 	homeVolumeMode   corev1.PersistentVolumeMode
 	homeUID          string
 	homeMissing      bool
-	volumePolicy     string
+	volumePolicy     corev1.PersistentVolumeReclaimPolicy
 	volumeMissing    bool
 	holdVolume       bool
 	holdDelete       bool
@@ -217,7 +217,7 @@ func (f *fixtureAPI) setHomeUID(name, uid string) {
 	f.ensureSandbox(name).homeUID = uid
 }
 
-func (f *fixtureAPI) setVolumePolicy(name, policy string) {
+func (f *fixtureAPI) setVolumePolicy(name string, policy corev1.PersistentVolumeReclaimPolicy) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ensureSandbox(name).volumePolicy = policy
@@ -228,7 +228,7 @@ func (f *fixtureAPI) holdVolumeDeletion(name string, hold bool) {
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
 	s.holdVolume = hold
-	if !hold && s.homeMissing && s.volumePolicy != "Retain" {
+	if !hold && s.homeMissing && s.volumePolicy != corev1.PersistentVolumeReclaimRetain {
 		s.volumeMissing = true
 	}
 }
@@ -558,7 +558,7 @@ func (f *fixtureAPI) handleHome(response http.ResponseWriter, request *http.Requ
 			return
 		}
 		s.terminating, s.homeMissing = s.holdDelete, !s.holdDelete
-		if s.homeMissing && s.volumePolicy != "Retain" && !s.holdVolume {
+		if s.homeMissing && s.volumePolicy != corev1.PersistentVolumeReclaimRetain && !s.holdVolume {
 			s.volumeMissing = true
 		}
 		writeFixture(response, metav1.Status{Kind: "Status", APIVersion: "v1", Status: "Success", Code: 200})
@@ -586,12 +586,12 @@ func (f *fixtureAPI) handleVolume(response http.ResponseWriter, request *http.Re
 	}
 	policy := s.volumePolicy
 	if policy == "" {
-		policy = "Delete"
+		policy = corev1.PersistentVolumeReclaimDelete
 	}
 	writeFixture(response, corev1.PersistentVolume{
 		APIVersion: "v1", Kind: "PersistentVolume", Name: name, UID: types.UID(name + "-uid"),
 		Spec: corev1.PersistentVolumeSpec{
-			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimPolicy(policy),
+			PersistentVolumeReclaimPolicy: policy,
 			ClaimRef:                      &corev1.ObjectReference{Namespace: "dev", Name: "home-" + sandbox, UID: types.UID(homeUID("home-"+sandbox, s))},
 		},
 	})
@@ -1593,7 +1593,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	ownedDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "owned home deletion", ownedDelete, 2, "", "uncertain ownership")
 	h.api.setHomeOwned("doomed", false)
-	h.api.setVolumePolicy("doomed", "Retain")
+	h.api.setVolumePolicy("doomed", corev1.PersistentVolumeReclaimRetain)
 	retainedVolume := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "Retain policy deletion", retainedVolume, 2, "", "uses Retain reclaim policy")
 	if h.api.ensureSandbox("doomed").homeMissing {
@@ -1603,7 +1603,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	staleDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "stale home identity", staleDelete, 2, "", "was replaced")
 	h.api.setHomeUID("doomed", "")
-	h.api.setVolumePolicy("doomed", "Delete")
+	h.api.setVolumePolicy("doomed", corev1.PersistentVolumeReclaimDelete)
 	h.api.failNextDelete("pvc")
 	forbiddenDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "forbidden home deletion", forbiddenDelete, 2, "", "deletion remains pending for PVC home-doomed and PV pv-home-doomed")

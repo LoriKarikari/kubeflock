@@ -34,6 +34,12 @@ type kubeClient struct {
 	core       coreclient.CoreV1Interface
 }
 
+type jsonPatchOperation struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value,omitzero"`
+}
+
 type approvedTemplate struct {
 	Name            string
 	WarmPool        string
@@ -404,10 +410,10 @@ func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sa
 	if cmp.Or(sandbox.Spec.OperatingMode, modeRunning) == mode {
 		return nil
 	}
-	patch, err := json.Marshal([]map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": sandbox.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": sandbox.ResourceVersion},
-		{"op": "add", "path": "/spec/operatingMode", "value": mode},
+	patch, err := json.Marshal([]jsonPatchOperation{
+		{Op: "test", Path: "/metadata/uid", Value: sandbox.UID},
+		{Op: "test", Path: "/metadata/resourceVersion", Value: sandbox.ResourceVersion},
+		{Op: "add", Path: "/spec/operatingMode", Value: mode},
 	})
 	if err != nil {
 		return err
@@ -510,14 +516,14 @@ func (k *kubeClient) authorizeHomeAdoption(ctx context.Context, target KubeTarge
 	if owner, conflict := foreignOwner(pvc.OwnerReferences, types.UID(allowedSandboxUID)); conflict {
 		return fmt.Errorf("retained home %s became owned by %s/%s before allocation", pvc.Name, owner.Kind, owner.Name)
 	}
-	patch := []map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
+	patch := []jsonPatchOperation{
+		{Op: "test", Path: "/metadata/uid", Value: pvc.UID},
+		{Op: "test", Path: "/metadata/resourceVersion", Value: pvc.ResourceVersion},
 	}
 	if pvc.Labels == nil {
-		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{sandboxapi.SandboxAdoptableLabel: "true"}})
+		patch = append(patch, jsonPatchOperation{Op: "add", Path: "/metadata/labels", Value: map[string]string{sandboxapi.SandboxAdoptableLabel: "true"}})
 	} else if pvc.Labels[sandboxapi.SandboxAdoptableLabel] != "true" {
-		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels/agents.x-k8s.io~1adoptable", "value": "true"})
+		patch = append(patch, jsonPatchOperation{Op: "add", Path: "/metadata/labels/agents.x-k8s.io~1adoptable", Value: "true"})
 	}
 	if len(patch) == 2 {
 		return nil
@@ -535,13 +541,13 @@ func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarge
 	if err != nil {
 		return err
 	}
-	patch := []map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
+	patch := []jsonPatchOperation{
+		{Op: "test", Path: "/metadata/uid", Value: pvc.UID},
+		{Op: "test", Path: "/metadata/resourceVersion", Value: pvc.ResourceVersion},
 	}
 	for _, label := range []string{sandboxNameHashLabel, sandboxapi.SandboxAdoptableLabel} {
 		if _, exists := pvc.Labels[label]; exists {
-			patch = append(patch, map[string]any{"op": "remove", "path": "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
+			patch = append(patch, jsonPatchOperation{Op: "remove", Path: "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
 		}
 	}
 	if len(patch) == 2 {

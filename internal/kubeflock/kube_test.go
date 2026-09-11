@@ -2,16 +2,42 @@ package kubeflock
 
 import (
 	"context"
+	"encoding/json/v2"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
 	extensionsfake "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/fake"
 	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
+
+func TestJSONPatchOperationEncoding(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		operation jsonPatchOperation
+		want      string
+	}{
+		{"uid", jsonPatchOperation{Op: "test", Path: "/metadata/uid", Value: types.UID("uid")}, `{"op":"test","path":"/metadata/uid","value":"uid"}`},
+		{"empty resource version", jsonPatchOperation{Op: "test", Path: "/metadata/resourceVersion", Value: ""}, `{"op":"test","path":"/metadata/resourceVersion","value":""}`},
+		{"mode", jsonPatchOperation{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}, `{"op":"add","path":"/spec/operatingMode","value":"Suspended"}`},
+		{"labels", jsonPatchOperation{Op: "add", Path: "/metadata/labels", Value: map[string]string{sandboxapi.SandboxAdoptableLabel: "true"}}, `{"op":"add","path":"/metadata/labels","value":{"agents.x-k8s.io/adoptable":"true"}}`},
+		{"remove", jsonPatchOperation{Op: "remove", Path: "/metadata/labels/agents.x-k8s.io~1adoptable"}, `{"op":"remove","path":"/metadata/labels/agents.x-k8s.io~1adoptable"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("patch = %s, want %s", data, test.want)
+			}
+		})
+	}
+}
 
 func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 	clientset := extensionsfake.NewSimpleClientset()
