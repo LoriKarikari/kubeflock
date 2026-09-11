@@ -57,30 +57,26 @@ Returning a stopped sandbox to running compute with its existing home and reconn
 _Avoid_: Restore, recreate home
 
 **Persistent home**:
-The sandbox's durable workspace containing project files, history, settings, and any attached credentials. Its identity is independent of the current compute instance.
+The sandbox's durable workspace containing project files, history, settings, and provider credentials saved by tools inside the sandbox. Its identity is independent of the current compute instance.
 _Avoid_: Container filesystem, local checkout
 
 **Retained home**:
-A persistent home preserved after its sandbox allocation is deleted, with provenance needed for restoration or permanent deletion. It continues to consume storage capacity.
+Home storage left after its sandbox allocation is removed, either from the former retention workflow or while permanent deletion is incomplete. It continues to consume storage capacity; Kubeflock has no supported operation to restore it.
 _Avoid_: Backup, snapshot, stopped sandbox
 
 **Delete sandbox**:
-Removing the sandbox allocation and compute while retaining its home.
-_Avoid_: Permanent deletion, delete home
-
-**Restore**:
-Attaching a retained home to a replacement allocation under its original allocation name and compatible approved template. Restoration preserves the home's identity and credential selection.
-_Avoid_: Resume, clone, restore backup
-
-**Delete home**:
-Permanent removal of retained home storage, confirmed by its exact PVC UID. This is distinct from deleting a sandbox.
-_Avoid_: Cleanup, disconnect
+Permanent removal of the sandbox allocation, compute, and workspace storage after explicit confirmation.
+_Avoid_: Stop, disconnect, retain home
 
 ### Credentials and trust
 
-**Approved credential**:
-An administrator-defined alias for a Secret key in the target namespace and the environment variable it supplies. The alias is not the credential value or a per-key authorization boundary.
-_Avoid_: Workstation credential, copied SSH key
+**SSH identity**:
+The workstation's private SSH key selected to connect to a sandbox. It is distinct from the public key authorized by the sandbox and from provider credentials.
+_Avoid_: Provider credential, sandbox host key
+
+**Provider credential**:
+Authentication data obtained by a tool inside the sandbox, such as Pi, and potentially saved in the persistent home. Its lifetime follows that home when saved there.
+_Avoid_: SSH identity, approved credential alias
 
 **Developer namespace**:
 The shared trust boundary for sandbox users authorized there. Those users may access each other's sandbox processes and homes; separate users require separate namespaces when that access is unacceptable.
