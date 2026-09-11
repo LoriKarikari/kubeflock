@@ -24,22 +24,6 @@ The Herdr application installed on the workstation is separate from the remote H
 
 Capacity is explicit. `warmStandbys` defaults to zero and reserves that many slots within the Pod, CPU, memory, PVC, and storage budgets. It cannot exceed either budget. `maxActiveSandboxes` is the total compute budget shared by claimed sandboxes and standbys. `maxRetainedHomes` is the total storage budget shared by claimed, standby, and retained homes. A retained home consumes storage after its Sandbox stops using compute.
 
-## Approved credentials
-
-Create each credential as a Secret in the developer namespace. Then add an alias to `credentials`:
-
-```yaml
-credentials:
-  - name: anthropic
-    secretName: anthropic-api-key
-    key: api-key
-    environment: ANTHROPIC_API_KEY
-```
-
-The chart does not create the Secret or copy its value into Helm state. It creates a ConfigMap containing only aliases and local Secret key references. RBAC permits `get` only for the named Secrets. It does not permit Secret listing or cross-namespace references. Because that grant is per Secret, any subject in the namespace can read the full contents of each named Secret with `kubectl`, including keys that no alias references. Treat the alias list as policy, not as a confidentiality boundary.
-
-Users list aliases with `kubeflock sandbox credential list` and repeat `--credential NAME` during creation. Kubeflock writes selected values through Pod exec standard input to mode `0600` files in `~/.config/kubeflock/credentials`. Interactive shells export the configured variables. These files persist with the home through stop, resume, retain, and restore. A retained home records its aliases, and restore re-attaches the same selection. Repeating the same `create` command refreshes rotated Secret values. Missing keys and denied Secret reads leave the sandbox intact.
-
 ## Agent Sandbox controller
 
 Reuse an existing compatible controller when its `v1beta1` core and extension APIs are already served:
@@ -99,7 +83,7 @@ kubeflock cluster check
 
 Every subject shares one trust domain. The role grants `pods/exec` create plus PersistentVolumeClaim patch and delete in the namespace, so any subject can read, write, or delete every Sandbox home there. The cluster role grants read access to PersistentVolumes so `sandbox home delete` can verify reclaim policy and final deletion. PersistentVolumes are cluster scoped, so that read reaches volumes outside the developer namespace and exposes their claim references and CSI secret names. Use one namespace per user, or per group that may already read each other's files. Per-user isolation needs a namespace per user, because `pods/exec` alone defeats separation inside one namespace. The chart refuses the broad `system:authenticated`, `system:unauthenticated`, and `system:serviceaccounts` groups for the same reason.
 
-The Sandbox Pod receives no automatic service-account token. The chart does not create a service account for Sandboxes or place private keys, repository credentials, or model credentials in an image or Pod specification. Selected credentials remain Kubernetes Secrets until Kubeflock writes them to the sandbox home.
+The Sandbox Pod receives no automatic service-account token. The chart does not create a service account for Sandboxes or place private keys, repository credentials, or model credentials in the cluster.
 
 ## Upgrade behavior
 

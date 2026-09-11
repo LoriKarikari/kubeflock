@@ -19,19 +19,6 @@ rules:
     resources: ["sandboxwarmpools"]
     verbs: ["list"]
   - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["kubeflock-credentials"]
-    verbs: ["get"]
-{{- if .Values.credentials }}
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames:
-{{- range .Values.credentials }}
-      - {{ .secretName | quote }}
-{{- end }}
-    verbs: ["get"]
-{{- end }}
-  - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]
   - apiGroups: [""]
