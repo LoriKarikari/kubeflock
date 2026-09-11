@@ -235,7 +235,7 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 }
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
-	var template, identity, homeUID, repository, branch string
+	var template, identity, homeUID string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -251,7 +251,6 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			created, err := a.createOrRestore(command.Context(), target, args[0], homeUID, createOptions{
 				Template:     template,
 				IdentityFile: identity,
-				Project:      requestedProject(repository, branch),
 				Timeout:      timeout,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -265,8 +264,6 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 	command.Flags().StringVar(&template, "template", "", "approved SandboxTemplate")
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
 	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
-	command.Flags().StringVar(&repository, "repository", "", "Git repository to clone inside the sandbox")
-	command.Flags().StringVar(&branch, "branch", "", "Git branch to check out")
 	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning or checkout timeout")
 	return command
 }
@@ -559,9 +556,6 @@ func (a *App) createOrRestore(ctx context.Context, target KubeTarget, name, home
 	if homeUID == "" {
 		return createSandbox(ctx, target, name, nil, options)
 	}
-	if options.Project != nil {
-		return createdSandbox{}, errors.New("a restored home does not accept --repository; restore it first, then clone inside the sandbox")
-	}
 	selection, err := inspectRestore(ctx, target, name, homeUID, options)
 	if err != nil {
 		return createdSandbox{}, err
@@ -600,17 +594,6 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			repository, err := prompt("Git repository (optional): ")
-			if err != nil {
-				return err
-			}
-			branch := ""
-			if repository != "" {
-				branch, err = prompt("Git branch (optional): ")
-				if err != nil {
-					return err
-				}
-			}
 			confirmed, err := prompt(fmt.Sprintf("Create %s from %s with persistent home storage? [y/N] ", name, template))
 			if err != nil {
 				return err
@@ -622,7 +605,6 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
 				Template:     template,
 				IdentityFile: identity,
-				Project:      requestedProject(repository, branch),
 				Timeout:      5 * time.Minute,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -635,30 +617,11 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 	}
 }
 
-func requestedProject(repository, branch string) *projectRequest {
-	if repository == "" && branch == "" {
-		return nil
-	}
-	return &projectRequest{Repository: repository, Branch: branch}
-}
-
 func (a *App) reportCreated(created createdSandbox, restored bool) error {
 	if restored {
 		fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
 	} else {
 		fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
-	}
-	if created.Project == nil {
-		return nil
-	}
-	if created.Checkout != nil {
-		fmt.Fprintf(a.Err, "kubeflock: checkout failed; sandbox %s remains ready for login and retry: %v\n", created.Name, created.Checkout)
-		return exitError{code: 1}
-	}
-	if created.Project.Branch == "" {
-		fmt.Fprintln(a.Out, "checked out the repository's default branch in /home/agent/project")
-	} else {
-		fmt.Fprintf(a.Out, "checked out branch %s in /home/agent/project\n", created.Project.Branch)
 	}
 	return nil
 }

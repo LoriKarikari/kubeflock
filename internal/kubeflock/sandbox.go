@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,15 +53,9 @@ const (
 	modeSuspended = sandboxapi.SandboxOperatingModeSuspended
 )
 
-type projectRequest struct {
-	Repository string
-	Branch     string
-}
-
 type createOptions struct {
 	Template     string
 	IdentityFile string
-	Project      *projectRequest
 	Timeout      time.Duration
 	Poll         time.Duration
 	Global       globalOptions
@@ -90,8 +83,6 @@ type createdSandbox struct {
 	WarmPool string
 	SSHAlias string
 	Home     PersistentHome
-	Project  *projectRequest
-	Checkout error
 }
 
 type restoreSelection struct {
@@ -382,30 +373,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 		}
 	}
 	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}
-	if options.Project != nil {
-		created.Project = options.Project
-		created.Checkout = checkoutProject(ctx, target, resolved, *options.Project, options)
-	}
 	return created, nil
-}
-
-func checkoutProject(ctx context.Context, target KubeTarget, sandbox resolvedSandbox, project projectRequest, options createOptions) error {
-	ctx, cancel := context.WithTimeout(ctx, options.Timeout)
-	defer cancel()
-	args := []string{"--context", target.Context, "--namespace", target.Namespace, "exec", sandbox.Pod, "-c", sandbox.Container, "--", "git", "clone"}
-	if project.Branch != "" {
-		args = append(args, "--branch", project.Branch, "--single-branch")
-	}
-	args = append(args, "--", project.Repository, "/home/agent/project")
-	if _, err := runKubectl(ctx, options.Global, args...); err != nil {
-		if command, ok := errors.AsType[*commandError](err); ok && !command.TimedOut {
-			if detail := strings.TrimSpace(command.Stderr); detail != "" {
-				err = errors.New(detail)
-			}
-		}
-		return fmt.Errorf("remote git clone: %w", err)
-	}
-	return nil
 }
 
 func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox SandboxIdentity, home PersistentHome, stateDir string) error {
@@ -547,30 +515,7 @@ func validateRestoreResources(ctx context.Context, client *kubeClient, target Ku
 	return allowedSandboxUID, nil
 }
 
-func validateProject(project *projectRequest) error {
-	if project.Repository == "" {
-		return errors.New("a project branch requires --repository")
-	}
-	if strings.ContainsAny(project.Repository+project.Branch, "\r\n\x00") {
-		return errors.New("repository and branch must not contain control characters")
-	}
-	if parsed, err := url.Parse(project.Repository); err == nil && parsed.User != nil {
-		if _, hasPassword := parsed.User.Password(); hasPassword {
-			return errors.New("repository URL must not contain a password; configure authentication inside the sandbox")
-		}
-	}
-	if strings.Contains(project.Repository, "?") {
-		return errors.New("repository URL must not contain a query string; configure authentication inside the sandbox")
-	}
-	return nil
-}
-
 func validateCreation(name string, options createOptions) (string, error) {
-	if options.Project != nil {
-		if err := validateProject(options.Project); err != nil {
-			return "", err
-		}
-	}
 	if len(validation.IsDNS1123Label(name)) != 0 {
 		return "", fmt.Errorf("invalid sandbox name %q", name)
 	}

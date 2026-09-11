@@ -1,7 +1,6 @@
 package kubeflock
 
 import (
-	"archive/tar"
 	"bytes"
 	"cmp"
 	"encoding/json"
@@ -849,61 +848,6 @@ func helperKubectl(args []string) {
 		_, _ = io.Copy(os.Stdout, os.Stdin)
 		return
 	}
-	if separator := slices.Index(args, "--"); separator >= 0 && separator+3 < len(args) && args[separator+1] == "sh" && strings.Contains(args[separator+3], ".config/kubeflock/credentials") {
-		if os.Getenv("FAKE_KUBECTL_FAIL_CREDENTIALS") == "1" {
-			_, _ = io.Copy(os.Stderr, os.Stdin)
-			os.Exit(1)
-		}
-		home := os.Getenv("FAKE_SANDBOX_HOME")
-		archive := tar.NewReader(os.Stdin)
-		for {
-			header, err := archive.Next()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				os.Exit(1)
-			}
-			path := filepath.Join(home, header.Name)
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				os.Exit(1)
-			}
-			file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
-			if err != nil {
-				os.Exit(1)
-			}
-			_, copyErr := io.Copy(file, archive)
-			closeErr := file.Close()
-			if copyErr != nil || closeErr != nil {
-				os.Exit(1)
-			}
-		}
-		bashrc := filepath.Join(home, ".bashrc")
-		file, err := os.OpenFile(bashrc, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			os.Exit(1)
-		}
-		fmt.Fprintln(file, `. "$HOME/.config/kubeflock/credentials/env.sh"`)
-		file.Close()
-		return
-	}
-	if separator := slices.Index(args, "--"); separator >= 0 && separator+2 < len(args) && args[separator+1] == "git" {
-		remote := slices.Clone(args[separator+1:])
-		home := os.Getenv("FAKE_SANDBOX_HOME")
-		for i := range remote {
-			if remote[i] == "/home/agent/project" {
-				remote[i] = filepath.Join(home, "project")
-			}
-		}
-		command := exec.Command(remote[0], remote[1:]...)
-		command.Dir = home
-		command.Env = append(os.Environ(), "HOME="+home)
-		command.Stdout, command.Stderr = os.Stdout, os.Stderr
-		if err := command.Run(); err != nil {
-			os.Exit(1)
-		}
-		return
-	}
 	if joined == "config get-contexts -o name" {
 		fmt.Println("test")
 		return
@@ -1116,84 +1060,6 @@ func newHarness(t *testing.T) harness {
 		sshConfig:  sshConfig,
 		herdrState: herdrState,
 		kubectlLog: kubectlLog,
-	}
-}
-
-func TestCLICreatesSandboxWithProject(t *testing.T) {
-	h := newHarness(t)
-	credentialURL := "https://agent:secret@example.test/project.git"
-	rejected := h.run(t, "sandbox", "create", "project-secret", "--template", "dev-small", "--identity", h.identity, "--repository", credentialURL, "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "credential URL", rejected, 2, "", "configure authentication inside the sandbox")
-	if strings.Contains(rejected.stderr, "secret") {
-		t.Fatalf("credential URL leaked to stderr: %s", rejected.stderr)
-	}
-	log, _ := os.ReadFile(h.kubectlLog)
-	if strings.Contains(string(log), "secret") {
-		t.Fatalf("credential URL leaked to kubectl: %s", log)
-	}
-
-	root := t.TempDir()
-	work := filepath.Join(root, "source")
-	runGit(t, "init", "-b", "main", work)
-	mustWrite(t, filepath.Join(work, "project.txt"), "main\n", 0o600)
-	runGit(t, "-C", work, "add", "project.txt")
-	runGit(t, "-C", work, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "main")
-	runGit(t, "-C", work, "checkout", "-b", "feature")
-	mustWrite(t, filepath.Join(work, "project.txt"), "feature\n", 0o600)
-	runGit(t, "-C", work, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-am", "feature")
-	bare := filepath.Join(root, "source.git")
-	runGit(t, "clone", "--bare", work, bare)
-
-	remote := filepath.Join(root, "cli-home")
-	if err := os.Mkdir(remote, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	created := h.runWith(t, "FAKE_SANDBOX_HOME="+remote, "sandbox", "create", "project-cli", "--template", "dev-small", "--identity", h.identity, "--repository", bare, "--branch", "feature", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "project create", created, 0, "checked out branch feature", "")
-	mustWrite(t, filepath.Join(remote, "project", "project.txt"), "dirty\n", 0o600)
-	retried := h.runWith(t, "FAKE_SANDBOX_HOME="+remote, "sandbox", "create", "project-cli", "--template", "dev-small", "--identity", h.identity, "--repository", bare, "--branch", "feature", "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "dirty checkout retry", retried, 1, "ready sandbox project-cli", "checkout failed; sandbox project-cli remains ready")
-	contents, err := os.ReadFile(filepath.Join(remote, "project", "project.txt"))
-	if err != nil || string(contents) != "dirty\n" {
-		t.Fatalf("dirty project changed to %q, %v", contents, err)
-	}
-	listed := h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "checkout failure lifecycle", listed, 0, `"state": "ready"`, "")
-	if err := filepath.WalkDir(h.stateDir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err == nil && strings.Contains(string(data), bare) {
-			return fmt.Errorf("repository URL saved in %s", path)
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	wizardHome := filepath.Join(root, "wizard-home")
-	if err := os.Mkdir(wizardHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	wizardEnv := append(slices.Clone(h.env), "FAKE_SANDBOX_HOME="+wizardHome)
-	input := strings.Join([]string{"project-wizard", "dev-small", h.identity, "", bare, "feature", "y", ""}, "\n")
-	wizard := h.invoke(t, h.binary, wizardEnv, input, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
-	assertCLI(t, "Herdr project create", wizard, 0, "checked out branch feature", "")
-
-	emptyHome := filepath.Join(root, "wizard-empty-home")
-	if err := os.Mkdir(emptyHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	emptyEnv := append(slices.Clone(h.env), "FAKE_SANDBOX_HOME="+emptyHome)
-	emptyInput := strings.Join([]string{"project-wizard-empty", "dev-small", h.identity, "", "", "y", ""}, "\n")
-	emptyWizard := h.invoke(t, h.binary, emptyEnv, emptyInput, []string{"sandbox", "create-wizard", "--kubeconfig", h.kubeconfig})
-	assertCLI(t, "Herdr empty project create", emptyWizard, 0, "ready sandbox project-wizard-empty", "")
-	if strings.Contains(emptyWizard.stdout, "checked out") {
-		t.Fatalf("blank repository wizard reported a checkout: %s", emptyWizard.stdout)
-	}
-	if _, err := os.Stat(filepath.Join(emptyHome, "project")); !os.IsNotExist(err) {
-		t.Fatalf("blank repository wizard created a checkout: %v", err)
 	}
 }
 

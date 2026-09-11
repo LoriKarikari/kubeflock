@@ -27,5 +27,3 @@ Mount persistent storage at `/home/agent`. The entrypoint stores SSH host keys, 
 Authenticate from a terminal inside the Sandbox. For example, run `pi`, enter `/login`, and complete the provider flow. If OAuth redirects to an unreachable `localhost` callback, copy the failed redirect URL from the browser and paste it into Pi's login prompt. Treat that URL as a credential and do not share it.
 
 Pi can store the resulting credential in `/home/agent/.pi/agent/auth.json`. The credential persists with the home volume. It is not part of the image layer, build output, Kubeflock state, or plugin logs.
-
-Git repository checkout uses credentials configured inside this home. Git can read `~/.git-credentials`, a credential helper, or an SSH key created in the sandbox. Kubeflock does not copy workstation credentials, forward the workstation SSH agent, or save repository URLs in local state.
