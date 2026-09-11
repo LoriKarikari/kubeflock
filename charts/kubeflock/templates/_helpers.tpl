@@ -17,7 +17,4 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | quote }}
 {{- if gt (int .Values.sandbox.resources.memoryRequestMi) (int .Values.sandbox.resources.memoryLimitMi) -}}
 {{- fail "sandbox.resources.memoryRequestMi cannot exceed memoryLimitMi" -}}
 {{- end -}}
-{{- if lt (int .Values.capacity.maxRetainedHomes) (int .Values.capacity.maxActiveSandboxes) -}}
-{{- fail "capacity.maxRetainedHomes cannot be less than maxActiveSandboxes" -}}
-{{- end -}}
 {{- end }}

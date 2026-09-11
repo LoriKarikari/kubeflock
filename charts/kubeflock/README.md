@@ -22,7 +22,7 @@ Compatible images must contain the remote Herdr server at version 0.9.0 or newer
 
 The Herdr application installed on the workstation is separate from the remote Herdr server in the Sandbox image. The private SSH key also remains on the workstation. Only its public key belongs in values.
 
-Capacity is explicit. `warmStandbys` defaults to zero and reserves that many slots within the Pod, CPU, memory, PVC, and storage budgets. It cannot exceed either budget. `maxActiveSandboxes` is the total compute budget shared by claimed sandboxes and standbys. `maxRetainedHomes` is the total storage budget shared by claimed, standby, and retained homes. A retained home consumes storage after its Sandbox stops using compute.
+Capacity is explicit. `warmStandbys` defaults to zero and reserves that many slots within the Pod, CPU, memory, PVC, and storage budgets. It cannot exceed either budget. `maxActiveSandboxes` is the total compute and persistent-storage budget shared by claimed sandboxes and standbys.
 
 ## Agent Sandbox controller
 
@@ -81,7 +81,7 @@ kubeflock cluster check
 
 `access.subjects` accepts Kubernetes `User`, `Group`, and `ServiceAccount` subjects. The chart grants sandbox lifecycle access only in the developer namespace. Cluster-wide access is read-only and limited to Namespace, StorageClass, RuntimeClass, and PersistentVolume checks.
 
-Every subject shares one trust domain. The role grants `pods/exec` create plus PersistentVolumeClaim patch and delete in the namespace, so any subject can read, write, or delete every Sandbox home there. The cluster role grants read access to PersistentVolumes so `sandbox home delete` can verify reclaim policy and final deletion. PersistentVolumes are cluster scoped, so that read reaches volumes outside the developer namespace and exposes their claim references and CSI secret names. Use one namespace per user, or per group that may already read each other's files. Per-user isolation needs a namespace per user, because `pods/exec` alone defeats separation inside one namespace. The chart refuses the broad `system:authenticated`, `system:unauthenticated`, and `system:serviceaccounts` groups for the same reason.
+Every subject shares one trust domain. The role grants `pods/exec` create plus PersistentVolumeClaim patch and delete in the namespace, so any subject can read, write, or delete every Sandbox home there. The cluster role grants read access to PersistentVolumes so `sandbox delete` can verify reclaim policy and final deletion. PersistentVolumes are cluster scoped, so that read reaches volumes outside the developer namespace and exposes their claim references and CSI secret names. Use one namespace per user, or per group that may already read each other's files. Per-user isolation needs a namespace per user, because `pods/exec` alone defeats separation inside one namespace. The chart refuses the broad `system:authenticated`, `system:unauthenticated`, and `system:serviceaccounts` groups for the same reason.
 
 The Sandbox Pod receives no automatic service-account token. The chart does not create a service account for Sandboxes or place private keys, repository credentials, or model credentials in the cluster.
 

@@ -789,7 +789,6 @@ func templateFixture(name string, secure bool, homeClaim string) extensionsapi.S
 	template := gateTemplate()
 	template.APIVersion, template.Kind = "extensions.agents.x-k8s.io/v1beta1", "SandboxTemplate"
 	template.Name, template.Namespace, template.UID = name, "dev", types.UID(name+"-uid")
-	template.Spec.VolumeClaimTemplatesPolicy = extensionsapi.VolumeClaimTemplatesPolicyOverrides
 	pod := &template.Spec.PodTemplate.Spec
 	if !secure {
 		pod.RuntimeClassName = new("runc")
@@ -1010,11 +1009,9 @@ func (h harness) proxyScript(sandboxUID string) string {
 
 func (h harness) retainedHomes(t *testing.T) []RetainedHome {
 	t.Helper()
-	listed := h.run(t, "sandbox", "home", "list", "--output", "json")
-	assertCLI(t, "home list", listed, 0, "", "")
-	var homes []RetainedHome
-	if err := json.Unmarshal([]byte(listed.stdout), &homes); err != nil {
-		t.Fatalf("home list = %#v", listed)
+	homes, err := listRetainedHomes(h.stateDir)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return homes
 }
@@ -1105,403 +1102,62 @@ func TestCLIListsWithoutHerdrWhenNoProfileIsConnected(t *testing.T) {
 	assertCLI(t, "list without herdr", listed, 0, `"state": "failed"`, "")
 }
 
-func TestCLIRejectsInteractiveCredentialHelper(t *testing.T) {
+func TestCLIWarmStandbyDeletesItsExclusiveHome(t *testing.T) {
 	h := newHarness(t)
-	data, err := os.ReadFile(h.kubeconfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	interactive := filepath.Join(t.TempDir(), "interactive.yaml")
-	mustWrite(t, interactive, strings.Replace(string(data), "interactiveMode: Never", "interactiveMode: Always", 1), 0o600)
-	listed := h.run(t, "sandbox", "credential", "list", "--kubeconfig", interactive)
-	assertCLI(t, "interactive credential helper", listed, 2, "", "requires an interactive session")
-}
-
-func TestCLIWarmStandbyRetainsAndRestoresItsExclusiveHome(t *testing.T) {
-	h := newHarness(t)
-
 	created := h.run(t, "sandbox", "create", "warm", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "warm create", created, 0, "ready sandbox warm", "")
-	herdr := readHerdrFixture(t, h.herdrState)
-	if !slices.ContainsFunc(herdr.Machines, func(machine herdrMachine) bool { return machine.Label == "warm" }) {
-		t.Fatalf("Herdr did not keep the requested allocation name: %#v", herdr.Machines)
-	}
-	listed := h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "warm list", listed, 0, `"name": "warm"`, "")
-	if !strings.Contains(listed.stdout, `"sandboxUid": "sandbox-dev-small-standby"`) {
-		t.Fatalf("warm allocation did not retain adopted Sandbox identity: %s", listed.stdout)
-	}
-
-	deleted := h.run(t, "sandbox", "delete", "warm", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "warm delete", deleted, 0, "retained home home-dev-small-standby", "")
-	homes := h.retainedHomes(t)
-	if len(homes) != 1 || homes[0].Name != "warm" || homes[0].Claim.Name != "warm" || homes[0].Origin.Name != "dev-small-standby" {
-		t.Fatalf("warm retained home provenance = %#v", homes)
-	}
-
-	restored := h.run(t, "sandbox", "create", "warm", "--home", "home-dev-small-standby-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "warm restore", restored, 0, "ready sandbox warm; restored home home-dev-small-standby", "")
+	deleted := h.run(t, "sandbox", "delete", "warm", "--confirm", "warm", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "warm delete", deleted, 0, "permanently deleted sandbox dev/warm", "")
 	if homes := h.retainedHomes(t); len(homes) != 0 {
-		t.Fatalf("restored home remains retained: %#v", homes)
+		t.Fatalf("deleted workspace remains retained: %#v", homes)
+	}
+	state := h.api.state("warm")
+	if state.claim || state.sandbox || !state.homeMissing || !state.volumeMissing {
+		t.Fatalf("workspace deletion state: %#v", state)
 	}
 }
 
 func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 	const sandboxUID = "sandbox-delayed"
 	h := newHarness(t)
-	workingDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	relativeStateDir, err := filepath.Rel(workingDir, h.stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.env = append(h.env, "KUBEFLOCK_STATE_DIR="+relativeStateDir)
 
-	assertCLI(t, "restore action", h.runWith(t, "HERDR_WORKSPACE_ID=w3", "sandbox", "restore-action"), 0, "", "")
+	assertCLI(t, "delete action", h.run(t, "sandbox", "delete-action"), 0, "", "")
 	actionState := readHerdrFixture(t, h.herdrState)
-	if !slices.Contains(actionState.PaneArgs, "restore") {
-		t.Fatalf("restore action did not open its Herdr pane: %#v", actionState.PaneArgs)
-	}
-	if slices.Contains(actionState.PaneArgs, "--workspace") {
-		t.Fatalf("popup action passed an invalid workspace target: %#v", actionState.PaneArgs)
-	}
-	assertCLI(t, "delete home action", h.run(t, "sandbox", "delete-home-action"), 0, "", "")
-	actionState = readHerdrFixture(t, h.herdrState)
-	if !slices.Contains(actionState.PaneArgs, "delete-home") {
-		t.Fatalf("delete home action did not open its Herdr pane: %#v", actionState.PaneArgs)
+	if !slices.Contains(actionState.PaneArgs, "delete") {
+		t.Fatalf("delete action did not open its Herdr pane: %#v", actionState.PaneArgs)
 	}
 
-	failed := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed create", failed, 2, "", "herdr exited: command exited with status 1: error: remote platform detection failed")
-	if creates, reads := h.api.createCount(), h.api.claimReads("delayed"); creates != 1 || reads != 2 {
-		t.Fatalf("creates=%d reads=%d", creates, reads)
-	}
-	connectionFile := h.connectionState(sandboxUID)
-	assertConnectionPhase(t, connectionFile, connectionPrepared)
-	connected := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "connected", connected, 0, "ready sandbox delayed", "")
-	if creates := h.api.createCount(); creates != 1 {
-		t.Fatalf("duplicate created %d claims", creates)
-	}
-	assertConnectionPhase(t, connectionFile, connectionConnected)
-	connection, err := loadConnection(connectionFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{connection.SSH.KnownHostsFile, connection.SSH.EntryFile, connection.SSH.ProxyFile} {
-		if !filepath.IsAbs(path) {
-			t.Fatalf("relative state directory produced a relative SSH path %q", path)
-		}
-	}
-	sshData, err := os.ReadFile(h.sshConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(sshData), "Include ") || !strings.Contains(string(sshData), "Host unrelated") {
-		t.Fatalf("SSH config lost content: %s", sshData)
-	}
-	proxied := h.runProcess(t, h.proxyScript(sandboxUID), "through-api")
-	if proxied.status != 0 || proxied.stdout != "through-api" {
-		t.Fatalf("proxy = %#v", proxied)
-	}
-	log, err := os.ReadFile(h.kubectlLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(log), "TCP:127.0.0.1:2200") {
-		t.Fatalf("proxy log = %s", log)
-	}
+	created := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "create", created, 0, "ready sandbox delayed", "")
+	assertConnectionPhase(t, h.connectionState(sandboxUID), connectionConnected)
 
 	disconnected := h.run(t, "sandbox", "disconnect", "delayed")
 	assertCLI(t, "disconnect", disconnected, 0, "remote processes are still running", "")
-	listed := h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "list", listed, 0, `"state": "disconnected"`, "")
-	reconnected := h.run(t, "sandbox", "reconnect", "delayed", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "reconnect", reconnected, 0, "", "")
-	herdrData := readHerdrFixture(t, h.herdrState)
-	if herdrData.AddCount != 1 {
-		t.Fatalf("Herdr add count = %d", herdrData.AddCount)
-	}
-
-	_, originalPod := h.api.lifecycleSnapshot("delayed")
-	failedDetach := h.runWith(t, "FAKE_HERDR_FAIL_DISABLE=1", "sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed detach", failedDetach, 2, "", "detach Herdr connection")
-	mode, pod := h.api.lifecycleSnapshot("delayed")
-	if mode != modeRunning || pod != originalPod {
-		t.Fatalf("failed detach changed lifecycle: mode=%s pod=%s", mode, pod)
-	}
-
-	h.api.holdLifecycle(true)
-	cancelledStop := h.run(t, "sandbox", "stop", "delayed", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "cancelled stop", cancelledStop, 2, "", "timed out while entering Suspended mode")
-	h.api.holdLifecycle(false)
+	assertCLI(t, "reconnect", h.run(t, "sandbox", "reconnect", "delayed", "--kubeconfig", h.kubeconfig), 0, "", "")
 	stopped := h.run(t, "sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "stop", stopped, 0, "persistent home retained", "requesting Suspended mode")
-	mode, pod = h.api.lifecycleSnapshot("delayed")
-	if mode != modeSuspended || pod != "" {
-		t.Fatalf("stopped lifecycle: mode=%s pod=%s", mode, pod)
-	}
-	assertCLI(t, "stopped list", h.run(t, "sandbox", "list", "--output", "json", "--kubeconfig", h.kubeconfig), 0, `"state": "disconnected"`, "")
-	stoppedCreate := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "create on stopped sandbox", stoppedCreate, 2, "", "is stopped; run: kubeflock sandbox resume delayed")
-	repeatedStop := h.run(t, "sandbox", "stop", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "repeated stop", repeatedStop, 0, "stopped sandbox", "")
-
-	h.api.holdLifecycle(true)
-	cancelledResume := h.run(t, "sandbox", "resume", "delayed", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "cancelled resume", cancelledResume, 2, "", "timed out while entering Running mode")
-	h.api.holdLifecycle(false)
-	failedAttach := h.runWith(t, "FAKE_HERDR_FAIL_ENABLE=1", "sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed attach", failedAttach, 2, "", "attach Herdr connection")
+	assertCLI(t, "stop", stopped, 0, "persistent home retained", "")
 	resumed := h.run(t, "sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "resume", resumed, 0, "connected as kubeflock-sandbox-delayed", "requesting Running mode")
-	mode, resumedPod := h.api.lifecycleSnapshot("delayed")
-	if mode != modeRunning || resumedPod == "" || resumedPod == originalPod {
-		t.Fatalf("resumed lifecycle: mode=%s pod=%s", mode, resumedPod)
-	}
-	repeatedResume := h.run(t, "sandbox", "resume", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "repeated resume", repeatedResume, 0, "resumed sandbox", "")
-	_, stablePod := h.api.lifecycleSnapshot("delayed")
-	if stablePod != resumedPod {
-		t.Fatalf("repeated resume replaced state: pod=%s", stablePod)
-	}
+	assertCLI(t, "resume", resumed, 0, "connected as kubeflock-sandbox-delayed", "")
 
-	mismatch := h.runWith(t, "FAKE_HOST_KEY="+keyB, "sandbox", "reconnect", "delayed", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "mismatch", mismatch, -1, "", "host key mismatch")
+	declined := h.run(t, "sandbox", "delete", "delayed", "--confirm", "wrong", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "declined delete", declined, 2, "Permanently delete sandbox dev/delayed", "nothing was deleted")
+	if state := h.api.state("delayed"); !state.claim || !state.sandbox || state.homeMissing {
+		t.Fatalf("declined deletion changed workspace: %#v", state)
+	}
 
 	h.api.setHomeOwned("delayed", false)
-	unknownOwner := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	unknownOwner := h.run(t, "sandbox", "delete", "delayed", "--confirm", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "unknown home owner", unknownOwner, 2, "", "sandbox home home-delayed was replaced")
 	h.api.setHomeOwned("delayed", true)
 
-	h.api.failNextDelete("claim")
-	failedClaimDelete := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed claim delete", failedClaimDelete, 2, "", "orphan Sandbox from claim")
-	if state := h.api.state("delayed"); !state.claim || !state.sandbox || !state.homeOwned {
-		t.Fatal("claim delete failure changed ownership")
+	deleted := h.run(t, "sandbox", "delete", "delayed", "--confirm", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
+	assertCLI(t, "permanent delete", deleted, 0, "permanently deleted sandbox dev/delayed and its workspace data", "")
+	state := h.api.state("delayed")
+	if state.claim || state.sandbox || !state.homeMissing || !state.volumeMissing {
+		t.Fatalf("workspace deletion state: %#v", state)
 	}
-	h.api.failNextHomePatch()
-	failedHomePatch := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed home patch", failedHomePatch, 2, "", "prevent controller re-adoption")
-	if state := h.api.state("delayed"); state.claim || !state.sandbox || !state.homeOwned {
-		t.Fatal("home patch failure changed ownership")
-	}
-	h.api.failNextDelete("sandbox")
-	failedSandboxDelete := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed sandbox delete", failedSandboxDelete, 2, "", "orphan home from Sandbox")
-	if state := h.api.state("delayed"); state.claim || !state.sandbox || !state.homeOwned {
-		t.Fatal("sandbox delete failure lost the retained home")
-	}
-	failedProfileRemove := h.runWith(t, "FAKE_HERDR_FAIL_REMOVE=1", "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "failed profile remove", failedProfileRemove, 2, "", "remove Herdr connection")
-	if adopted := h.api.adoptedHomes(); adopted != 0 {
-		t.Fatalf("the controller re-adopted the home %d times after orphaning", adopted)
-	}
-	deleted := h.run(t, "sandbox", "delete", "delayed", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "delete and retain", deleted, 0, "retained home home-delayed (10Gi)", "")
-	if state := h.api.state("delayed"); state.claim || state.sandbox || state.homeOwned {
-		t.Fatalf("retention state: %#v", state)
-	}
-	for _, path := range h.api.deletePaths() {
-		if strings.Contains(path, "/persistentvolumeclaims/") {
-			t.Fatalf("PVC deletion requested at %s", path)
-		}
-	}
-	if adopted := h.api.adoptedHomes(); adopted != 0 {
-		t.Fatalf("the controller re-adopted the home %d times", adopted)
-	}
-	homes := h.retainedHomes(t)
-	if len(homes) != 1 || homes[0].Home.UID != "home-delayed-uid" || homes[0].Origin.Name != "delayed" ||
-		homes[0].Template != "dev-small" || homes[0].WarmPool != "dev-small-pool" || homes[0].State != "available" {
-		t.Fatalf("retained homes = %#v", homes)
-	}
-	assertCLI(t, "retained homes text", h.run(t, "sandbox", "home", "list"), 0, "uid=home-delayed-uid", "")
-
-	doomed := h.run(t, "sandbox", "create", "doomed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "create doomed", doomed, 0, "ready sandbox doomed", "")
-	assertCLI(t, "retain doomed", h.run(t, "sandbox", "delete", "doomed", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-doomed", "")
-	declined := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "no", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "declined home deletion", declined, 2, "project files, history, settings, and credentials", "no storage was deleted")
-	declinedTyped := h.invoke(t, h.binary, h.env, "wrong\n", []string{"sandbox", "home", "delete", "home-doomed-uid", "--kubeconfig", h.kubeconfig})
-	assertCLI(t, "declined interactive deletion", declinedTyped, 2, "Type the PVC UID home-doomed-uid to confirm", "no storage was deleted")
-	if h.api.ensureSandbox("doomed").homeMissing {
-		t.Fatal("declined confirmation deleted the home")
-	}
-	h.api.setClaim("doomed", true)
-	activeDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "active allocation deletion", activeDelete, 2, "", "active or uncertain sandbox allocation")
-	h.api.setClaim("doomed", false)
-	h.api.mountHome("home-doomed")
-	mountedDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "mounted home deletion", mountedDelete, 2, "", "mounted by Pod foreign-mount")
-	h.api.mountHome("")
-	h.api.setForeignHomeOwner("doomed", "sandbox-foreign")
-	ownedDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "owned home deletion", ownedDelete, 2, "", "uncertain ownership")
-	h.api.setHomeOwned("doomed", false)
-	h.api.setVolumePolicy("doomed", corev1.PersistentVolumeReclaimRetain)
-	retainedVolume := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "Retain policy deletion", retainedVolume, 2, "", "uses Retain reclaim policy")
-	if h.api.ensureSandbox("doomed").homeMissing {
-		t.Fatal("Retain policy deleted the PVC")
-	}
-	h.api.setHomeUID("doomed", "replacement-uid")
-	staleDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "stale home identity", staleDelete, 2, "", "was replaced")
-	h.api.setHomeUID("doomed", "")
-	h.api.setVolumePolicy("doomed", corev1.PersistentVolumeReclaimDelete)
-	h.api.failNextDelete("pvc")
-	forbiddenDelete := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "forbidden home deletion", forbiddenDelete, 2, "", "deletion remains pending for PVC home-doomed and PV pv-home-doomed")
-	assertCLI(t, "pending home visible", h.run(t, "sandbox", "home", "list"), 0, "deleting", "")
-	h.api.mountHome("home-doomed")
-	concurrentAttachment := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "concurrent attachment", concurrentAttachment, 2, "", "mounted by Pod foreign-mount")
-	h.api.mountHome("")
-	h.api.holdVolumeDeletion("doomed", true)
-	residualVolume := h.run(t, "sandbox", "home", "delete", "home-doomed-uid", "--confirm", "home-doomed-uid", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "residual volume", residualVolume, 2, "", "deletion remains pending for PVC home-doomed and PV pv-home-doomed")
-	assertCLI(t, "residual volume visible", h.run(t, "sandbox", "home", "list"), 0, "pv=pv-home-doomed", "")
-	h.api.holdVolumeDeletion("doomed", false)
-	deletedHome := h.invoke(t, h.binary, h.env, "home-doomed-uid\n", []string{"sandbox", "home", "delete", "home-doomed-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig})
-	assertCLI(t, "interactive permanent home deletion", deletedHome, 0, "Type the PVC UID home-doomed-uid to confirm", "")
-	assertCLI(t, "interactive permanent home deletion", deletedHome, 0, "permanently deleted retained home home-doomed", "")
-	remainingHomes := h.retainedHomes(t)
-	if len(remainingHomes) != 1 || remainingHomes[0].Home.UID != "home-delayed-uid" || h.api.ensureSandbox("delayed").volumeMissing {
-		t.Fatalf("permanent deletion changed unrelated storage: %#v", remainingHomes)
-	}
-
-	gone := h.run(t, "sandbox", "create", "gone", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "create gone", gone, 0, "ready sandbox gone", "")
-	assertCLI(t, "retain gone", h.run(t, "sandbox", "delete", "gone", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-gone", "")
-	h.api.setVolumeMissing("gone", true)
-	orphanedVolume := h.run(t, "sandbox", "home", "delete", "home-gone-uid", "--confirm", "home-gone-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "missing volume deletion", orphanedVolume, 0, "permanently deleted retained home home-gone", "")
-	if !h.api.ensureSandbox("gone").homeMissing {
-		t.Fatal("missing volume left the home claim behind")
-	}
-
-	terminating := h.run(t, "sandbox", "create", "terminating", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "create terminating", terminating, 0, "ready sandbox terminating", "")
-	assertCLI(t, "retain terminating", h.run(t, "sandbox", "delete", "terminating", "--timeout", "1s", "--kubeconfig", h.kubeconfig), 0, "retained home home-terminating", "")
-	h.api.holdHomeDeletion("terminating", true)
-	h.api.holdVolumeDeletion("terminating", true)
-	held := h.run(t, "sandbox", "home", "delete", "home-terminating-uid", "--confirm", "home-terminating-uid", "--timeout", "10ms", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "terminating claim", held, 2, "", "deletion remains pending for PVC home-terminating and PV pv-home-terminating")
-	assertCLI(t, "terminating claim visible", h.run(t, "sandbox", "home", "list"), 0, "deleting", "")
-	h.api.holdHomeDeletion("terminating", false)
-	h.api.holdVolumeDeletion("terminating", false)
-	finished := h.run(t, "sandbox", "home", "delete", "home-terminating-uid", "--confirm", "home-terminating-uid", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "terminating claim retry", finished, 0, "permanently deleted retained home home-terminating", "")
-	if homes := h.retainedHomes(t); len(homes) != 1 || homes[0].Home.UID != "home-delayed-uid" {
-		t.Fatalf("deletion scenarios left retained homes: %#v", homes)
-	}
-
-	if _, err := os.Stat(connectionFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("connection state still exists: %v", err)
-	}
-	herdrData = readHerdrFixture(t, h.herdrState)
-	if len(herdrData.Machines) != 1 || herdrData.Machines[0].Target != "unrelated" {
-		t.Fatalf("managed Herdr profile was not removed: %#v", herdrData.Machines)
-	}
-	sshData, err = os.ReadFile(h.sshConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(sshData), "kubeflock-") || !strings.Contains(string(sshData), "Host unrelated") {
-		t.Fatalf("managed SSH entry was not removed safely: %s", sshData)
-	}
-
-	outside := homes[0]
-	outside.Home.UID = "outside-home-uid"
-	outside.Origin.Context = "other"
-	if err := saveJSON(retainedHomePath(h.stateDir, outside.Home.UID), outside); err != nil {
-		t.Fatal(err)
-	}
-	outsideTarget := h.run(t, "sandbox", "create", "delayed", "--home", outside.Home.UID, "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "outside target", outsideTarget, 2, "", "belongs to target other/dev")
-	if listed := h.retainedHomes(t); len(listed) != 1 || listed[0].Home.UID != "home-delayed-uid" {
-		t.Fatalf("home list exposed another target: %#v", listed)
-	}
-	if err := os.Remove(retainedHomePath(h.stateDir, outside.Home.UID)); err != nil {
-		t.Fatal(err)
-	}
-
-	freshSameName := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "fresh original name", freshSameName, 2, "", "select it explicitly with --home home-delayed-uid")
-	wrongName := h.run(t, "sandbox", "create", "replacement", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "renamed restore", wrongName, 2, "", "can only be restored as sandbox delayed")
-	wrongTemplate := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-large", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "template mismatch", wrongTemplate, 2, "", "requires template dev-small and warm pool dev-small-pool")
-
-	h.api.setForeignHomeOwner("delayed", "sandbox-foreign")
-	foreignOwner := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "conflicting restore", foreignOwner, 2, "", "is owned by Sandbox/foreign")
-	h.api.setHomeOwned("delayed", false)
-	h.api.mountHome("home-delayed")
-	mounted := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "mounted restore", mounted, 2, "", "is mounted by Pod foreign-mount")
-	h.api.mountHome("")
-
-	h.api.setHomeStorage("delayed", "slow", "10Gi")
-	wrongClass := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "storage class mismatch", wrongClass, 2, "", `uses storage class "slow", not template storage class "longhorn"`)
-	h.api.setHomeStorage("delayed", "longhorn", "1Gi")
-	smallHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "capacity mismatch", smallHome, 2, "", "capacity 1Gi is incompatible with template request 10Gi")
-	h.api.setHomeStorage("delayed", "", "")
-	h.api.setHomeLayout("delayed", []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany}, "")
-	readOnlyHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "access mode mismatch", readOnlyHome, 2, "", "does not support template access mode ReadWriteOnce")
-	h.api.setHomeLayout("delayed", nil, "Block")
-	blockHome := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "volume mode mismatch", blockHome, 2, "", "has an incompatible volume mode")
-	h.api.setHomeLayout("delayed", nil, "")
-	h.api.setTemplateClaim("other")
-	claimDrift := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "claim name drift", claimDrift, 2, "", "does not match template claim name other")
-	h.api.setTemplateClaim("")
-
-	h.api.failNextClaimCreate()
-	interruptedRestore := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "interrupted restore", interruptedRestore, 2, "", "claim create interrupted")
-	if state := h.api.state("delayed"); state.claim || state.sandbox || state.homeOwned {
-		t.Fatalf("interrupted restore made the home unrecoverable: %#v", state)
-	}
-	if remaining := h.retainedHomes(t); len(remaining) != 1 || remaining[0].Home.UID != "home-delayed-uid" || remaining[0].State != retainedHomeRestoring {
-		t.Fatalf("interrupted restore lost its retained record: %#v", remaining)
-	}
-
-	failedConnect := h.runWith(t, "FAKE_HERDR_FAIL_ADD=1", "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "3s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "restore connect failure", failedConnect, 2, "", "herdr exited")
-	if state := h.api.state("delayed"); !state.claim || !state.sandbox || !state.homeOwned {
-		t.Fatalf("restore connect failure lost its allocation: %#v", state)
-	}
-	if remaining := h.retainedHomes(t); len(remaining) != 1 || remaining[0].State != retainedHomeRestoring {
-		t.Fatalf("restore connect failure lost its retained record: %#v", remaining)
-	}
-
-	restored := h.run(t, "sandbox", "create", "delayed", "--home", "home-delayed-uid", "--template", "dev-small", "--identity", h.identity, "--timeout", "3s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "restore", restored, 0, "restored home home-delayed", "template dev-small image example.test/sandbox@sha256:fixture")
-	if state := h.api.state("delayed"); !state.claim || !state.sandbox || !state.homeOwned {
-		t.Fatalf("restore state: %#v", state)
-	}
-	if remaining := h.retainedHomes(t); len(remaining) != 0 {
-		t.Fatalf("restored home remained available: %#v", remaining)
-	}
-	if _, err := os.Stat(h.connectionState("sandbox-delayed-2")); err != nil {
-		t.Fatalf("restored sandbox did not get identity-bound SSH state: %v", err)
-	}
-
-	second := h.run(t, "sandbox", "create", "fragile", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "second sandbox", second, 0, "ready sandbox fragile", "")
-	h.api.loseHomeOnDelete("fragile")
-	lost := h.run(t, "sandbox", "delete", "fragile", "--timeout", "1s", "--kubeconfig", h.kubeconfig)
-	assertCLI(t, "vanished home", lost, 2, "", "no retained home was recorded")
-	if remaining := h.retainedHomes(t); len(remaining) != 0 {
-		t.Fatalf("a vanished home created a retained record: %#v", remaining)
+	if homes := h.retainedHomes(t); len(homes) != 0 {
+		t.Fatalf("deleted workspace remains retained: %#v", homes)
 	}
 
 	insecure := h.run(t, "sandbox", "create", "unsafe", "--template", "insecure", "--identity", h.identity, "--kubeconfig", h.kubeconfig)

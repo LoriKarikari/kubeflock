@@ -76,11 +76,10 @@
     "capacity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["warmStandbys", "maxActiveSandboxes", "maxRetainedHomes"],
+      "required": ["warmStandbys", "maxActiveSandboxes"],
       "properties": {
         "warmStandbys": { "type": "integer", "minimum": 0 },
-        "maxActiveSandboxes": { "type": "integer", "minimum": 1 },
-        "maxRetainedHomes": { "type": "integer", "minimum": 1 }
+        "maxActiveSandboxes": { "type": "integer", "minimum": 1 }
       }
     }
   }

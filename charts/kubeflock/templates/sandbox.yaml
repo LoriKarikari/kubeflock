@@ -1,9 +1,6 @@
 {{- if gt (int .Values.capacity.warmStandbys) (int .Values.capacity.maxActiveSandboxes) }}
 {{- fail "capacity.warmStandbys cannot exceed capacity.maxActiveSandboxes" }}
 {{- end }}
-{{- if gt (int .Values.capacity.warmStandbys) (int .Values.capacity.maxRetainedHomes) }}
-{{- fail "capacity.warmStandbys cannot exceed capacity.maxRetainedHomes" }}
-{{- end }}
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -58,7 +55,6 @@ spec:
         - name: home
           persistentVolumeClaim:
             claimName: home
-  volumeClaimTemplatesPolicy: Overrides
   volumeClaimTemplates:
     - metadata:
         name: home

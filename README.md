@@ -63,10 +63,6 @@ kubeflock sandbox create NAME --template NAME --identity PATH [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--repository URL` | Clone into `/home/agent/project` |
-| `--branch NAME` | Branch to clone (requires `--repository`) |
-| `--credential ALIAS` | Attach an approved credential (repeatable) |
-| `--home PVC_UID` | Restore a retained home |
 | `--timeout DURATION` | Default `5m` |
 
 ### List
@@ -120,26 +116,7 @@ Spins up a new Pod with the existing home and reconnects.
 ### Delete
 
 ```bash
-kubeflock sandbox delete [NAME] [--timeout 5m]
+kubeflock sandbox delete NAME [--confirm NAME] [--timeout 5m]
 ```
 
-Tears down compute and keeps the PVC. Restore or permanently delete it under [Retained homes](#retained-homes).
-
-### Credentials
-
-```bash
-kubeflock sandbox credential list
-```
-
-Each alias maps to a Secret in the configured namespace. Values are passed over stdin and never touch images, local state, or command arguments. Re-running `create` refreshes rotated credentials. No keys or agents are copied from your workstation.
-
-### Retained homes
-
-```bash
-kubeflock sandbox home list   [--output text|json]
-kubeflock sandbox home delete PVC_UID [--confirm PVC_UID] [--timeout 5m]
-```
-
-Restore a home by passing `--home PVC_UID` to `sandbox create` with the original name.
-
-`home delete` requires the exact PVC UID for confirmation (`--confirm` for scripts).
+Permanently deletes the sandbox and its workspace storage. Interactive use requires typing the sandbox name; scripts can pass the exact name with `--confirm`.

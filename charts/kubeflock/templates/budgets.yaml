@@ -10,12 +10,12 @@ metadata:
 spec:
   hard:
     pods: {{ .Values.capacity.maxActiveSandboxes | quote }}
-    persistentvolumeclaims: {{ .Values.capacity.maxRetainedHomes | quote }}
+    persistentvolumeclaims: {{ .Values.capacity.maxActiveSandboxes | quote }}
     requests.cpu: {{ printf "%dm" (int (mul .Values.sandbox.resources.cpuRequestMillicores .Values.capacity.maxActiveSandboxes)) | quote }}
     limits.cpu: {{ printf "%dm" (int (mul .Values.sandbox.resources.cpuLimitMillicores .Values.capacity.maxActiveSandboxes)) | quote }}
     requests.memory: {{ printf "%dMi" (int (mul .Values.sandbox.resources.memoryRequestMi .Values.capacity.maxActiveSandboxes)) | quote }}
     limits.memory: {{ printf "%dMi" (int (mul .Values.sandbox.resources.memoryLimitMi .Values.capacity.maxActiveSandboxes)) | quote }}
-    requests.storage: {{ printf "%dGi" (int (mul .Values.sandbox.storage.sizeGi .Values.capacity.maxRetainedHomes)) | quote }}
+    requests.storage: {{ printf "%dGi" (int (mul .Values.sandbox.storage.sizeGi .Values.capacity.maxActiveSandboxes)) | quote }}
 ---
 apiVersion: v1
 kind: LimitRange

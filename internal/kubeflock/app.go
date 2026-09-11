@@ -25,7 +25,7 @@ type App struct {
 	Now func() time.Time
 }
 
-const homeDeleteTimeout = 5 * time.Minute
+const workspaceDeleteTimeout = 5 * time.Minute
 
 type exitError struct {
 	code int
@@ -220,22 +220,19 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.connectCommand("reconnect", options),
 		a.lifecycleCommand("stop", modeSuspended, options),
 		a.lifecycleCommand("resume", modeRunning, options),
-		a.retainCommand(options),
-		a.homeCommand(options),
+		a.deleteCommand(options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
 		createActionCommand("create"),
-		createActionCommand("restore"),
-		createActionCommand("delete-home"),
+		createActionCommand("delete"),
 		a.createWizardCommand(options),
-		a.restoreWizardCommand(options),
-		a.deleteHomeWizardCommand(options),
+		a.deleteWizardCommand(options),
 	)
 	return sandbox
 }
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
-	var template, identity, homeUID string
+	var template, identity string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -248,7 +245,7 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createOrRestore(command.Context(), target, args[0], homeUID, createOptions{
+			created, err := createSandbox(command.Context(), target, args[0], createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      timeout,
@@ -258,13 +255,13 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.reportCreated(created, homeUID != "")
+			a.reportCreated(created)
+			return nil
 		},
 	}
 	command.Flags().StringVar(&template, "template", "", "approved SandboxTemplate")
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
-	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
-	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning or checkout timeout")
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning timeout")
 	return command
 }
 
@@ -372,118 +369,40 @@ func (a *App) lifecycleCommand(verb string, mode sandboxOperatingMode, options *
 	return command
 }
 
-func (a *App) retainCommand(options *globalOptions) *cobra.Command {
-	var timeout time.Duration
-	command := &cobra.Command{
-		Use:  "delete [NAME]",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			name := ""
-			if len(args) == 1 {
-				name = args[0]
-			}
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			retained, err := retainSandboxHome(command.Context(), target, name, lifecycleOptions{
-				Timeout: timeout,
-				Poll:    2 * time.Second,
-				Global:  *options,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "deleted sandbox %s/%s; retained home %s (%s)\n", target.Namespace, retained.Name, retained.Home.Name, retained.Home.Capacity)
-			return nil
-		},
-	}
-	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "deletion timeout")
-	return command
-}
-
-func (a *App) homeCommand(options *globalOptions) *cobra.Command {
-	home := &cobra.Command{Use: "home", Args: cobra.NoArgs}
-	output := outputText
-	list := &cobra.Command{
-		Use:  "list",
-		Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			homes, err := listRetainedHomes(options.StateDir)
-			if err != nil {
-				return err
-			}
-			homes = slices.DeleteFunc(homes, func(home RetainedHome) bool {
-				return home.Origin.Context != target.Context || home.Origin.Namespace != target.Namespace
-			})
-			if output == outputJSON {
-				return writeJSON(a.Out, homes)
-			}
-			if len(homes) == 0 {
-				fmt.Fprintln(a.Out, "no retained homes")
-				return nil
-			}
-			for _, retained := range homes {
-				residual := ""
-				if retained.Deletion != nil {
-					residual = fmt.Sprintf(" pv=%s pvUID=%s", retained.Deletion.Name, retained.Deletion.UID)
-				}
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.allocationName(), retained.Template, residual)
-			}
-			return nil
-		},
-	}
-	output.declare(list)
+func (a *App) deleteCommand(options *globalOptions) *cobra.Command {
 	var confirmation string
 	var timeout time.Duration
-	deleteHome := &cobra.Command{
-		Use:  "delete UID",
+	command := &cobra.Command{
+		Use:  "delete NAME",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
 				return err
 			}
-			return a.deleteHome(command.Context(), target, args[0], confirmation, timeout, *options)
+			return a.deleteWorkspace(command.Context(), target, args[0], confirmation, timeout, *options)
 		},
 	}
-	deleteHome.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating the PVC UID")
-	deleteHome.Flags().DurationVar(&timeout, "timeout", homeDeleteTimeout, "storage deletion timeout")
-	home.AddCommand(list, deleteHome)
-	return home
+	command.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating NAME")
+	command.Flags().DurationVar(&timeout, "timeout", workspaceDeleteTimeout, "deletion timeout")
+	return command
 }
 
-func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmation string, timeout time.Duration, options globalOptions) error {
-	selection, err := inspectRetainedHomeDeletion(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options})
-	if err != nil {
-		return err
-	}
-	home := selection.Retained.Home
-	fmt.Fprintf(a.Out, "Permanent storage deletion\n  target: %s/%s\n  home: %s\n  PVC UID: %s\n  capacity: %s\n  storage class: %s\n", target.Context, target.Namespace, home.Name, home.UID, home.Capacity, home.StorageClass)
-	if selection.Volume != nil {
-		fmt.Fprintf(a.Out, "  persistent volume: %s\n", selection.Volume.Name)
-	}
-	fmt.Fprint(a.Out, "This deletes project files, history, settings, and credentials saved in this home.\n")
+func (a *App) deleteWorkspace(ctx context.Context, target KubeTarget, name, confirmation string, timeout time.Duration, options globalOptions) error {
+	fmt.Fprintf(a.Out, "Permanently delete sandbox %s/%s and its workspace data.\n", target.Namespace, name)
 	if confirmation == "" {
-		fmt.Fprintf(a.Out, "Type the PVC UID %s to confirm: ", uid)
+		fmt.Fprintf(a.Out, "Type the sandbox name %s to confirm: ", name)
 		if _, err := fmt.Fscanln(a.In, &confirmation); err != nil {
 			confirmation = ""
 		}
 	}
-	if confirmation == "" {
-		return errors.New("confirmation was empty; no storage was deleted")
+	if confirmation != name {
+		return errors.New("confirmation did not match the sandbox name; nothing was deleted")
 	}
-	if confirmation != uid {
-		return fmt.Errorf("confirmation %q does not match PVC UID %s; no storage was deleted", confirmation, uid)
-	}
-	if err := deleteRetainedHome(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
+	if err := permanentlyDeleteWorkspace(ctx, target, name, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Out, "permanently deleted retained home %s (PVC UID %s)\n", home.Name, home.UID)
+	fmt.Fprintf(a.Out, "permanently deleted sandbox %s/%s and its workspace data\n", target.Namespace, name)
 	return nil
 }
 
@@ -552,18 +471,6 @@ func createActionCommand(pane string) *cobra.Command {
 	}
 }
 
-func (a *App) createOrRestore(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (createdSandbox, error) {
-	if homeUID == "" {
-		return createSandbox(ctx, target, name, nil, options)
-	}
-	selection, err := inspectRestore(ctx, target, name, homeUID, options)
-	if err != nil {
-		return createdSandbox{}, err
-	}
-	fmt.Fprintf(a.Err, "restoring home %s (UID %s) as %s/%s with template %s image %s\n", selection.Retained.Home.Name, selection.Retained.Home.UID, target.Namespace, name, selection.Approved.Name, selection.Approved.Image)
-	return createSandbox(ctx, target, name, &selection, options)
-}
-
 func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:    "create-wizard",
@@ -602,7 +509,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil
 			}
-			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
+			created, err := createSandbox(command.Context(), target, name, createOptions{
 				Template:     template,
 				IdentityFile: identity,
 				Timeout:      5 * time.Minute,
@@ -612,86 +519,32 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.reportCreated(created, false)
-		},
-	}
-}
-
-func (a *App) reportCreated(created createdSandbox, restored bool) error {
-	if restored {
-		fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
-	} else {
-		fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
-	}
-	return nil
-}
-
-func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:    "restore-wizard",
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			var homeUID, name, template, identity, confirmed string
-			fmt.Fprint(a.Out, "Retained home UID: ")
-			if _, err := fmt.Fscanln(a.In, &homeUID); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "Replacement sandbox name: ")
-			if _, err := fmt.Fscanln(a.In, &name); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "Approved template: ")
-			if _, err := fmt.Fscanln(a.In, &template); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "SSH identity file: ")
-			if _, err := fmt.Fscanln(a.In, &identity); err != nil {
-				return err
-			}
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			create := createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options}
-			selection, err := inspectRestore(command.Context(), target, name, homeUID, create)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "Restore %s as %s with template %s image %s? [y/N] ", selection.Retained.Home.Name, name, selection.Approved.Name, selection.Approved.Image)
-			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
-				return err
-			}
-			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
-				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
-				return nil
-			}
-			created, err := createSandbox(command.Context(), target, name, &selection, create)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
+			a.reportCreated(created)
 			return nil
 		},
 	}
 }
 
-func (a *App) deleteHomeWizardCommand(options *globalOptions) *cobra.Command {
+func (a *App) reportCreated(created createdSandbox) {
+	fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+}
+
+func (a *App) deleteWizardCommand(options *globalOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:    "delete-home-wizard",
+		Use:    "delete-wizard",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			var uid string
-			fmt.Fprint(a.Out, "Retained home PVC UID: ")
-			if _, err := fmt.Fscanln(a.In, &uid); err != nil {
+			var name string
+			fmt.Fprint(a.Out, "Sandbox name: ")
+			if _, err := fmt.Fscanln(a.In, &name); err != nil {
 				return err
 			}
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
 				return err
 			}
-			return a.deleteHome(command.Context(), target, uid, "", homeDeleteTimeout, *options)
+			return a.deleteWorkspace(command.Context(), target, name, "", workspaceDeleteTimeout, *options)
 		},
 	}
 }

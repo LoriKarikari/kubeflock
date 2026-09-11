@@ -105,7 +105,7 @@ func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 	}
 }
 
-func TestStorageLockSerializesRestoreAndDeletion(t *testing.T) {
+func TestStorageLockSerializesDeletion(t *testing.T) {
 	target := KubeTarget{Context: "homelab", Namespace: "developer"}
 	dir := t.TempDir()
 	first, err := acquireSandboxLock(target, "sandbox", dir)

@@ -60,14 +60,14 @@ func TestClaimResponsesRequireIdentity(t *testing.T) {
 			if _, err := client.getClaim(t.Context(), "dev", "named"); err == nil || !strings.Contains(err.Error(), "invalid SandboxClaim") {
 				t.Fatalf("lookup with incomplete identity = %v", err)
 			}
-			if _, err := client.createClaim(t.Context(), KubeTarget{Namespace: "dev"}, "named", "dev-pool", nil); err == nil || !strings.Contains(err.Error(), "invalid SandboxClaim") {
+			if _, err := client.createClaim(t.Context(), KubeTarget{Namespace: "dev"}, "named", "dev-pool"); err == nil || !strings.Contains(err.Error(), "invalid SandboxClaim") {
 				t.Fatalf("creation with incomplete identity = %v", err)
 			}
 		})
 	}
 }
 
-func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
+func TestCreateClaimPreservesIdentity(t *testing.T) {
 	clientset := extensionsfake.NewSimpleClientset()
 	clientset.PrependReactor("create", "sandboxclaims", func(action ktesting.Action) (bool, runtime.Object, error) {
 		create, ok := action.(ktesting.CreateActionImpl)
@@ -86,37 +86,15 @@ func TestCreateClaimPreservesIdentityAndHomeOverride(t *testing.T) {
 		return false, nil, nil
 	})
 	client := kubeClient{extensions: clientset.ExtensionsV1beta1()}
-	template := gateTemplate()
-	template.Spec.VolumeClaimTemplates[0].Labels = map[string]string{"template-label": "value"}
-	template.Spec.VolumeClaimTemplates[0].Annotations = map[string]string{"template-annotation": "value"}
-	approved, err := validateTemplate(template, "dev-pool")
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := approved.Home
-	claim, err := client.createClaim(context.Background(), KubeTarget{Namespace: "dev"}, "named", "dev-pool", &home)
+	claim, err := client.createClaim(context.Background(), KubeTarget{Namespace: "dev"}, "named", "dev-pool")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if claim.Name != "named" || claim.Namespace != "dev" || claim.Labels[managedByLabel] != managedByValue {
 		t.Fatalf("claim identity = %s/%s labels %v", claim.Namespace, claim.Name, claim.Labels)
 	}
-	if claim.Spec.WarmPoolRef.Name != "dev-pool" || len(claim.Spec.VolumeClaimTemplates) != 1 {
+	if claim.Spec.WarmPoolRef.Name != "dev-pool" || len(claim.Spec.VolumeClaimTemplates) != 0 {
 		t.Fatalf("claim spec = %#v", claim.Spec)
-	}
-	override := claim.Spec.VolumeClaimTemplates[0]
-	if override.Name != home.Name || override.Spec.StorageClassName == nil || *override.Spec.StorageClassName != "longhorn" || override.Spec.Resources.Requests.Storage().Cmp(resource.MustParse("10Gi")) != 0 {
-		t.Fatalf("home override = %#v", override)
-	}
-	if len(override.Labels) != 0 || len(override.Annotations) != 0 {
-		t.Fatalf("home override copied template metadata: %#v", override)
-	}
-	claim, err = client.createClaim(context.Background(), KubeTarget{Namespace: "dev"}, "without-home", "dev-pool", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(claim.Spec.VolumeClaimTemplates) != 0 {
-		t.Fatalf("unexpected home override: %#v", claim.Spec.VolumeClaimTemplates)
 	}
 }
 

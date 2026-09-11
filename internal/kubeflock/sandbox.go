@@ -9,10 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -83,16 +81,6 @@ type createdSandbox struct {
 	WarmPool string
 	SSHAlias string
 	Home     PersistentHome
-}
-
-type restoreSelection struct {
-	Retained RetainedHome
-	Approved approvedTemplate
-}
-
-type homeDeletionSelection struct {
-	Retained RetainedHome
-	Volume   *PersistentVolume
 }
 
 func selectManaged(target KubeTarget, name, stateDir string) (*ManagedSandbox, error) {
@@ -213,18 +201,7 @@ func verifyClaim(claim *extensionsapi.SandboxClaim, target KubeTarget, name, war
 	return nil
 }
 
-func verifyClaimHome(claim *extensionsapi.SandboxClaim, home *sandboxapi.PersistentVolumeClaimTemplate) error {
-	if home == nil {
-		return nil
-	}
-	claims := claim.Spec.VolumeClaimTemplates
-	if len(claims) == 1 && claims[0].Name == home.Name && reflect.DeepEqual(claims[0].Spec, home.Spec) {
-		return nil
-	}
-	return fmt.Errorf("SandboxClaim %s/%s uses unexpected home templates", claim.Namespace, claim.Name)
-}
-
-func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string, home *sandboxapi.PersistentVolumeClaimTemplate) (*extensionsapi.SandboxClaim, error) {
+func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, name, warmPool string) (*extensionsapi.SandboxClaim, error) {
 	claim, err := client.getClaim(ctx, target.Namespace, name)
 	if err != nil {
 		return nil, err
@@ -232,7 +209,7 @@ func obtainClaim(ctx context.Context, client *kubeClient, target KubeTarget, nam
 	if claim != nil {
 		return claim, nil
 	}
-	claim, createErr := client.createClaim(ctx, target, name, warmPool, home)
+	claim, createErr := client.createClaim(ctx, target, name, warmPool)
 	if createErr == nil {
 		return claim, nil
 	}
@@ -279,59 +256,28 @@ func waitForReady(ctx context.Context, client *kubeClient, target KubeTarget, na
 	return latest.SandboxName, nil
 }
 
-func createSandbox(ctx context.Context, target KubeTarget, name string, restore *restoreSelection, options createOptions) (createdSandbox, error) {
+func createSandbox(ctx context.Context, target KubeTarget, name string, options createOptions) (createdSandbox, error) {
 	identity, creationLock, err := prepareCreation(target, name, options)
 	if err != nil {
 		return createdSandbox{}, err
 	}
 	defer func() { _ = creationLock.Unlock() }()
-	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	retained, err := retainedHomeForOrigin(target, name, options.Global.StateDir)
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	var retained *RetainedHome
-	if restore == nil {
-		found, err := retainedHomeForOrigin(target, name, options.Global.StateDir)
-		if err != nil {
-			return createdSandbox{}, err
-		}
-		if found != nil {
-			return createdSandbox{}, fmt.Errorf("retained home %s occupies the storage name for sandbox %s; select it explicitly with --home %s or choose a new sandbox name", found.Home.Name, name, found.Home.UID)
-		}
-	} else {
-		found, err := selectRetainedHome(target, restore.Retained.Home.UID, options.Global.StateDir)
-		if err != nil {
-			return createdSandbox{}, err
-		}
-		if !reflect.DeepEqual(*found, restore.Retained) {
-			return createdSandbox{}, errors.New("selected retained home changed before attachment; review it and retry")
-		}
-		retained = found
+	if retained != nil {
+		return createdSandbox{}, fmt.Errorf("retained workspace data for sandbox %s must be permanently deleted before reusing the name", name)
+	}
+	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
+	if err != nil {
+		return createdSandbox{}, err
 	}
 	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	claimName := name
-	var claimHome *sandboxapi.PersistentVolumeClaimTemplate
-	if restore != nil {
-		if approved.ResourceVersion != restore.Approved.ResourceVersion || approved.Image != restore.Approved.Image {
-			return createdSandbox{}, errors.New("selected SandboxTemplate changed before attachment; review it and retry")
-		}
-		claimName, claimHome = retained.Origin.Name, &approved.Home
-		allowedSandboxUID, err := validateRestoreResources(ctx, client, target, name, claimName, identity, *retained, approved, options.Global.StateDir)
-		if err != nil {
-			return createdSandbox{}, err
-		}
-		if err := client.authorizeHomeAdoption(ctx, target, retained.Home, allowedSandboxUID); err != nil {
-			return createdSandbox{}, fmt.Errorf("authorize retained home adoption: %w", err)
-		}
-		retained.State = retainedHomeRestoring
-		if err := saveJSON(retainedHomePath(options.Global.StateDir, retained.Home.UID), retained); err != nil {
-			return createdSandbox{}, err
-		}
-	}
-	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, claimName, identity, approved, claimHome, options.Global.StateDir)
+	managed, claim, err := ensureManagedSandbox(ctx, client, target, name, identity, approved, options.Global.StateDir)
 	if err != nil {
 		return createdSandbox{}, err
 	}
@@ -351,9 +297,6 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	if retained != nil && home.UID != retained.Home.UID {
-		return createdSandbox{}, fmt.Errorf("sandbox %s attached unexpected home UID %s", name, home.UID)
-	}
 	if err := saveManagedBinding(managed, identity, resolved.Identity, home, options.Global.StateDir); err != nil {
 		return createdSandbox{}, err
 	}
@@ -367,13 +310,7 @@ func createSandbox(ctx context.Context, target KubeTarget, name string, restore 
 	if err != nil {
 		return createdSandbox{}, err
 	}
-	if retained != nil {
-		if err := os.Remove(retainedHomePath(options.Global.StateDir, retained.Home.UID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return createdSandbox{}, err
-		}
-	}
-	created := createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}
-	return created, nil
+	return createdSandbox{Name: name, Template: approved.Name, WarmPool: approved.WarmPool, Home: home, SSHAlias: connection.SSH.Alias}, nil
 }
 
 func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox SandboxIdentity, home PersistentHome, stateDir string) error {
@@ -391,7 +328,7 @@ func saveManagedBinding(managed *ManagedSandbox, identity string, sandbox Sandbo
 	return saveJSON(managedSandboxPath(stateDir, managed.Claim.UID), managed)
 }
 
-func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, claimName, identity string, approved approvedTemplate, home *sandboxapi.PersistentVolumeClaimTemplate, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
+func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTarget, name, identity string, approved approvedTemplate, stateDir string) (*ManagedSandbox, *extensionsapi.SandboxClaim, error) {
 	saved, err := selectManaged(target, name, stateDir)
 	if err != nil {
 		return nil, nil, err
@@ -402,14 +339,11 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 	if err := verifySavedIdentity(target, stateDir, identity, saved); err != nil {
 		return nil, nil, err
 	}
-	claim, err := obtainClaim(ctx, client, target, claimName, approved.WarmPool, home)
+	claim, err := obtainClaim(ctx, client, target, name, approved.WarmPool)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := verifyClaim(claim, target, claimName, approved.WarmPool, saved); err != nil {
-		return nil, nil, err
-	}
-	if err := verifyClaimHome(claim, home); err != nil {
+	if err := verifyClaim(claim, target, name, approved.WarmPool, saved); err != nil {
 		return nil, nil, err
 	}
 	if saved != nil {
@@ -422,7 +356,7 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 		Claim: SandboxIdentity{
 			Context:   target.Context,
 			Namespace: target.Namespace,
-			Name:      claimName,
+			Name:      name,
 			UID:       string(claim.UID),
 		},
 		Template:     approved.Name,
@@ -433,86 +367,6 @@ func ensureManagedSandbox(ctx context.Context, client *kubeClient, target KubeTa
 		return nil, nil, err
 	}
 	return managed, claim, nil
-}
-
-func inspectRestore(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (restoreSelection, error) {
-	identity, err := validateCreation(name, options)
-	if err != nil {
-		return restoreSelection{}, err
-	}
-	retained, err := selectRetainedHome(target, homeUID, options.Global.StateDir)
-	if err != nil {
-		return restoreSelection{}, err
-	}
-	if retained.State == retainedHomeDeleting {
-		return restoreSelection{}, fmt.Errorf("retained home %s is being permanently deleted", retained.Home.Name)
-	}
-	if name != retained.allocationName() {
-		return restoreSelection{}, fmt.Errorf("retained home %s can only be restored as sandbox %s", retained.Home.Name, retained.allocationName())
-	}
-	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
-	if err != nil {
-		return restoreSelection{}, err
-	}
-	approved, err := client.resolveApprovedTemplate(ctx, target.Namespace, options.Template)
-	if err != nil {
-		return restoreSelection{}, err
-	}
-	if retained.Template != approved.Name || retained.WarmPool != approved.WarmPool {
-		return restoreSelection{}, fmt.Errorf("retained home %s requires template %s and warm pool %s", retained.Home.Name, retained.Template, retained.WarmPool)
-	}
-	if !approved.HomeOverrides {
-		return restoreSelection{}, fmt.Errorf("SandboxTemplate %s does not permit retained home restoration", approved.Name)
-	}
-	if _, err := validateRestoreResources(ctx, client, target, name, retained.Origin.Name, identity, *retained, approved, options.Global.StateDir); err != nil {
-		return restoreSelection{}, err
-	}
-	return restoreSelection{Retained: *retained, Approved: approved}, nil
-}
-
-func validateRestoreResources(ctx context.Context, client *kubeClient, target KubeTarget, name, resourceName, identity string, retained RetainedHome, approved approvedTemplate, stateDir string) (string, error) {
-	saved, err := selectManaged(target, name, stateDir)
-	if err != nil {
-		return "", err
-	}
-	if saved != nil {
-		if saved.Template != approved.Name || saved.WarmPool != approved.WarmPool {
-			return "", fmt.Errorf("saved sandbox %s/%s uses different restore settings", target.Namespace, name)
-		}
-		if err := verifySavedIdentity(target, stateDir, identity, saved); err != nil {
-			return "", err
-		}
-		if saved.Home != nil && saved.Home.UID != retained.Home.UID {
-			return "", fmt.Errorf("saved sandbox %s/%s uses a different home", target.Namespace, name)
-		}
-	}
-	claim, err := client.getClaim(ctx, target.Namespace, resourceName)
-	if err != nil {
-		return "", err
-	}
-	if claim != nil && (saved == nil || string(claim.UID) != saved.Claim.UID) {
-		return "", fmt.Errorf("SandboxClaim %s/%s belongs to another allocation", target.Namespace, resourceName)
-	}
-	sandbox, err := client.getSandboxIfExists(ctx, target, resourceName, "")
-	if err != nil {
-		return "", err
-	}
-	allowedSandboxUID := ""
-	if sandbox != nil {
-		switch {
-		case saved == nil:
-			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
-		case saved.Sandbox != nil && saved.Sandbox.UID != string(sandbox.UID):
-			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
-		case saved.Sandbox == nil && (claim == nil || !controlledBy(sandbox.OwnerReferences, claim.UID)):
-			return "", fmt.Errorf("sandbox %s/%s belongs to another allocation", target.Namespace, name)
-		}
-		allowedSandboxUID = string(sandbox.UID)
-	}
-	if err := client.verifyRestorableHome(ctx, target, resourceName, retained.Home, approved.Home, allowedSandboxUID); err != nil {
-		return "", err
-	}
-	return allowedSandboxUID, nil
 }
 
 func validateCreation(name string, options createOptions) (string, error) {
@@ -554,26 +408,31 @@ func acquireSandboxLock(target KubeTarget, name, stateDir string) (*flock.Flock,
 	return lock, nil
 }
 
-func inspectRetainedHomeDeletion(ctx context.Context, target KubeTarget, uid string, options lifecycleOptions) (homeDeletionSelection, error) {
-	retained, err := selectRetainedHome(target, uid, options.Global.StateDir)
+func permanentlyDeleteWorkspace(ctx context.Context, target KubeTarget, name string, options lifecycleOptions) error {
+	managed, err := selectManaged(target, name, options.Global.StateDir)
 	if err != nil {
-		return homeDeletionSelection{}, err
+		return err
 	}
-	if retained.State == retainedHomeRestoring {
-		return homeDeletionSelection{}, fmt.Errorf("retained home %s is being restored", retained.Home.Name)
+	var retained *RetainedHome
+	if managed != nil {
+		created, err := retainSandboxHome(ctx, target, name, options)
+		if err != nil {
+			return err
+		}
+		retained, err = selectRetainedHome(target, created.Home.UID, options.Global.StateDir)
+		if err != nil {
+			return err
+		}
+	} else {
+		retained, err = retainedHomeForOrigin(target, name, options.Global.StateDir)
+		if err != nil {
+			return err
+		}
+		if retained == nil {
+			return fmt.Errorf("no managed sandbox or legacy retained workspace is named %s", name)
+		}
 	}
-	if retained.State == retainedHomeDeleting {
-		return homeDeletionSelection{Retained: *retained, Volume: retained.Deletion}, nil
-	}
-	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
-	if err != nil {
-		return homeDeletionSelection{}, err
-	}
-	volume, err := client.inspectHomeDeletion(ctx, target, *retained)
-	if err != nil {
-		return homeDeletionSelection{}, err
-	}
-	return homeDeletionSelection{Retained: *retained, Volume: volume}, nil
+	return deleteRetainedHome(ctx, target, retained.Home.UID, options)
 }
 
 func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, options lifecycleOptions) error {
@@ -589,9 +448,6 @@ func deleteRetainedHome(ctx context.Context, target KubeTarget, uid string, opti
 	retained, err = selectRetainedHome(target, uid, options.Global.StateDir)
 	if err != nil {
 		return err
-	}
-	if retained.State == retainedHomeRestoring {
-		return fmt.Errorf("retained home %s is being restored", retained.Home.Name)
 	}
 	client, err := newKubeClient(ctx, target, options.Global.Kubeconfig)
 	if err != nil {
