@@ -365,16 +365,6 @@ func controlledBy(owners []metav1.OwnerReference, uid types.UID) bool {
 	})
 }
 
-func foreignOwner(owners []metav1.OwnerReference, allowed types.UID) (metav1.OwnerReference, bool) {
-	if len(owners) == 0 {
-		return metav1.OwnerReference{}, false
-	}
-	if allowed != "" && len(owners) == 1 && controlledBy(owners, allowed) {
-		return metav1.OwnerReference{}, false
-	}
-	return owners[0], true
-}
-
 func findSSHPort(ports []corev1.ContainerPort) int32 {
 	for _, port := range ports {
 		if port.Name == "ssh" && port.ContainerPort > 0 && port.ContainerPort <= 65535 {

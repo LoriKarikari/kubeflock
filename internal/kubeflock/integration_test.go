@@ -91,52 +91,10 @@ func (f *fixtureAPI) ensureSandbox(name string) *fixtureSandbox {
 	return f.sandboxes[name]
 }
 
-func (f *fixtureAPI) createCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.creates
-}
-
 func (f *fixtureAPI) apiTrace() ([]string, []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.Clone(f.methods), slices.Clone(f.auth)
-}
-
-func (f *fixtureAPI) deletePaths() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.paths)
-}
-
-func (f *fixtureAPI) holdLifecycle(hold bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.holdMode = hold
-}
-
-func (f *fixtureAPI) failNextDelete(resource string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failDelete[resource]++
-}
-
-func (f *fixtureAPI) failNextHomePatch() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failHomePatch++
-}
-
-func (f *fixtureAPI) failNextClaimCreate() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failClaimCreate++
-}
-
-func (f *fixtureAPI) loseHomeOnDelete(name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureSandbox(name).loseHomeOnDelete = true
 }
 
 func (f *fixtureAPI) setHomeOwned(name string, owned bool) {
@@ -144,97 +102,6 @@ func (f *fixtureAPI) setHomeOwned(name string, owned bool) {
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
 	s.homeOwned, s.homeOwner = owned, ""
-}
-
-func (f *fixtureAPI) setClaim(name string, present bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	if !present {
-		s.claim = nil
-		return
-	}
-	claim := claimFixture(name, "dev-small-pool")
-	s.claim = &claim
-}
-
-func (f *fixtureAPI) setForeignHomeOwner(name, owner string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	s.homeOwned, s.homeOwner = false, owner
-}
-
-func (f *fixtureAPI) mountHome(name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.mountedHome = name
-}
-
-func (f *fixtureAPI) setHomeStorage(name, storageClass, capacity string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	s.homeStorageClass, s.homeCapacity = storageClass, capacity
-}
-
-func (f *fixtureAPI) setHomeLayout(name string, accessModes []corev1.PersistentVolumeAccessMode, volumeMode corev1.PersistentVolumeMode) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	s.homeAccessModes, s.homeVolumeMode = accessModes, volumeMode
-}
-
-func (f *fixtureAPI) setHomeUID(name, uid string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureSandbox(name).homeUID = uid
-}
-
-func (f *fixtureAPI) setVolumePolicy(name string, policy corev1.PersistentVolumeReclaimPolicy) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureSandbox(name).volumePolicy = policy
-}
-
-func (f *fixtureAPI) holdVolumeDeletion(name string, hold bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	s.holdVolume = hold
-	if !hold && s.homeMissing && s.volumePolicy != corev1.PersistentVolumeReclaimRetain {
-		s.volumeMissing = true
-	}
-}
-
-func (f *fixtureAPI) setVolumeMissing(name string, missing bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureSandbox(name).volumeMissing = missing
-}
-
-func (f *fixtureAPI) holdHomeDeletion(name string, hold bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureSandbox(name).holdDelete = hold
-}
-
-func (f *fixtureAPI) setTemplateClaim(name string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.templateClaim = name
-}
-
-func (f *fixtureAPI) adoptedHomes() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.reAdoptions
-}
-
-func (f *fixtureAPI) claimReads(name string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.ensureSandbox(name).reads
 }
 
 func (f *fixtureAPI) hasClaim(name string) bool {
@@ -265,17 +132,6 @@ func (f *fixtureAPI) state(name string) fixtureState {
 	defer f.mu.Unlock()
 	s := f.ensureSandbox(name)
 	return fixtureState{claim: s.claim != nil, sandbox: s.present, homeOwned: s.homeOwned, homeMissing: s.homeMissing, volumeMissing: s.volumeMissing}
-}
-
-func (f *fixtureAPI) lifecycleSnapshot(name string) (sandboxOperatingMode, string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s := f.ensureSandbox(name)
-	podUID := ""
-	if !f.holdMode && s.mode == modeRunning || f.holdMode && s.mode == modeSuspended {
-		podUID = fmt.Sprintf("pod-%s-%d", name, s.generation)
-	}
-	return s.mode, podUID
 }
 
 func (f *fixtureAPI) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -979,11 +835,6 @@ func (h harness) runWith(t *testing.T, extraEnv string, args ...string) result {
 	return h.invoke(t, h.binary, append(slices.Clone(h.env), extraEnv), "", args)
 }
 
-func (h harness) runProcess(t *testing.T, binary, input string, args ...string) result {
-	t.Helper()
-	return h.invoke(t, binary, h.env, input, args)
-}
-
 func (h harness) invoke(t *testing.T, binary string, env []string, input string, args []string) result {
 	t.Helper()
 	command := exec.Command(binary, args...)
@@ -1003,10 +854,6 @@ func (h harness) invoke(t *testing.T, binary string, env []string, input string,
 
 func (h harness) connectionState(sandboxUID string) string {
 	return filepath.Join(h.stateDir, sandboxUID+".json")
-}
-
-func (h harness) proxyScript(sandboxUID string) string {
-	return filepath.Join(filepath.Dir(h.sshConfig), sandboxUID+"-proxy")
 }
 
 func (h harness) retainedHomes(t *testing.T) []RetainedHome {
