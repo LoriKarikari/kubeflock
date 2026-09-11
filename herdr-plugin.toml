@@ -77,7 +77,7 @@ id = "create"
 title = "Create Kubeflock sandbox"
 placement = "popup"
 width = "80%"
-height = 12
+height = "85%"
 command = ["bin/kubeflock", "sandbox", "create-wizard"]
 
 [[panes]]

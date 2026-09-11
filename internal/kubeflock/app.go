@@ -1,7 +1,6 @@
 package kubeflock
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"encoding/json/jsontext"
@@ -477,50 +476,7 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			scanner := bufio.NewScanner(a.In)
-			prompt := func(label string) (string, error) {
-				fmt.Fprint(a.Out, label)
-				if !scanner.Scan() {
-					return "", cmp.Or(scanner.Err(), io.EOF)
-				}
-				return strings.TrimSpace(scanner.Text()), nil
-			}
-			name, err := prompt("Sandbox name: ")
-			if err != nil {
-				return err
-			}
-			template, err := prompt("Approved template: ")
-			if err != nil {
-				return err
-			}
-			identity, err := prompt("SSH identity file: ")
-			if err != nil {
-				return err
-			}
-			confirmed, err := prompt(fmt.Sprintf("Create %s from %s with persistent home storage? [y/N] ", name, template))
-			if err != nil {
-				return err
-			}
-			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
-				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
-				return nil
-			}
-			created, err := createSandbox(command.Context(), target, name, createOptions{
-				Template:     template,
-				IdentityFile: identity,
-				Timeout:      5 * time.Minute,
-				Poll:         2 * time.Second,
-				Global:       *options,
-			})
-			if err != nil {
-				return err
-			}
-			a.reportCreated(created)
-			return nil
+			return a.createPopup(command.Context(), *options)
 		},
 	}
 }
