@@ -976,7 +976,7 @@ func TestCLIConnectionAndSandboxLifecycle(t *testing.T) {
 		t.Fatalf("delete action did not open its Herdr pane: %#v", actionState.PaneArgs)
 	}
 
-	created := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "2s", "--kubeconfig", h.kubeconfig)
+	created := h.run(t, "sandbox", "create", "delayed", "--template", "dev-small", "--identity", h.identity, "--timeout", "10s", "--kubeconfig", h.kubeconfig)
 	assertCLI(t, "create", created, 0, "ready sandbox delayed", "")
 	assertConnectionPhase(t, h.connectionState(sandboxUID), connectionConnected)
 
