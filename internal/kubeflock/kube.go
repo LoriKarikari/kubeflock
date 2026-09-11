@@ -1,6 +1,7 @@
 package kubeflock
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/v2"
@@ -14,82 +15,35 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/dynamic"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/ptr"
+	sandboxapi "sigs.k8s.io/agent-sandbox/api/v1beta1"
+	sandboxclient "sigs.k8s.io/agent-sandbox/clients/k8s/clientset/versioned/typed/api/v1beta1"
+	extensionsclient "sigs.k8s.io/agent-sandbox/clients/k8s/extensions/clientset/versioned/typed/api/v1beta1"
+	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
-const (
-	sandboxNameHashLabel  = "agents.x-k8s.io/sandbox-name-hash"
-	sandboxAdoptableLabel = "agents.x-k8s.io/adoptable"
-)
-
-var (
-	sandboxResource  = schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1beta1", Resource: "sandboxes"}
-	claimResource    = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxclaims"}
-	templateResource = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxtemplates"}
-	poolResource     = schema.GroupVersionResource{Group: extensionsAPIGroup, Version: "v1beta1", Resource: "sandboxwarmpools"}
-)
+const sandboxNameHashLabel = "agents.x-k8s.io/sandbox-name-hash"
 
 type kubeClient struct {
-	dynamic dynamic.Interface
-	core    coreclient.CoreV1Interface
+	sandboxes  sandboxclient.AgentsV1beta1Interface
+	extensions extensionsclient.ExtensionsV1beta1Interface
+	core       coreclient.CoreV1Interface
 }
 
-type sandboxClaim struct {
-	Metadata metav1.ObjectMeta `json:"metadata"`
-	Spec     struct {
-		WarmPoolRef          corev1.LocalObjectReference    `json:"warmPoolRef"`
-		VolumeClaimTemplates []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
-	} `json:"spec"`
-	Status struct {
-		Conditions []metav1.Condition          `json:"conditions"`
-		Sandbox    corev1.LocalObjectReference `json:"sandbox"`
-	} `json:"status"`
-}
-
-type sandboxObject struct {
-	Metadata metav1.ObjectMeta `json:"metadata"`
-	Spec     struct {
-		OperatingMode sandboxOperatingMode `json:"operatingMode"`
-	} `json:"spec"`
-	Status struct {
-		Selector   string             `json:"selector"`
-		Conditions []metav1.Condition `json:"conditions"`
-	} `json:"status"`
-}
-
-type sandboxTemplate struct {
-	Metadata metav1.ObjectMeta `json:"metadata"`
-	Spec     struct {
-		NetworkPolicyManagement    string                         `json:"networkPolicyManagement"`
-		PodTemplate                corev1.PodTemplateSpec         `json:"podTemplate"`
-		VolumeClaimTemplatesPolicy string                         `json:"volumeClaimTemplatesPolicy"`
-		VolumeClaimTemplates       []corev1.PersistentVolumeClaim `json:"volumeClaimTemplates"`
-	} `json:"spec"`
-}
-
-type sandboxPool struct {
-	Metadata metav1.ObjectMeta `json:"metadata"`
-	Spec     struct {
-		Replicas           *int32                      `json:"replicas"`
-		SandboxTemplateRef corev1.LocalObjectReference `json:"sandboxTemplateRef"`
-	} `json:"spec"`
+type jsonPatchOperation struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value,omitzero"`
 }
 
 type approvedTemplate struct {
-	Name            string
-	WarmPool        string
-	Image           string
-	ResourceVersion string
-	Home            corev1.PersistentVolumeClaim
-	HomeOverrides   bool
+	Name     string
+	WarmPool string
+	Home     sandboxapi.PersistentVolumeClaimTemplate
 }
 
 type resolvedSandbox struct {
@@ -133,7 +87,11 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	if len(execCert) != 0 {
 		config.CertData, config.KeyData = execCert, execKey
 	}
-	dynamicClient, err := dynamic.NewForConfig(config)
+	sandboxClient, err := sandboxclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	extensionsClient, err := extensionsclient.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +99,7 @@ func newKubeClient(ctx context.Context, target KubeTarget, kubeconfig string) (*
 	if err != nil {
 		return nil, err
 	}
-	return &kubeClient{dynamic: dynamicClient, core: coreClient}, nil
+	return &kubeClient{sandboxes: sandboxClient, extensions: extensionsClient, core: coreClient}, nil
 }
 
 type execCredentialInfo struct {
@@ -234,90 +192,54 @@ func execCredentialInfoFor(execConfig *clientcmdapi.ExecConfig, cluster *clientc
 	return json.Marshal(info)
 }
 
-func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*sandboxClaim, error) {
-	list, err := k.dynamic.Resource(claimResource).Namespace(namespace).List(ctx, metav1.ListOptions{FieldSelector: "metadata.name=" + name})
-	if err != nil {
-		return nil, err
-	}
-	if len(list.Items) > 1 {
-		return nil, fmt.Errorf("multiple SandboxClaims named %s", name)
-	}
-	if len(list.Items) == 0 {
+func (k *kubeClient) getClaim(ctx context.Context, namespace, name string) (*extensionsapi.SandboxClaim, error) {
+	claim, err := k.extensions.SandboxClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
-	var claim sandboxClaim
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[0].Object, &claim); err != nil {
-		return nil, err
-	}
-	if claim.Metadata.Name == "" || claim.Metadata.UID == "" || claim.Spec.WarmPoolRef.Name == "" {
-		return nil, errors.New("invalid SandboxClaim returned by Kubernetes")
-	}
-	return &claim, nil
-}
-
-func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string, home *corev1.PersistentVolumeClaim) (*sandboxClaim, error) {
-	spec := map[string]any{"warmPoolRef": map[string]any{"name": warmPool}}
-	if home != nil {
-		claimSpec, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&home.Spec)
-		if err != nil {
-			return nil, err
-		}
-		spec["volumeClaimTemplates"] = []any{map[string]any{"metadata": map[string]any{"name": home.Name}, "spec": claimSpec}}
-	}
-	object := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "extensions.agents.x-k8s.io/v1beta1", "kind": "SandboxClaim",
-		"metadata": map[string]any{"name": name, "namespace": target.Namespace, "labels": map[string]any{managedByLabel: managedByValue}},
-		"spec":     spec,
-	}}
-	created, err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Create(
-		ctx,
-		object,
-		metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"},
-	)
 	if err != nil {
 		return nil, err
 	}
-	var claim sandboxClaim
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(created.Object, &claim); err != nil {
+	if err := validateClaimIdentity(claim); err != nil {
 		return nil, err
 	}
-	return &claim, nil
+	return claim, nil
 }
 
-func (k *kubeClient) listClaims(ctx context.Context, namespace string) ([]sandboxClaim, error) {
-	list, err := k.dynamic.Resource(claimResource).Namespace(namespace).List(ctx, metav1.ListOptions{LabelSelector: managedByLabel + "=" + managedByValue})
+func validateClaimIdentity(claim *extensionsapi.SandboxClaim) error {
+	if claim.Name == "" || claim.UID == "" || claim.Spec.WarmPoolRef.Name == "" {
+		return errors.New("invalid SandboxClaim returned by Kubernetes")
+	}
+	return nil
+}
+
+func (k *kubeClient) createClaim(ctx context.Context, target KubeTarget, name, warmPool string) (*extensionsapi.SandboxClaim, error) {
+	claim := &extensionsapi.SandboxClaim{
+		Name: name, Namespace: target.Namespace, Labels: map[string]string{managedByLabel: managedByValue},
+		Spec: extensionsapi.SandboxClaimSpec{WarmPoolRef: extensionsapi.SandboxWarmPoolRef{Name: warmPool}},
+	}
+	created, err := k.extensions.SandboxClaims(target.Namespace).Create(ctx, claim, metav1.CreateOptions{FieldManager: "kubeflock", FieldValidation: "Strict"})
 	if err != nil {
 		return nil, err
 	}
-	claims := make([]sandboxClaim, len(list.Items))
-	for i := range list.Items {
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(list.Items[i].Object, &claims[i]); err != nil {
-			return nil, err
-		}
+	if err := validateClaimIdentity(created); err != nil {
+		return nil, err
 	}
-	return claims, nil
+	return created, nil
 }
 
 func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, name string) (approvedTemplate, error) {
-	object, err := k.dynamic.Resource(templateResource).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	template, err := k.extensions.SandboxTemplates(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return approvedTemplate{}, err
 	}
-	var template sandboxTemplate
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &template); err != nil {
-		return approvedTemplate{}, err
-	}
-	pools, err := k.dynamic.Resource(poolResource).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	pools, err := k.extensions.SandboxWarmPools(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return approvedTemplate{}, err
 	}
-	var matches []sandboxPool
-	for _, item := range pools.Items {
-		var pool sandboxPool
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(item.Object, &pool); err != nil {
-			return approvedTemplate{}, err
-		}
-		if pool.Spec.SandboxTemplateRef.Name == name {
+	var matches []extensionsapi.SandboxWarmPool
+	for _, pool := range pools.Items {
+		if pool.Spec.TemplateRef.Name == name {
 			matches = append(matches, pool)
 		}
 	}
@@ -325,15 +247,15 @@ func (k *kubeClient) resolveApprovedTemplate(ctx context.Context, namespace, nam
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must have exactly one SandboxWarmPool; found %d", name, len(matches))
 	}
 	if matches[0].Spec.Replicas == nil {
-		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s has no replica count", matches[0].Metadata.Name)
+		return approvedTemplate{}, fmt.Errorf("SandboxWarmPool %s has no replica count", matches[0].Name)
 	}
-	return validateTemplate(template, matches[0].Metadata.Name)
+	return validateTemplate(*template, matches[0].Name)
 }
 
-func validateTemplate(template sandboxTemplate, warmPool string) (approvedTemplate, error) {
-	name := template.Metadata.Name
+func validateTemplate(template extensionsapi.SandboxTemplate, warmPool string) (approvedTemplate, error) {
+	name := template.Name
 	pod := template.Spec.PodTemplate.Spec
-	if name == "" || template.Spec.NetworkPolicyManagement == "Unmanaged" || !podHardened(pod) {
+	if name == "" || template.Spec.NetworkPolicyManagement == extensionsapi.NetworkPolicyManagementUnmanaged || !podHardened(pod) {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s does not meet Kubeflock pod hardening requirements", name)
 	}
 	if len(pod.EphemeralContainers) != 0 {
@@ -347,8 +269,8 @@ func validateTemplate(template sandboxTemplate, warmPool string) (approvedTempla
 	if !volumesHardened(pod.Volumes, template.Spec.VolumeClaimTemplates) {
 		return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s mounts a volume that is not one of its claim templates", name)
 	}
-	if home, image, ok := homeClaimTemplate(template); ok {
-		return approvedTemplate{Name: name, WarmPool: warmPool, Image: image, ResourceVersion: template.Metadata.ResourceVersion, Home: home, HomeOverrides: template.Spec.VolumeClaimTemplatesPolicy == "Overrides"}, nil
+	if home, ok := homeClaimTemplate(template); ok {
+		return approvedTemplate{Name: name, WarmPool: warmPool, Home: home}, nil
 	}
 	return approvedTemplate{}, fmt.Errorf("SandboxTemplate %s must expose a valid SSH port and mount a persistent home at /home/agent", name)
 }
@@ -387,7 +309,7 @@ func containerHardened(container corev1.Container) bool {
 		len(container.Resources.Limits) != 0
 }
 
-func volumesHardened(volumes []corev1.Volume, templates []corev1.PersistentVolumeClaim) bool {
+func volumesHardened(volumes []corev1.Volume, templates []sandboxapi.PersistentVolumeClaimTemplate) bool {
 	claims := make([]string, 0, len(templates))
 	for _, template := range templates {
 		claims = append(claims, template.Name)
@@ -400,7 +322,7 @@ func volumesHardened(volumes []corev1.Volume, templates []corev1.PersistentVolum
 	return true
 }
 
-func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, string, bool) {
+func homeClaimTemplate(template extensionsapi.SandboxTemplate) (sandboxapi.PersistentVolumeClaimTemplate, bool) {
 	pod := template.Spec.PodTemplate.Spec
 	for _, container := range pod.Containers {
 		if findSSHPort(container.Ports) == 0 {
@@ -412,11 +334,11 @@ func homeClaimTemplate(template sandboxTemplate) (corev1.PersistentVolumeClaim, 
 			}
 			claimName := mountedClaimName(pod.Volumes, mount.Name)
 			if home, ok := validHomeTemplate(template.Spec.VolumeClaimTemplates, claimName); ok {
-				return home, container.Image, true
+				return home, true
 			}
 		}
 	}
-	return corev1.PersistentVolumeClaim{}, "", false
+	return sandboxapi.PersistentVolumeClaimTemplate{}, false
 }
 
 func mountedClaimName(volumes []corev1.Volume, mountName string) string {
@@ -428,29 +350,19 @@ func mountedClaimName(volumes []corev1.Volume, mountName string) string {
 	return ""
 }
 
-func validHomeTemplate(templates []corev1.PersistentVolumeClaim, claimName string) (corev1.PersistentVolumeClaim, bool) {
+func validHomeTemplate(templates []sandboxapi.PersistentVolumeClaimTemplate, claimName string) (sandboxapi.PersistentVolumeClaimTemplate, bool) {
 	for _, home := range templates {
 		if home.Name == claimName && home.Spec.StorageClassName != nil && !home.Spec.Resources.Requests.Storage().IsZero() {
-			return home, true
+			return sandboxapi.PersistentVolumeClaimTemplate{Name: home.Name, Spec: home.Spec}, true
 		}
 	}
-	return corev1.PersistentVolumeClaim{}, false
+	return sandboxapi.PersistentVolumeClaimTemplate{}, false
 }
 
 func controlledBy(owners []metav1.OwnerReference, uid types.UID) bool {
 	return slices.ContainsFunc(owners, func(owner metav1.OwnerReference) bool {
 		return ptr.Deref(owner.Controller, false) && owner.UID == uid
 	})
-}
-
-func foreignOwner(owners []metav1.OwnerReference, allowed types.UID) (metav1.OwnerReference, bool) {
-	if len(owners) == 0 {
-		return metav1.OwnerReference{}, false
-	}
-	if allowed != "" && len(owners) == 1 && controlledBy(owners, allowed) {
-		return metav1.OwnerReference{}, false
-	}
-	return owners[0], true
 }
 
 func findSSHPort(ports []corev1.ContainerPort) int32 {
@@ -467,7 +379,7 @@ func findSSHPort(ports []corev1.ContainerPort) int32 {
 	return 0
 }
 
-func (k *kubeClient) getSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxObject, error) {
+func (k *kubeClient) getSandbox(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxapi.Sandbox, error) {
 	sandbox, err := k.getSandboxIfExists(ctx, target, name, expectedUID)
 	if err != nil {
 		return nil, err
@@ -478,39 +390,35 @@ func (k *kubeClient) getSandbox(ctx context.Context, target KubeTarget, name, ex
 	return sandbox, nil
 }
 
-func (k *kubeClient) getSandboxIfExists(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxObject, error) {
-	object, err := k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Get(ctx, name, metav1.GetOptions{})
+func (k *kubeClient) getSandboxIfExists(ctx context.Context, target KubeTarget, name, expectedUID string) (*sandboxapi.Sandbox, error) {
+	sandbox, err := k.sandboxes.Sandboxes(target.Namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var sandbox sandboxObject
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &sandbox); err != nil {
-		return nil, err
+	if expectedUID != "" && string(sandbox.UID) != expectedUID {
+		return nil, fmt.Errorf("sandbox %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, expectedUID, sandbox.UID)
 	}
-	if expectedUID != "" && string(sandbox.Metadata.UID) != expectedUID {
-		return nil, fmt.Errorf("sandbox %s/%s was replaced: expected UID %s, found %s", target.Namespace, name, expectedUID, sandbox.Metadata.UID)
-	}
-	return &sandbox, nil
+	return sandbox, nil
 }
 
-func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sandbox *sandboxObject, mode sandboxOperatingMode) error {
-	if sandbox.Spec.OperatingMode.normalized() == mode {
+func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sandbox *sandboxapi.Sandbox, mode sandboxOperatingMode) error {
+	if cmp.Or(sandbox.Spec.OperatingMode, modeRunning) == mode {
 		return nil
 	}
-	patch, err := json.Marshal([]map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": sandbox.Metadata.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": sandbox.Metadata.ResourceVersion},
-		{"op": "add", "path": "/spec/operatingMode", "value": mode},
+	patch, err := json.Marshal([]jsonPatchOperation{
+		{Op: "test", Path: "/metadata/uid", Value: sandbox.UID},
+		{Op: "test", Path: "/metadata/resourceVersion", Value: sandbox.ResourceVersion},
+		{Op: "add", Path: "/spec/operatingMode", Value: mode},
 	})
 	if err != nil {
 		return err
 	}
-	_, err = k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Patch(
+	_, err = k.sandboxes.Sandboxes(target.Namespace).Patch(
 		ctx,
-		sandbox.Metadata.Name,
+		sandbox.Name,
 		types.JSONPatchType,
 		patch,
 		metav1.PatchOptions{FieldManager: "kubeflock", FieldValidation: "Strict"},
@@ -518,17 +426,17 @@ func (k *kubeClient) setOperatingMode(ctx context.Context, target KubeTarget, sa
 	return err
 }
 
-func (k *kubeClient) ownedPods(ctx context.Context, target KubeTarget, sandbox *sandboxObject) ([]corev1.Pod, error) {
-	if sandbox.Status.Selector == "" {
-		return nil, fmt.Errorf("sandbox %s/%s returned no pod selector", target.Namespace, sandbox.Metadata.Name)
+func (k *kubeClient) ownedPods(ctx context.Context, target KubeTarget, sandbox *sandboxapi.Sandbox) ([]corev1.Pod, error) {
+	if sandbox.Status.LabelSelector == "" {
+		return nil, fmt.Errorf("sandbox %s/%s returned no pod selector", target.Namespace, sandbox.Name)
 	}
-	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandbox.Status.Selector})
+	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{LabelSelector: sandbox.Status.LabelSelector})
 	if err != nil {
 		return nil, err
 	}
-	owned := []corev1.Pod{}
+	var owned []corev1.Pod
 	for _, pod := range pods.Items {
-		if controlledBy(pod.OwnerReferences, sandbox.Metadata.UID) {
+		if controlledBy(pod.OwnerReferences, sandbox.UID) {
 			owned = append(owned, pod)
 		}
 	}
@@ -557,87 +465,18 @@ func (k *kubeClient) ownedHome(ctx context.Context, target KubeTarget, sandbox S
 	return pvc, nil
 }
 
-func (k *kubeClient) verifyRestorableHome(ctx context.Context, target KubeTarget, name string, expected PersistentHome, template corev1.PersistentVolumeClaim, allowedSandboxUID string) error {
-	pvc, err := k.homePVC(ctx, target, expected)
-	if err != nil {
-		return err
-	}
-	if expected.Name != template.Name+"-"+name {
-		return fmt.Errorf("retained home %s does not match template claim name %s", pvc.Name, template.Name)
-	}
-	if pvc.Spec.StorageClassName == nil || template.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != *template.Spec.StorageClassName {
-		return fmt.Errorf("retained home %s uses storage class %q, not template storage class %q", pvc.Name, ptr.Deref(pvc.Spec.StorageClassName, ""), ptr.Deref(template.Spec.StorageClassName, ""))
-	}
-	requested := template.Spec.Resources.Requests[corev1.ResourceStorage]
-	capacity := pvc.Status.Capacity[corev1.ResourceStorage]
-	if requested.IsZero() || capacity.IsZero() || capacity.Cmp(requested) < 0 {
-		return fmt.Errorf("retained home %s capacity %s is incompatible with template request %s", pvc.Name, capacity.String(), requested.String())
-	}
-	for _, mode := range template.Spec.AccessModes {
-		if !slices.Contains(pvc.Spec.AccessModes, mode) {
-			return fmt.Errorf("retained home %s does not support template access mode %s", pvc.Name, mode)
-		}
-	}
-	if ptr.Deref(pvc.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != ptr.Deref(template.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) {
-		return fmt.Errorf("retained home %s has an incompatible volume mode", pvc.Name)
-	}
-	if owner, conflict := foreignOwner(pvc.OwnerReferences, types.UID(allowedSandboxUID)); conflict {
-		return fmt.Errorf("retained home %s is owned by %s/%s", pvc.Name, owner.Kind, owner.Name)
-	}
-	pods, err := k.core.Pods(target.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, pod := range pods.Items {
-		for _, volume := range pod.Spec.Volumes {
-			if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == pvc.Name && (allowedSandboxUID == "" || !controlledBy(pod.OwnerReferences, types.UID(allowedSandboxUID))) {
-				return fmt.Errorf("retained home %s is mounted by Pod %s", pvc.Name, pod.Name)
-			}
-		}
-	}
-	return nil
-}
-
-func (k *kubeClient) authorizeHomeAdoption(ctx context.Context, target KubeTarget, expected PersistentHome, allowedSandboxUID string) error {
-	pvc, err := k.homePVC(ctx, target, expected)
-	if err != nil {
-		return err
-	}
-	if owner, conflict := foreignOwner(pvc.OwnerReferences, types.UID(allowedSandboxUID)); conflict {
-		return fmt.Errorf("retained home %s became owned by %s/%s before allocation", pvc.Name, owner.Kind, owner.Name)
-	}
-	patch := []map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
-	}
-	if pvc.Labels == nil {
-		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{sandboxAdoptableLabel: "true"}})
-	} else if pvc.Labels[sandboxAdoptableLabel] != "true" {
-		patch = append(patch, map[string]any{"op": "add", "path": "/metadata/labels/agents.x-k8s.io~1adoptable", "value": "true"})
-	}
-	if len(patch) == 2 {
-		return nil
-	}
-	data, err := json.Marshal(patch)
-	if err != nil {
-		return err
-	}
-	_, err = k.core.PersistentVolumeClaims(target.Namespace).Patch(ctx, pvc.Name, types.JSONPatchType, data, metav1.PatchOptions{})
-	return err
-}
-
 func (k *kubeClient) preventHomeReAdoption(ctx context.Context, target KubeTarget, sandbox SandboxIdentity, expected PersistentHome) error {
 	pvc, err := k.ownedHome(ctx, target, sandbox, expected)
 	if err != nil {
 		return err
 	}
-	patch := []map[string]any{
-		{"op": "test", "path": "/metadata/uid", "value": pvc.UID},
-		{"op": "test", "path": "/metadata/resourceVersion", "value": pvc.ResourceVersion},
+	patch := []jsonPatchOperation{
+		{Op: "test", Path: "/metadata/uid", Value: pvc.UID},
+		{Op: "test", Path: "/metadata/resourceVersion", Value: pvc.ResourceVersion},
 	}
-	for _, label := range []string{sandboxNameHashLabel, sandboxAdoptableLabel} {
+	for _, label := range []string{sandboxNameHashLabel, sandboxapi.SandboxAdoptableLabel} {
 		if _, exists := pvc.Labels[label]; exists {
-			patch = append(patch, map[string]any{"op": "remove", "path": "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
+			patch = append(patch, jsonPatchOperation{Op: "remove", Path: "/metadata/labels/" + strings.ReplaceAll(label, "/", "~1")})
 		}
 	}
 	if len(patch) == 2 {
@@ -673,8 +512,8 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 	if err != nil {
 		return nil, err
 	}
-	if len(pvc.OwnerReferences) != 0 || pvc.Labels[sandboxAdoptableLabel] == "true" {
-		return nil, fmt.Errorf("retained home %s has uncertain ownership or is reserved for restore", pvc.Name)
+	if len(pvc.OwnerReferences) != 0 {
+		return nil, fmt.Errorf("retained home %s has uncertain ownership", pvc.Name)
 	}
 	claim, err := k.getClaim(ctx, target.Namespace, retained.claimIdentity().Name)
 	if err != nil {
@@ -696,6 +535,23 @@ func (k *kubeClient) inspectHomeDeletion(ctx context.Context, target KubeTarget,
 			if volume.PersistentVolumeClaim != nil && volume.PersistentVolumeClaim.ClaimName == pvc.Name {
 				return nil, fmt.Errorf("retained home %s is mounted by Pod %s", pvc.Name, pod.Name)
 			}
+		}
+	}
+	if pvc.Labels[sandboxapi.SandboxAdoptableLabel] == "true" {
+		if retained.State != retainedHomeRestoring {
+			return nil, fmt.Errorf("retained home %s is reserved for restore", pvc.Name)
+		}
+		patch := []jsonPatchOperation{
+			{Op: "test", Path: "/metadata/uid", Value: pvc.UID},
+			{Op: "test", Path: "/metadata/resourceVersion", Value: pvc.ResourceVersion},
+			{Op: "remove", Path: "/metadata/labels/agents.x-k8s.io~1adoptable"},
+		}
+		data, err := json.Marshal(patch)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := k.core.PersistentVolumeClaims(target.Namespace).Patch(ctx, pvc.Name, types.JSONPatchType, data, metav1.PatchOptions{}); err != nil {
+			return nil, fmt.Errorf("cancel legacy home restoration: %w", err)
 		}
 	}
 	if pvc.Spec.VolumeName == "" {
@@ -779,7 +635,7 @@ func (k *kubeClient) homeDeletionComplete(ctx context.Context, target KubeTarget
 func (k *kubeClient) orphanDeleteClaim(ctx context.Context, target KubeTarget, identity SandboxIdentity) error {
 	uid := types.UID(identity.UID)
 	policy := metav1.DeletePropagationOrphan
-	err := k.dynamic.Resource(claimResource).Namespace(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
+	err := k.extensions.SandboxClaims(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
 		Preconditions:     &metav1.Preconditions{UID: &uid},
 		PropagationPolicy: &policy,
 	})
@@ -792,7 +648,7 @@ func (k *kubeClient) orphanDeleteClaim(ctx context.Context, target KubeTarget, i
 func (k *kubeClient) orphanDeleteSandbox(ctx context.Context, target KubeTarget, identity SandboxIdentity) error {
 	uid := types.UID(identity.UID)
 	policy := metav1.DeletePropagationOrphan
-	err := k.dynamic.Resource(sandboxResource).Namespace(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
+	err := k.sandboxes.Sandboxes(target.Namespace).Delete(ctx, identity.Name, metav1.DeleteOptions{
 		Preconditions:     &metav1.Preconditions{UID: &uid},
 		PropagationPolicy: &policy,
 	})
@@ -812,10 +668,10 @@ func (k *kubeClient) suspendedSandboxes(ctx context.Context, target KubeTarget, 
 		if err != nil {
 			return nil, err
 		}
-		if sandbox == nil || string(sandbox.Metadata.UID) != saved.Sandbox.UID {
+		if sandbox == nil || string(sandbox.UID) != saved.Sandbox.UID {
 			continue
 		}
-		if sandbox.Spec.OperatingMode.normalized() == modeSuspended {
+		if sandbox.Spec.OperatingMode == modeSuspended {
 			suspended[saved.Sandbox.UID] = true
 		}
 	}
@@ -853,9 +709,9 @@ func (k *kubeClient) resolveSandbox(ctx context.Context, target KubeTarget, name
 	return resolvedSandbox{
 		Identity: SandboxIdentity{
 			Context:   target.Context,
-			Namespace: sandbox.Metadata.Namespace,
-			Name:      sandbox.Metadata.Name,
-			UID:       string(sandbox.Metadata.UID),
+			Namespace: sandbox.Namespace,
+			Name:      sandbox.Name,
+			UID:       string(sandbox.UID),
 		},
 		Pod:       pod.Name,
 		Container: container,

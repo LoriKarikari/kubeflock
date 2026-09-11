@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	extensionsapi "sigs.k8s.io/agent-sandbox/extensions/api/v1beta1"
 )
 
 func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
@@ -35,7 +36,7 @@ func TestPrepareCreationSerializesSameSandbox(t *testing.T) {
 }
 
 func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
-	claim := sandboxClaim{}
+	claim := extensionsapi.SandboxClaim{}
 	claim.Status.Conditions = []metav1.Condition{{
 		Type:    "Ready",
 		Status:  metav1.ConditionFalse,
@@ -45,6 +46,31 @@ func TestProgressSurfacesQuotaExhaustion(t *testing.T) {
 	got := progress(claim)
 	if got.State != "failed" || !strings.Contains(got.Message, "quota") {
 		t.Fatalf("quota progress = %#v", got)
+	}
+}
+
+func TestProgressConditionDetails(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		condition *metav1.Condition
+		want      string
+	}{
+		{"missing", nil, "waiting for the Sandbox controller"},
+		{"empty", &metav1.Condition{}, "waiting for the Sandbox controller"},
+		{"reason", &metav1.Condition{Reason: "Pending"}, "Pending"},
+		{"message", &metav1.Condition{Message: "allocating"}, "allocating"},
+		{"both", &metav1.Condition{Reason: "Pending", Message: "allocating"}, "Pending: allocating"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			claim := extensionsapi.SandboxClaim{}
+			if tt.condition != nil {
+				tt.condition.Type = "Ready"
+				claim.Status.Conditions = []metav1.Condition{*tt.condition}
+			}
+			if got := progress(claim); got.State != "provisioning" || got.Step != "readiness" || got.Message != tt.want {
+				t.Fatalf("progress = %#v, want message %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -60,9 +86,8 @@ func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 		Sandbox:      &SandboxIdentity{Context: "homelab", Namespace: "developer", Name: "sandbox", UID: "sandbox-uid"},
 		Home:         &PersistentHome{Name: "home-sandbox", UID: "home-uid", Capacity: "10Gi", StorageClass: "longhorn"},
 	}
-	claim := sandboxClaim{}
-	claim.Metadata = metav1.ObjectMeta{Name: "sandbox", UID: "claim-uid"}
-	claim.Status.Sandbox.Name = "sandbox"
+	claim := extensionsapi.SandboxClaim{Name: "sandbox", UID: "claim-uid"}
+	claim.Status.SandboxStatus.Name = "sandbox"
 	claim.Status.Conditions = []metav1.Condition{{
 		Type:    "Ready",
 		Status:  metav1.ConditionFalse,
@@ -70,17 +95,17 @@ func TestSandboxStatusReportsStoppedSandbox(t *testing.T) {
 		Message: "Sandbox is suspended",
 	}}
 
-	stopped := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, map[string]bool{"sandbox-uid": true})
+	stopped := sandboxStatus(saved, []extensionsapi.SandboxClaim{claim}, nil, nil, map[string]bool{"sandbox-uid": true})
 	if stopped.State != "disconnected" || !strings.Contains(stopped.Message, "kubeflock sandbox resume sandbox") {
 		t.Fatalf("stopped status = %#v", stopped)
 	}
-	running := sandboxStatus(saved, []sandboxClaim{claim}, nil, nil, nil)
+	running := sandboxStatus(saved, []extensionsapi.SandboxClaim{claim}, nil, nil, nil)
 	if running.State != "provisioning" {
 		t.Fatalf("unsuspended status = %#v", running)
 	}
 }
 
-func TestStorageLockSerializesRestoreAndDeletion(t *testing.T) {
+func TestStorageLockSerializesDeletion(t *testing.T) {
 	target := KubeTarget{Context: "homelab", Namespace: "developer"}
 	dir := t.TempDir()
 	first, err := acquireSandboxLock(target, "sandbox", dir)

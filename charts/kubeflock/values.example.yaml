@@ -6,12 +6,6 @@ access:
     - kind: User
       name: developer@example.com
 
-credentials:
-  - name: anthropic
-    secretName: anthropic-api-key
-    key: api-key
-    environment: ANTHROPIC_API_KEY
-
 sandbox:
   # Required. Kubeflock does not currently publish a Sandbox image.
   image: registry.example.com/replace-with-your-sandbox-image@sha256:replace-me
@@ -22,4 +16,3 @@ sandbox:
 capacity:
   warmStandbys: 0
   maxActiveSandboxes: 2
-  maxRetainedHomes: 4

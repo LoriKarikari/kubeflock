@@ -47,9 +47,6 @@ func commandContext(ctx context.Context, command string, args ...string) *exec.C
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	return cmd

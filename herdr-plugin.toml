@@ -60,31 +60,10 @@ command = ["bin/kubeflock", "sandbox", "resume"]
 
 [[actions]]
 id = "sandbox-delete"
-title = "Kubeflock: Delete sandbox and retain home"
-description = "Stop and remove a sandbox while preserving its persistent home."
+title = "Kubeflock: Permanently delete sandbox"
+description = "Permanently delete a sandbox and its workspace after exact confirmation."
 contexts = ["workspace", "pane"]
-command = ["bin/kubeflock", "sandbox", "delete"]
-
-[[actions]]
-id = "home-list"
-title = "Kubeflock: List retained homes"
-description = "List persistent homes retained from deleted sandboxes."
-contexts = ["workspace", "pane"]
-command = ["bin/kubeflock", "sandbox", "home", "list"]
-
-[[actions]]
-id = "home-restore"
-title = "Kubeflock: Restore retained home"
-description = "Select a retained home by PVC UID and restore its sandbox and Herdr connection."
-contexts = ["workspace", "pane"]
-command = ["bin/kubeflock", "sandbox", "restore-action"]
-
-[[actions]]
-id = "home-delete"
-title = "Kubeflock: Permanently delete retained home"
-description = "Permanently delete one retained home after exact storage confirmation."
-contexts = ["workspace", "pane"]
-command = ["bin/kubeflock", "sandbox", "delete-home-action"]
+command = ["bin/kubeflock", "sandbox", "delete-action"]
 
 [[actions]]
 id = "sandbox-disconnect"
@@ -98,21 +77,13 @@ id = "create"
 title = "Create Kubeflock sandbox"
 placement = "popup"
 width = "80%"
-height = 16
+height = 12
 command = ["bin/kubeflock", "sandbox", "create-wizard"]
 
 [[panes]]
-id = "restore"
-title = "Restore Kubeflock sandbox"
+id = "delete"
+title = "Permanently delete Kubeflock sandbox"
 placement = "popup"
 width = "80%"
-height = 14
-command = ["bin/kubeflock", "sandbox", "restore-wizard"]
-
-[[panes]]
-id = "delete-home"
-title = "Permanently delete retained home"
-placement = "popup"
-width = "80%"
-height = 16
-command = ["bin/kubeflock", "sandbox", "delete-home-wizard"]
+height = 12
+command = ["bin/kubeflock", "sandbox", "delete-wizard"]

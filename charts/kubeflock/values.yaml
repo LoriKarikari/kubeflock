@@ -5,8 +5,6 @@ namespace:
 access:
   subjects: []
 
-credentials: []
-
 sandbox:
   templateName: dev-small
   image: ""
@@ -25,4 +23,3 @@ sandbox:
 capacity:
   warmStandbys: 0
   maxActiveSandboxes: 2
-  maxRetainedHomes: 4

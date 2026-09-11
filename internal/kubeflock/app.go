@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 type App struct {
@@ -25,7 +25,7 @@ type App struct {
 	Now func() time.Time
 }
 
-const homeDeleteTimeout = 5 * time.Minute
+const workspaceDeleteTimeout = 5 * time.Minute
 
 type exitError struct {
 	code int
@@ -61,12 +61,20 @@ func (a *App) Run(ctx context.Context, args []string) int {
 func (a *App) command() *cobra.Command {
 	options := globalOptions{}
 	root := &cobra.Command{
-		Use:               "kubeflock",
-		Short:             "Herdr agent environments on Kubernetes",
-		Version:           Version,
-		Args:              cobra.NoArgs,
-		SilenceErrors:     true,
-		SilenceUsage:      true,
+		Use:           "kubeflock",
+		Short:         "Herdr agent environments on Kubernetes",
+		Version:       Version,
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			stateDir, err := filepath.Abs(options.StateDir)
+			if err != nil {
+				return err
+			}
+			options.StateDir = stateDir
+			return nil
+		},
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := command.Help(); err != nil {
@@ -212,24 +220,19 @@ func (a *App) sandboxCommand(options *globalOptions) *cobra.Command {
 		a.connectCommand("reconnect", options),
 		a.lifecycleCommand("stop", modeSuspended, options),
 		a.lifecycleCommand("resume", modeRunning, options),
-		a.retainCommand(options),
-		a.homeCommand(options),
-		a.credentialCommand(options),
+		a.deleteCommand(options),
 		a.disconnectCommand(options),
 		a.proxyCommand(),
 		createActionCommand("create"),
-		createActionCommand("restore"),
-		createActionCommand("delete-home"),
+		createActionCommand("delete"),
 		a.createWizardCommand(options),
-		a.restoreWizardCommand(options),
-		a.deleteHomeWizardCommand(options),
+		a.deleteWizardCommand(options),
 	)
 	return sandbox
 }
 
 func (a *App) createCommand(options *globalOptions) *cobra.Command {
-	var template, identity, homeUID, repository, branch string
-	var credentials []string
+	var template, identity string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:  "create NAME",
@@ -242,11 +245,9 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			created, err := a.createOrRestore(command.Context(), target, args[0], homeUID, createOptions{
+			created, err := createSandbox(command.Context(), target, args[0], createOptions{
 				Template:     template,
 				IdentityFile: identity,
-				Project:      requestedProject(repository, branch),
-				Credentials:  credentials,
 				Timeout:      timeout,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -254,16 +255,13 @@ func (a *App) createCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.reportCreated(created, homeUID != "")
+			a.reportCreated(created)
+			return nil
 		},
 	}
 	command.Flags().StringVar(&template, "template", "", "approved SandboxTemplate")
 	command.Flags().StringVar(&identity, "identity", "", "SSH identity file")
-	command.Flags().StringVar(&homeUID, "home", "", "retained home PVC UID to restore")
-	command.Flags().StringVar(&repository, "repository", "", "Git repository to clone inside the sandbox")
-	command.Flags().StringVar(&branch, "branch", "", "Git branch to check out")
-	command.Flags().StringArrayVar(&credentials, "credential", nil, "approved credential to attach (repeatable)")
-	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning or checkout timeout")
+	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "provisioning timeout")
 	return command
 }
 
@@ -371,151 +369,41 @@ func (a *App) lifecycleCommand(verb string, mode sandboxOperatingMode, options *
 	return command
 }
 
-func (a *App) retainCommand(options *globalOptions) *cobra.Command {
-	var timeout time.Duration
-	command := &cobra.Command{
-		Use:  "delete [NAME]",
-		Args: cobra.MaximumNArgs(1),
-		RunE: func(command *cobra.Command, args []string) error {
-			name := ""
-			if len(args) == 1 {
-				name = args[0]
-			}
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			retained, err := retainSandboxHome(command.Context(), target, name, lifecycleOptions{
-				Timeout: timeout,
-				Poll:    2 * time.Second,
-				Global:  *options,
-			})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "deleted sandbox %s/%s; retained home %s (%s)\n", target.Namespace, retained.Name, retained.Home.Name, retained.Home.Capacity)
-			return nil
-		},
-	}
-	command.Flags().DurationVar(&timeout, "timeout", 5*time.Minute, "deletion timeout")
-	return command
-}
-
-func (a *App) homeCommand(options *globalOptions) *cobra.Command {
-	home := &cobra.Command{Use: "home", Args: cobra.NoArgs}
-	output := outputText
-	list := &cobra.Command{
-		Use:  "list",
-		Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			homes, err := listRetainedHomes(options.StateDir)
-			if err != nil {
-				return err
-			}
-			homes = slices.DeleteFunc(homes, func(home RetainedHome) bool {
-				return home.Origin.Context != target.Context || home.Origin.Namespace != target.Namespace
-			})
-			if output == outputJSON {
-				return writeJSON(a.Out, homes)
-			}
-			if len(homes) == 0 {
-				fmt.Fprintln(a.Out, "no retained homes")
-				return nil
-			}
-			for _, retained := range homes {
-				residual := ""
-				if retained.Deletion != nil {
-					residual = fmt.Sprintf(" pv=%s pvUID=%s", retained.Deletion.Name, retained.Deletion.UID)
-				}
-				fmt.Fprintf(a.Out, "%s\t%s\t%s\t%s\tuid=%s origin=%s/%s template=%s%s\n", retained.Home.Name, retained.State, retained.Home.Capacity, retained.Home.StorageClass, retained.Home.UID, retained.Origin.Namespace, retained.allocationName(), retained.Template, residual)
-			}
-			return nil
-		},
-	}
-	output.declare(list)
+func (a *App) deleteCommand(options *globalOptions) *cobra.Command {
 	var confirmation string
 	var timeout time.Duration
-	deleteHome := &cobra.Command{
-		Use:  "delete UID",
+	command := &cobra.Command{
+		Use:  "delete NAME",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
 				return err
 			}
-			return a.deleteHome(command.Context(), target, args[0], confirmation, timeout, *options)
+			return a.deleteWorkspace(command.Context(), target, args[0], confirmation, timeout, *options)
 		},
 	}
-	deleteHome.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion by repeating the PVC UID")
-	deleteHome.Flags().DurationVar(&timeout, "timeout", homeDeleteTimeout, "storage deletion timeout")
-	home.AddCommand(list, deleteHome)
-	return home
+	command.Flags().StringVar(&confirmation, "confirm", "", "confirm permanent deletion with DELETE")
+	command.Flags().DurationVar(&timeout, "timeout", workspaceDeleteTimeout, "deletion timeout")
+	return command
 }
 
-func (a *App) deleteHome(ctx context.Context, target KubeTarget, uid, confirmation string, timeout time.Duration, options globalOptions) error {
-	selection, err := inspectRetainedHomeDeletion(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options})
-	if err != nil {
-		return err
-	}
-	home := selection.Retained.Home
-	fmt.Fprintf(a.Out, "Permanent storage deletion\n  target: %s/%s\n  home: %s\n  PVC UID: %s\n  capacity: %s\n  storage class: %s\n", target.Context, target.Namespace, home.Name, home.UID, home.Capacity, home.StorageClass)
-	if selection.Volume != nil {
-		fmt.Fprintf(a.Out, "  persistent volume: %s\n", selection.Volume.Name)
-	}
-	fmt.Fprint(a.Out, "This deletes project files, history, settings, and credentials saved in this home.\n")
+func (a *App) deleteWorkspace(ctx context.Context, target KubeTarget, name, confirmation string, timeout time.Duration, options globalOptions) error {
+	fmt.Fprintf(a.Out, "Permanently delete sandbox %s/%s and its workspace data.\n", target.Namespace, name)
 	if confirmation == "" {
-		fmt.Fprintf(a.Out, "Type the PVC UID %s to confirm: ", uid)
+		fmt.Fprint(a.Out, "Type DELETE to confirm: ")
 		if _, err := fmt.Fscanln(a.In, &confirmation); err != nil {
 			confirmation = ""
 		}
 	}
-	if confirmation == "" {
-		return errors.New("confirmation was empty; no storage was deleted")
+	if confirmation != "DELETE" {
+		return errors.New("confirmation was not DELETE; nothing was deleted")
 	}
-	if confirmation != uid {
-		return fmt.Errorf("confirmation %q does not match PVC UID %s; no storage was deleted", confirmation, uid)
-	}
-	if err := deleteRetainedHome(ctx, target, uid, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
+	if err := permanentlyDeleteWorkspace(ctx, target, name, lifecycleOptions{Timeout: timeout, Poll: 2 * time.Second, Global: options}); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.Out, "permanently deleted retained home %s (PVC UID %s)\n", home.Name, home.UID)
+	fmt.Fprintf(a.Out, "permanently deleted sandbox %s/%s and its workspace data\n", target.Namespace, name)
 	return nil
-}
-
-func (a *App) credentialCommand(options *globalOptions) *cobra.Command {
-	credential := &cobra.Command{Use: "credential", Short: "Work with administrator-approved credentials", Args: cobra.NoArgs}
-	credential.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List approved credential aliases",
-		Args:  cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			client, err := newKubeClient(command.Context(), target, options.Kubeconfig)
-			if err != nil {
-				return err
-			}
-			references, err := client.credentialReferences(command.Context(), target.Namespace)
-			if err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
-			if len(references) == 0 {
-				fmt.Fprintln(a.Out, "no approved credentials")
-				return nil
-			}
-			for _, reference := range references {
-				fmt.Fprintf(a.Out, "%s\t%s\n", reference.Name, reference.Config.Environment)
-			}
-			return nil
-		},
-	})
-	return credential
 }
 
 func (a *App) disconnectCommand(options *globalOptions) *cobra.Command {
@@ -583,21 +471,6 @@ func createActionCommand(pane string) *cobra.Command {
 	}
 }
 
-func (a *App) createOrRestore(ctx context.Context, target KubeTarget, name, homeUID string, options createOptions) (createdSandbox, error) {
-	if homeUID == "" {
-		return createSandbox(ctx, target, name, nil, options)
-	}
-	if options.Project != nil {
-		return createdSandbox{}, errors.New("a restored home does not accept --repository; restore it first, then clone inside the sandbox")
-	}
-	selection, err := inspectRestore(ctx, target, name, homeUID, options)
-	if err != nil {
-		return createdSandbox{}, err
-	}
-	fmt.Fprintf(a.Err, "restoring home %s (UID %s) as %s/%s with template %s image %s\n", selection.Retained.Home.Name, selection.Retained.Home.UID, target.Namespace, name, selection.Approved.Name, selection.Approved.Image)
-	return createSandbox(ctx, target, name, &selection, options)
-}
-
 func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 	return &cobra.Command{
 		Use:    "create-wizard",
@@ -608,19 +481,6 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := newKubeClient(command.Context(), target, options.Kubeconfig)
-			if err != nil {
-				return err
-			}
-			references, err := client.credentialReferences(command.Context(), target.Namespace)
-			if err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
-			names := make([]string, len(references))
-			for i, reference := range references {
-				names[i] = reference.Name
-			}
-			fmt.Fprintf(a.Out, "Approved credentials: %s\n", cmp.Or(strings.Join(names, ", "), "none"))
 			scanner := bufio.NewScanner(a.In)
 			prompt := func(label string) (string, error) {
 				fmt.Fprint(a.Out, label)
@@ -641,25 +501,6 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			credentialInput, err := prompt("Credentials (comma-separated, optional): ")
-			if err != nil {
-				return err
-			}
-			credentials := strings.FieldsFunc(credentialInput, func(character rune) bool { return character == ',' })
-			for i := range credentials {
-				credentials[i] = strings.TrimSpace(credentials[i])
-			}
-			repository, err := prompt("Git repository (optional): ")
-			if err != nil {
-				return err
-			}
-			branch := ""
-			if repository != "" {
-				branch, err = prompt("Git branch (optional): ")
-				if err != nil {
-					return err
-				}
-			}
 			confirmed, err := prompt(fmt.Sprintf("Create %s from %s with persistent home storage? [y/N] ", name, template))
 			if err != nil {
 				return err
@@ -668,11 +509,9 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
 				return nil
 			}
-			created, err := a.createOrRestore(command.Context(), target, name, "", createOptions{
+			created, err := createSandbox(command.Context(), target, name, createOptions{
 				Template:     template,
 				IdentityFile: identity,
-				Project:      requestedProject(repository, branch),
-				Credentials:  credentials,
 				Timeout:      5 * time.Minute,
 				Poll:         2 * time.Second,
 				Global:       *options,
@@ -680,108 +519,32 @@ func (a *App) createWizardCommand(options *globalOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.reportCreated(created, false)
-		},
-	}
-}
-
-func requestedProject(repository, branch string) *projectRequest {
-	if repository == "" && branch == "" {
-		return nil
-	}
-	return &projectRequest{Repository: repository, Branch: branch}
-}
-
-func (a *App) reportCreated(created createdSandbox, restored bool) error {
-	if restored {
-		fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
-	} else {
-		fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
-	}
-	if created.Credentials != 0 {
-		fmt.Fprintf(a.Out, "attached %d approved credential(s)\n", created.Credentials)
-	}
-	if created.Project == nil {
-		return nil
-	}
-	if created.Checkout != nil {
-		fmt.Fprintf(a.Err, "kubeflock: checkout failed; sandbox %s remains ready for login and retry: %v\n", created.Name, created.Checkout)
-		return exitError{code: 1}
-	}
-	if created.Project.Branch == "" {
-		fmt.Fprintln(a.Out, "checked out the repository's default branch in /home/agent/project")
-	} else {
-		fmt.Fprintf(a.Out, "checked out branch %s in /home/agent/project\n", created.Project.Branch)
-	}
-	return nil
-}
-
-func (a *App) restoreWizardCommand(options *globalOptions) *cobra.Command {
-	return &cobra.Command{
-		Use:    "restore-wizard",
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		RunE: func(command *cobra.Command, _ []string) error {
-			var homeUID, name, template, identity, confirmed string
-			fmt.Fprint(a.Out, "Retained home UID: ")
-			if _, err := fmt.Fscanln(a.In, &homeUID); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "Replacement sandbox name: ")
-			if _, err := fmt.Fscanln(a.In, &name); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "Approved template: ")
-			if _, err := fmt.Fscanln(a.In, &template); err != nil {
-				return err
-			}
-			fmt.Fprint(a.Out, "SSH identity file: ")
-			if _, err := fmt.Fscanln(a.In, &identity); err != nil {
-				return err
-			}
-			target, err := loadConfig(options.ConfigPath)
-			if err != nil {
-				return err
-			}
-			create := createOptions{Template: template, IdentityFile: identity, Timeout: 5 * time.Minute, Poll: 2 * time.Second, Global: *options}
-			selection, err := inspectRestore(command.Context(), target, name, homeUID, create)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "Restore %s as %s with template %s image %s? [y/N] ", selection.Retained.Home.Name, name, selection.Approved.Name, selection.Approved.Image)
-			if _, err := fmt.Fscanln(a.In, &confirmed); err != nil {
-				return err
-			}
-			if !slices.Contains([]string{"y", "yes"}, strings.ToLower(confirmed)) {
-				fmt.Fprintln(a.Out, "cancelled; no cluster resources were changed")
-				return nil
-			}
-			created, err := createSandbox(command.Context(), target, name, &selection, create)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(a.Out, "ready sandbox %s; restored home %s; connected to Herdr\n", created.Name, created.Home.Name)
+			a.reportCreated(created)
 			return nil
 		},
 	}
 }
 
-func (a *App) deleteHomeWizardCommand(options *globalOptions) *cobra.Command {
+func (a *App) reportCreated(created createdSandbox) {
+	fmt.Fprintf(a.Out, "ready sandbox %s; connected to Herdr\n", created.Name)
+}
+
+func (a *App) deleteWizardCommand(options *globalOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:    "delete-home-wizard",
+		Use:    "delete-wizard",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			var uid string
-			fmt.Fprint(a.Out, "Retained home PVC UID: ")
-			if _, err := fmt.Fscanln(a.In, &uid); err != nil {
+			var name string
+			fmt.Fprint(a.Out, "Sandbox name: ")
+			if _, err := fmt.Fscanln(a.In, &name); err != nil {
 				return err
 			}
 			target, err := loadConfig(options.ConfigPath)
 			if err != nil {
 				return err
 			}
-			return a.deleteHome(command.Context(), target, uid, "", homeDeleteTimeout, *options)
+			return a.deleteWorkspace(command.Context(), target, name, "", workspaceDeleteTimeout, *options)
 		},
 	}
 }
